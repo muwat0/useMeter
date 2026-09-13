@@ -3,6 +3,7 @@ import { OpenRouterAdapter } from "./openrouter";
 import { DeepSeekAdapter } from "./deepseek";
 import { ClaudeAdapter } from "./claude";
 import { CodexAdapter } from "./codex";
+import { GoogleAntigravityAdapter } from "./google-antigravity";
 
 export class ProviderRegistry {
   readonly #adapters: ProviderAdapter[] = [];
@@ -26,5 +27,6 @@ export function createDefaultRegistry(): ProviderRegistry {
   registry.register(new DeepSeekAdapter());
   registry.register(new ClaudeAdapter());
   registry.register(new CodexAdapter());
+  registry.register(new GoogleAntigravityAdapter());
   return registry;
 }
