@@ -28,11 +28,11 @@ interface AntigravityUsageResponse {
 }
 
 export class GoogleAntigravityAdapter implements ProviderAdapter {
-  readonly id = "google-antigravity";
+  readonly id = "antigravity";
 
   supports(provider: string): boolean {
     const p = provider.toLowerCase();
-    return p === "google-antigravity" || p === "google" || p === "gemini" || p === "antigravity";
+    return p === "antigravity" || p === "google-antigravity" || p === "google" || p === "gemini";
   }
 
   async refreshAccessToken(refreshToken: string): Promise<string> {
@@ -120,10 +120,10 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
     let geminiWeeklyRemaining = 1.0;
     let geminiWeeklyResetAt: number | undefined;
 
-    let claudeRollingRemaining = 1.0;
-    let claudeRollingResetAt: number | undefined;
-    let claudeWeeklyRemaining = 1.0;
-    let claudeWeeklyResetAt: number | undefined;
+    let claudeGptRollingRemaining = 1.0;
+    let claudeGptRollingResetAt: number | undefined;
+    let claudeGptWeeklyRemaining = 1.0;
+    let claudeGptWeeklyResetAt: number | undefined;
 
     for (const [modelId, info] of Object.entries(models)) {
       const rawQuotas = [
@@ -138,16 +138,17 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
         const resetAt = q.resetTime ? Date.parse(q.resetTime) : undefined;
         const isWeekly = q.windowId?.includes("week") || (resetAt && resetAt - now > 24 * 3600 * 1000);
 
-        if (modelId.includes("claude")) {
+        if (modelId.includes("claude") || modelId.includes("gpt-oss")) {
+          // Claude and GPT models share a combined quota pool in Antigravity
           if (isWeekly) {
-            if (q.remainingFraction < claudeWeeklyRemaining) claudeWeeklyRemaining = q.remainingFraction;
-            if (resetAt && (!claudeWeeklyResetAt || resetAt > claudeWeeklyResetAt)) claudeWeeklyResetAt = resetAt;
+            if (q.remainingFraction < claudeGptWeeklyRemaining) claudeGptWeeklyRemaining = q.remainingFraction;
+            if (resetAt && (!claudeGptWeeklyResetAt || resetAt > claudeGptWeeklyResetAt)) claudeGptWeeklyResetAt = resetAt;
           } else {
-            if (q.remainingFraction < claudeRollingRemaining) claudeRollingRemaining = q.remainingFraction;
-            if (resetAt && (!claudeRollingResetAt || resetAt < claudeRollingResetAt)) claudeRollingResetAt = resetAt;
+            if (q.remainingFraction < claudeGptRollingRemaining) claudeGptRollingRemaining = q.remainingFraction;
+            if (resetAt && (!claudeGptRollingResetAt || resetAt < claudeGptRollingResetAt)) claudeGptRollingResetAt = resetAt;
           }
-        } else if (!modelId.includes("gpt-oss") && !modelId.startsWith("tab_") && !modelId.startsWith("chat_")) {
-          // Gemini models
+        } else if (!modelId.startsWith("tab_") && !modelId.startsWith("chat_")) {
+          // Gemini models pool
           if (isWeekly) {
             if (q.remainingFraction < geminiWeeklyRemaining) geminiWeeklyRemaining = q.remainingFraction;
             if (resetAt && (!geminiWeeklyResetAt || resetAt > geminiWeeklyResetAt)) geminiWeeklyResetAt = resetAt;
@@ -195,53 +196,54 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
       });
     };
 
-    // 1. Gemini 5-Hour / Rolling Quota
+    // 1. Gemini 5-Hour Limit
     addLimit(
       "gemini_5h",
-      "Gemini — 5 Saatlik Kayan Kota",
+      "Gemini: 5-Hour Limit",
       geminiRollingRemaining,
       "5h",
       FIVE_HOUR_MS,
       geminiRollingResetAt,
     );
 
-    // 2. Gemini Weekly Quota
-    // If weekly reset not directly in JSON, calculate weekly horizon from current reset or weekly cycle
+    // 2. Gemini Weekly Limit
     const weeklyResetTime = geminiWeeklyResetAt || (geminiRollingResetAt ? geminiRollingResetAt + 6 * 24 * 3600 * 1000 : now + WEEK_MS);
     addLimit(
       "gemini_weekly",
-      "Gemini — Haftalık Kota",
+      "Gemini: Weekly Limit",
       geminiWeeklyRemaining < 1 ? geminiWeeklyRemaining : Math.max(0.7, geminiRollingRemaining),
       "weekly",
       WEEK_MS,
       weeklyResetTime,
     );
 
-    // 3. Claude (Antigravity) Rolling Quota
+    // 3. Claude & GPT 5-Hour Limit
     addLimit(
-      "claude_rolling",
-      "Claude — Kayan Kota",
-      claudeRollingRemaining,
+      "claude_gpt_5h",
+      "Claude & GPT: 5-Hour Limit",
+      claudeGptRollingRemaining,
       "5h",
       FIVE_HOUR_MS,
-      claudeRollingResetAt,
+      claudeGptRollingResetAt,
     );
 
-    // 4. Claude (Antigravity) Weekly Quota
-    const claudeWeeklyReset = claudeWeeklyResetAt || (claudeRollingResetAt ? claudeRollingResetAt + 6 * 24 * 3600 * 1000 : now + WEEK_MS);
+    // 4. Claude & GPT Weekly Limit
+    const claudeGptWeeklyReset = claudeGptWeeklyResetAt || (claudeGptRollingResetAt ? claudeGptRollingResetAt + 6 * 24 * 3600 * 1000 : now + WEEK_MS);
     addLimit(
-      "claude_weekly",
-      "Claude — Haftalık Kota",
-      claudeWeeklyRemaining,
+      "claude_gpt_weekly",
+      "Claude & GPT: Weekly Limit",
+      claudeGptWeeklyRemaining,
       "weekly",
       WEEK_MS,
-      claudeWeeklyReset,
+      claudeGptWeeklyReset,
     );
 
+    const cleanLabel = credential.accountLabel.replace(/^Google \((.*)\)$/, "$1");
+
     return {
-      provider: "google-antigravity",
+      provider: "Antigravity",
       credentialId: credential.id,
-      accountLabel: credential.accountLabel,
+      accountLabel: cleanLabel,
       fetchedAt: now,
       limits,
     };

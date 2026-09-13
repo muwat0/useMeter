@@ -52,7 +52,7 @@ describe("GoogleAntigravityAdapter", () => {
     }) as unknown as typeof fetch;
 
     const report = await adapter.fetchUsage(mockCred, { fetch: mockFetch });
-    expect(report.provider).toBe("google-antigravity");
+    expect(report.provider).toBe("Antigravity");
     expect(report.limits.length).toBe(4);
 
     const gemini5h = report.limits.find(l => l.id === "gemini_5h");
@@ -62,12 +62,12 @@ describe("GoogleAntigravityAdapter", () => {
     const geminiWeekly = report.limits.find(l => l.id === "gemini_weekly");
     expect(geminiWeekly?.amount.remaining).toBeDefined();
 
-    const claude5h = report.limits.find(l => l.id === "claude_rolling");
-    expect(claude5h?.amount.remaining).toBe(40);
-    expect(claude5h?.amount.used).toBeCloseTo(60, 1);
+    const claudeGpt5h = report.limits.find(l => l.id === "claude_gpt_5h");
+    expect(claudeGpt5h?.amount.remaining).toBe(40);
+    expect(claudeGpt5h?.amount.used).toBeCloseTo(60, 1);
 
-    const claudeWeekly = report.limits.find(l => l.id === "claude_weekly");
-    expect(claudeWeekly?.amount.remaining).toBeDefined();
+    const claudeGptWeekly = report.limits.find(l => l.id === "claude_gpt_weekly");
+    expect(claudeGptWeekly?.amount.remaining).toBeDefined();
   });
 });
 

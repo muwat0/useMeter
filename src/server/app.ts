@@ -162,15 +162,15 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
       const { authUrl, verifier, state } = initiateGoogleAuth();
       const sessionId = state;
 
-      pendingOAuth.set(sessionId, { provider: "google-antigravity", status: "pending" });
+      pendingOAuth.set(sessionId, { provider: "antigravity", status: "pending" });
 
       listenForGoogleCallback(state)
         .then(async code => {
           const tokens = await exchangeGoogleCode(code, verifier);
-          const label = tokens.email ? `Google (${tokens.email})` : "Google Gemini";
+          const label = tokens.email || "Antigravity";
 
           const saved = vault.saveCredential({
-            provider: "google-antigravity",
+            provider: "antigravity",
             accountLabel: label,
             credentialType: "oauth",
             secret: tokens.accessToken,
@@ -181,10 +181,10 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
           });
 
           poller.pollCredential(saved).catch(() => {});
-          pendingOAuth.set(sessionId, { provider: "google-antigravity", status: "complete", accountLabel: label });
+          pendingOAuth.set(sessionId, { provider: "antigravity", status: "complete", accountLabel: label });
         })
         .catch(err => {
-          pendingOAuth.set(sessionId, { provider: "google-antigravity", status: "error", error: String(err) });
+          pendingOAuth.set(sessionId, { provider: "antigravity", status: "error", error: String(err) });
         });
 
       return c.json({ success: true, data: { authUrl, sessionId } });
@@ -246,8 +246,17 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
   return app;
 }
 
+function formatProviderTitle(provider: string): string {
+  const p = provider.toLowerCase();
+  if (p === "antigravity" || p === "google-antigravity") return "Antigravity";
+  if (p === "openai-codex" || p === "codex") return "OpenAI Codex";
+  if (p === "openrouter") return "OpenRouter";
+  if (p === "deepseek") return "DeepSeek";
+  if (p === "anthropic" || p === "claude") return "Anthropic Claude";
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
 function renderDashboardHtml(initialReports: UsageReport[] = []): string {
-  // Pre-calculate server-side summary
   let initialTotalBal = 0;
   let initialExhausted = 0;
 
@@ -260,7 +269,6 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
     }
   }
 
-  // Pre-render server-side cards
   const initialCardsHtml = initialReports.length === 0
     ? `<div class="col-span-full py-24 text-center text-appTextMuted text-sm">Henüz kayıtlı bir AI hesabı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.</div>`
     : initialReports.map(r => {
@@ -281,7 +289,7 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
             const badgeCls = rem > 0 
               ? "bg-appAccentSoft text-appAccent border border-appAccent/30" 
               : "bg-appMuted text-appTextMuted border border-appBorder";
-            valueHtml = `<span class="font-semibold text-xs ${badgeCls} px-2 py-0.5 rounded-md">🔄 ${rem} Hak</span>`;
+            valueHtml = `<span class="font-semibold text-xs ${badgeCls} px-2.5 py-0.5 rounded-md">${rem} Hak</span>`;
           }
 
           let countdownHtml = "";
@@ -310,13 +318,15 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
           `;
         }).join("");
 
+        const cleanLabel = (r.accountLabel || "Default").replace(/^Google \((.*)\)$/, "$1");
+
         return `
-          <div class="bg-appSurface border border-appBorder rounded-2xl p-5 space-y-4 transition-colors shadow-sm">
+          <div data-card-id="${r.credentialId || r.provider}" class="bg-appSurface border border-appBorder rounded-2xl p-5 space-y-4 transition-all shadow-sm">
             <div class="flex justify-between items-start">
               <div>
                 <div class="flex items-center gap-2.5">
-                  <h2 class="font-bold text-appText text-base tracking-tight capitalize">${r.provider}</h2>
-                  <span class="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-appMuted text-appTextMuted border border-appBorder">${r.accountLabel || "Default"}</span>
+                  <h2 class="font-bold text-appText text-base tracking-tight">${formatProviderTitle(r.provider)}</h2>
+                  <span class="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-appMuted text-appTextMuted border border-appBorder">${cleanLabel}</span>
                 </div>
                 <span class="text-xs text-appTextMuted block mt-1.5">Son Güncelleme: ${new Date(r.fetchedAt).toLocaleTimeString()}</span>
               </div>
@@ -386,42 +396,55 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       -webkit-font-smoothing: antialiased;
       font-variant-numeric: tabular-nums;
     }
+    .drag-over {
+      outline: 2px dashed var(--color-accent) !important;
+      outline-offset: 4px;
+    }
   </style>
 </head>
 <body class="min-h-screen flex flex-col transition-colors duration-200 text-sm">
-  <!-- Top Control Bar -->
+  <!-- Top Control Bar (Clean Engineering Wordmark, Zero Slop) -->
   <header class="border-b border-appBorder bg-appSurface/80 backdrop-blur-md px-6 py-4 sticky top-0 z-20 transition-colors">
     <div class="max-w-7xl mx-auto flex items-center justify-between">
-      <div class="flex items-center gap-3.5">
-        <div class="w-9 h-9 rounded-lg border border-appAccent/40 bg-appAccentSoft flex items-center justify-center text-appAccent">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-          </svg>
+      <!-- Minimalist Clean Logo -->
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2">
+          <span class="font-extrabold tracking-wider text-appText text-lg font-mono">USAGE</span>
+          <span class="w-2 h-2 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20" title="Live Telemetry"></span>
         </div>
-        <div>
-          <div class="flex items-center gap-2.5">
-            <h1 class="font-bold tracking-tight text-appText text-lg leading-none" data-i18n="title">AI Usage Tracker</h1>
-            <span class="inline-flex items-center gap-1.5 text-xs font-semibold tracking-wider text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-md">
-              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> live
-            </span>
-          </div>
-          <span class="text-xs text-appTextMuted tracking-tight mt-0.5 block" data-i18n="subtitle">Multi-Provider Quota & Balance Hub</span>
-        </div>
+        <div class="hidden md:block h-4 w-px bg-appBorder"></div>
+        <span class="hidden md:inline text-xs text-appTextMuted tracking-tight font-medium" data-i18n="subtitle">Multi-Provider Quota & Balance Hub</span>
+        <span class="sr-only" data-i18n="title">AI Usage Tracker</span>
       </div>
 
       <!-- Controls Right -->
-      <div class="flex items-center gap-3">
-        <!-- Theme Accent Palette Picker -->
-        <div class="hidden sm:flex items-center border border-appBorder rounded-lg p-1 bg-appMuted/60 gap-1">
-          <button onclick="changeTheme('amber')" title="Amber" class="w-5 h-5 rounded-full bg-[#ff9849] hover:scale-110 transition-transform" id="themeDot_amber"></button>
-          <button onclick="changeTheme('emerald')" title="Emerald" class="w-5 h-5 rounded-full bg-[#10b981] hover:scale-110 transition-transform" id="themeDot_emerald"></button>
-          <button onclick="changeTheme('cyan')" title="Cyan" class="w-5 h-5 rounded-full bg-[#06b6d4] hover:scale-110 transition-transform" id="themeDot_cyan"></button>
-          <button onclick="changeTheme('violet')" title="Violet" class="w-5 h-5 rounded-full bg-[#a855f7] hover:scale-110 transition-transform" id="themeDot_violet"></button>
-          <button onclick="changeTheme('slate')" title="Slate" class="w-5 h-5 rounded-full bg-[#38bdf8] hover:scale-110 transition-transform" id="themeDot_slate"></button>
-        </div>
+      <div class="flex items-center gap-2.5 sm:gap-3">
+        <!-- Edit Mode Button (Pen Icon) -->
+        <button onclick="toggleEditMode()" id="editModeBtn" title="Kart Sıralama / Düzenleme Modu" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 20h9"></path>
+            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+          </svg>
+        </button>
+
+        <!-- Sorting Dropdown -->
+        <select id="sortSelect" onchange="changeSort(this.value)" class="h-9 px-2.5 sm:px-3 rounded-lg border border-appBorder bg-appSurface text-appText text-xs font-semibold hover:border-appAccent transition outline-none cursor-pointer">
+          <option value="custom" data-i18n="sortCustom">Özel Sıralama</option>
+          <option value="date_added" data-i18n="sortDateAdded">Eklenme Tarihi</option>
+          <option value="highest_available" data-i18n="sortHighest">En Yüksek Kalan</option>
+          <option value="lowest_available" data-i18n="sortLowest">En Düşük Kalan</option>
+        </select>
+
+        <!-- Settings Modal Trigger (Gear Icon) -->
+        <button onclick="openSettingsModal()" id="settingsBtn" title="Ayarlar" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
 
         <!-- Dark / Light Mode Toggle Button -->
-        <button onclick="toggleLightDark()" id="lightDarkBtn" title="Koyu / Aydınlık Mod" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent/50 transition flex items-center justify-center text-sm">
+        <button onclick="toggleLightDark()" id="lightDarkBtn" title="Koyu / Aydınlık Mod" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
           <span id="lightDarkIcon">☀️</span>
         </button>
 
@@ -448,7 +471,7 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
     </div>
   </header>
 
-  <!-- Summary Stats Strip (Server-Rendered on Load) -->
+  <!-- Summary Stats Strip -->
   <section class="border-b border-appBorder bg-appSurface/30 px-6 py-3.5">
     <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4 text-xs font-medium">
       <div class="flex items-center gap-6">
@@ -466,18 +489,61 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         </div>
       </div>
       <div class="text-xs text-appTextMuted flex items-center gap-2">
+        <span id="editModeNotice" class="hidden text-appAccent font-semibold animate-pulse" data-i18n="editModeActive">✏️ Düzenleme Modu Aktif (Sürükleyip Bırakın)</span>
         <span data-i18n="autoSync">Canlı Senkronizasyon:</span>
         <span class="text-appAccent font-semibold">10s</span>
       </div>
     </div>
   </section>
 
-  <!-- Main Container (Server-Rendered Cards on First Paint) -->
+  <!-- Main Container -->
   <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
     <div id="cardsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
       ${initialCardsHtml}
     </div>
   </main>
+
+  <!-- Settings Modal (Theme Accent Picker & Preferences) -->
+  <div id="settingsModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
+    <div class="bg-appSurface border border-appBorder rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl transition-colors">
+      <div class="flex justify-between items-center pb-3 border-b border-appBorder">
+        <h3 class="font-bold text-appText text-base" data-i18n="settingsTitle">Ayarlar</h3>
+        <button onclick="closeSettingsModal()" class="text-appTextMuted hover:text-appText text-lg p-1">✕</button>
+      </div>
+
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-appTextMuted mb-2.5" data-i18n="themeAccent">Vurgu Rengi</label>
+          <div class="grid grid-cols-5 gap-2.5">
+            <button onclick="changeTheme('amber')" class="flex flex-col items-center gap-1.5 p-2 rounded-xl border border-appBorder bg-appMuted/50 hover:border-appAccent transition" id="themeOpt_amber">
+              <span class="w-6 h-6 rounded-full bg-[#ff9849]"></span>
+              <span class="text-[11px] font-medium text-appText">Amber</span>
+            </button>
+            <button onclick="changeTheme('emerald')" class="flex flex-col items-center gap-1.5 p-2 rounded-xl border border-appBorder bg-appMuted/50 hover:border-appAccent transition" id="themeOpt_emerald">
+              <span class="w-6 h-6 rounded-full bg-[#10b981]"></span>
+              <span class="text-[11px] font-medium text-appText">Emerald</span>
+            </button>
+            <button onclick="changeTheme('cyan')" class="flex flex-col items-center gap-1.5 p-2 rounded-xl border border-appBorder bg-appMuted/50 hover:border-appAccent transition" id="themeOpt_cyan">
+              <span class="w-6 h-6 rounded-full bg-[#06b6d4]"></span>
+              <span class="text-[11px] font-medium text-appText">Cyan</span>
+            </button>
+            <button onclick="changeTheme('violet')" class="flex flex-col items-center gap-1.5 p-2 rounded-xl border border-appBorder bg-appMuted/50 hover:border-appAccent transition" id="themeOpt_violet">
+              <span class="w-6 h-6 rounded-full bg-[#a855f7]"></span>
+              <span class="text-[11px] font-medium text-appText">Violet</span>
+            </button>
+            <button onclick="changeTheme('slate')" class="flex flex-col items-center gap-1.5 p-2 rounded-xl border border-appBorder bg-appMuted/50 hover:border-appAccent transition" id="themeOpt_slate">
+              <span class="w-6 h-6 rounded-full bg-[#38bdf8]"></span>
+              <span class="text-[11px] font-medium text-appText">Slate</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex justify-end pt-3 border-t border-appBorder">
+        <button onclick="closeSettingsModal()" class="px-4 py-2 rounded-lg text-xs font-semibold bg-appAccent hover:bg-appAccentHover text-zinc-950 transition" data-i18n="close">Kapat</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Add Credential / OAuth Modal -->
   <div id="modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
@@ -505,13 +571,13 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         <p class="text-xs text-appTextMuted leading-relaxed" data-i18n="oauthDesc">Resmi sağlayıcı girişine yönlendirilirsiniz. Token'lar yerel veritabanında AES-256-GCM ile şifrelenir.</p>
 
         <div class="space-y-2.5">
-          <!-- Google Card -->
+          <!-- Antigravity Button -->
           <button onclick="startGoogleOAuth()" class="w-full flex items-center justify-between p-4 rounded-xl border border-appBorder bg-appMuted/40 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
             <div class="flex items-center gap-3.5">
               <div class="w-9 h-9 rounded-lg bg-white/10 flex items-center justify-center text-base font-bold text-blue-400">G</div>
               <div>
-                <div class="text-sm font-semibold text-appText group-hover:text-appAccent transition" data-i18n="googleTitle">Google Gemini / Cloud Code</div>
-                <div class="text-xs text-appTextMuted mt-0.5" data-i18n="googleDesc">Gemini 3 Flash, 2.5 Pro model kotaları</div>
+                <div class="text-sm font-semibold text-appText group-hover:text-appAccent transition" data-i18n="googleTitle">Antigravity (Google AI Pro)</div>
+                <div class="text-xs text-appTextMuted mt-0.5" data-i18n="googleDesc">Gemini ve Claude & GPT model havuzu kotaları</div>
               </div>
             </div>
             <span class="text-xs font-semibold text-appAccent" data-i18n="loginBtn">Oturum Aç →</span>
@@ -593,10 +659,6 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
 
   <!-- Client Script -->
   <script>
-    window.onerror = function(msg, url, line, col) {
-      console.error('Client Error:', msg, line, col);
-      alert('Arayüz Hatası: ' + msg + ' (Satır: ' + line + ')');
-    };
     const THEME_ACCENTS = {
       amber: { accent: '#ff9849', accentHover: '#ea7c2b', accentSoft: 'rgba(255, 152, 73, 0.12)' },
       emerald: { accent: '#10b981', accentHover: '#059669', accentSoft: 'rgba(16, 185, 129, 0.12)' },
@@ -616,18 +678,19 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         summaryBalance: "Toplam Ön Ödemeli Bakiye:",
         summaryExhausted: "Kilitli/Biten Kota:",
         autoSync: "Canlı Senkronizasyon:",
+        editModeActive: "✏️ Düzenleme Modu Aktif (Sürükleyip Bırakın)",
         noAccounts: "Henüz kayıtlı bir AI hesabı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.",
         lastUpdate: "Son Güncelleme",
         deleteConfirm: "Bu hesabı kaldırmak istediğinizden emin misiniz?",
         resetsIn: "Sıfırlanma",
-        rights: "Hak",
+        rightsAvailable: "Hak Mevcut",
         modalTitle: "AI Hesabı Bağla",
         modalSubtitle: "OAuth veya doğrudan API anahtarıyla kota takibi kurun.",
         tabOAuth: "OAuth ile Oturum Aç",
         tabManual: "Manuel API Key",
         oauthDesc: "Resmi sağlayıcı girişine yönlendirilirsiniz. Token'lar yerel veritabanında AES-256-GCM ile şifrelenir.",
-        googleTitle: "Google Gemini / Cloud Code",
-        googleDesc: "Gemini 3 Flash, 2.5 Pro model kotaları",
+        googleTitle: "Antigravity (Google AI Pro)",
+        googleDesc: "Gemini ve Claude & GPT model havuzu kotaları",
         codexTitle: "OpenAI ChatGPT / Codex",
         codexDesc: "Plus / Pro 5 saatlik ve haftalık kotalar",
         claudeTitle: "Anthropic Claude Pro/Max",
@@ -644,7 +707,14 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         oauthToken: "OAuth Access Token",
         secretLabel: "Secret / Token",
         cancel: "İptal",
-        saveAndPoll: "Kaydet ve Sorgula"
+        saveAndPoll: "Kaydet ve Sorgula",
+        settingsTitle: "Ayarlar",
+        themeAccent: "Vurgu Rengi",
+        close: "Kapat",
+        sortCustom: "Özel Sıralama",
+        sortDateAdded: "Eklenme Tarihi",
+        sortHighest: "En Yüksek Kalan",
+        sortLowest: "En Düşük Kalan"
       },
       en: {
         flag: "🇬🇧",
@@ -656,18 +726,19 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         summaryBalance: "Total Prepaid Balance:",
         summaryExhausted: "Exhausted Quotas:",
         autoSync: "Live Telemetry:",
+        editModeActive: "✏️ Edit Mode Active (Drag to Reorder)",
         noAccounts: "No AI accounts connected yet. Click <b>+ Connect Account</b> to add one.",
         lastUpdate: "Updated",
         deleteConfirm: "Are you sure you want to remove this account?",
         resetsIn: "Resets in",
-        rights: "Resets",
+        rightsAvailable: "Available",
         modalTitle: "Connect AI Account",
         modalSubtitle: "Track quotas and credits via OAuth or direct API key.",
         tabOAuth: "Login with OAuth",
         tabManual: "Manual API Key",
         oauthDesc: "Redirect to official authorization. Tokens are encrypted locally via AES-256-GCM.",
-        googleTitle: "Google Gemini / Cloud Code",
-        googleDesc: "Gemini 3 Flash, 2.5 Pro model quotas",
+        googleTitle: "Antigravity (Google AI Pro)",
+        googleDesc: "Gemini and Claude & GPT shared quota pools",
         codexTitle: "OpenAI ChatGPT / Codex",
         codexDesc: "Plus / Pro 5-hour rolling & weekly quotas",
         claudeTitle: "Anthropic Claude Pro/Max",
@@ -684,7 +755,14 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         oauthToken: "OAuth Access Token",
         secretLabel: "Secret / Token",
         cancel: "Cancel",
-        saveAndPoll: "Save & Poll"
+        saveAndPoll: "Save & Poll",
+        settingsTitle: "Settings",
+        themeAccent: "Accent Color",
+        close: "Close",
+        sortCustom: "Custom (Drag & Drop)",
+        sortDateAdded: "Date Added",
+        sortHighest: "Highest Available",
+        sortLowest: "Lowest Available"
       }
     };
 
@@ -698,6 +776,9 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
     let currentLang = detectInitialLang();
     let currentMode = localStorage.getItem('usage_mode') || 'dark';
     let currentAccent = localStorage.getItem('usage_accent') || 'amber';
+    let currentSort = localStorage.getItem('usage_sort') || 'custom';
+    let isEditMode = false;
+    let draggedCardId = null;
     let cachedReports = ${initialJson};
 
     function t(key) {
@@ -708,10 +789,10 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       const str = String(label || id || '');
       if (currentLang === 'tr') {
         const trMap = {
-          'gemini_5h': 'Gemini — 5 Saatlik Kayan Kota',
-          'gemini_weekly': 'Gemini — Haftalık Kota',
-          'claude_rolling': 'Claude — Kayan Kota',
-          'claude_weekly': 'Claude — Haftalık Kota',
+          'gemini_5h': 'Gemini: 5 Saatlik Limit',
+          'gemini_weekly': 'Gemini: Haftalık Limit',
+          'claude_gpt_5h': 'Claude & GPT: 5 Saatlik Limit',
+          'claude_gpt_weekly': 'Claude & GPT: Haftalık Limit',
           'primary_window': '5 Saatlik Kayan Kota',
           'secondary_window': 'Haftalık Kota',
           'reset_credits': 'Kota Sıfırlama Hakkı (Usage Reset)',
@@ -726,10 +807,10 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       }
 
       const enMap = {
-        'gemini_5h': 'Gemini — 5-Hour Rolling Quota',
-        'gemini_weekly': 'Gemini — Weekly Quota',
-        'claude_rolling': 'Claude — Rolling Quota',
-        'claude_weekly': 'Claude — Weekly Quota',
+        'gemini_5h': 'Gemini: 5-Hour Limit',
+        'gemini_weekly': 'Gemini: Weekly Limit',
+        'claude_gpt_5h': 'Claude & GPT: 5-Hour Limit',
+        'claude_gpt_weekly': 'Claude & GPT: Weekly Limit',
         'primary_window': '5-Hour Rolling Quota',
         'secondary_window': 'Weekly Quota',
         'reset_credits': 'Usage Reset Rights',
@@ -792,10 +873,9 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       root.style.setProperty('--color-accent-soft', pal.accentSoft);
 
       Object.keys(THEME_ACCENTS).forEach(k => {
-        const dot = document.getElementById('themeDot_' + k);
-        if (dot) {
-          dot.style.outline = k === accentKey ? '2px solid var(--color-text)' : 'none';
-          dot.style.outlineOffset = '2px';
+        const btn = document.getElementById('themeOpt_' + k);
+        if (btn) {
+          btn.style.borderColor = k === accentKey ? 'var(--color-accent)' : 'var(--color-border)';
         }
       });
     }
@@ -826,8 +906,34 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       applyI18n();
     }
 
+    // Modal controls
     function openModal() { document.getElementById('modal').classList.remove('hidden'); document.getElementById('modal').classList.add('flex'); }
     function closeModal() { document.getElementById('modal').classList.add('hidden'); document.getElementById('modal').classList.remove('flex'); document.getElementById('codexDevicePanel').classList.add('hidden'); }
+
+    function openSettingsModal() { document.getElementById('settingsModal').classList.remove('hidden'); document.getElementById('settingsModal').classList.add('flex'); }
+    function closeSettingsModal() { document.getElementById('settingsModal').classList.add('hidden'); document.getElementById('settingsModal').classList.remove('flex'); }
+
+    function toggleEditMode() {
+      isEditMode = !isEditMode;
+      const btn = document.getElementById('editModeBtn');
+      const notice = document.getElementById('editModeNotice');
+      if (btn) {
+        btn.classList.toggle('bg-appAccent', isEditMode);
+        btn.classList.toggle('text-zinc-950', isEditMode);
+        btn.classList.toggle('bg-appSurface', !isEditMode);
+        btn.classList.toggle('text-appTextMuted', !isEditMode);
+      }
+      if (notice) {
+        notice.classList.toggle('hidden', !isEditMode);
+      }
+      renderCards(cachedReports);
+    }
+
+    function changeSort(sortKey) {
+      currentSort = sortKey;
+      localStorage.setItem('usage_sort', sortKey);
+      renderCards(cachedReports);
+    }
 
     function switchTab(tab) {
       const isOAuth = tab === 'oauth';
@@ -893,6 +999,7 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       }
     }
 
+    // OAuth handlers
     async function startCodexOAuth() {
       try {
         const res = await fetch('/api/oauth/codex/initiate', { method: 'POST' });
@@ -1000,6 +1107,96 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       setTimeout(pollNow, 500);
     }
 
+    // Drag & Drop handlers
+    function handleDragStart(e, id) {
+      if (!isEditMode) return;
+      draggedCardId = id;
+      e.dataTransfer.effectAllowed = 'move';
+      e.currentTarget.classList.add('opacity-40');
+    }
+
+    function handleDragOver(e) {
+      if (!isEditMode) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      e.currentTarget.classList.add('drag-over');
+    }
+
+    function handleDragLeave(e) {
+      e.currentTarget.classList.remove('drag-over');
+    }
+
+    function handleDrop(e, targetId) {
+      e.preventDefault();
+      e.currentTarget.classList.remove('drag-over');
+      if (!isEditMode || !draggedCardId || draggedCardId === targetId) return;
+
+      const fromIdx = cachedReports.findIndex(r => (r.credentialId || r.provider) === draggedCardId);
+      const toIdx = cachedReports.findIndex(r => (r.credentialId || r.provider) === targetId);
+      if (fromIdx === -1 || toIdx === -1) return;
+
+      const [moved] = cachedReports.splice(fromIdx, 1);
+      cachedReports.splice(toIdx, 0, moved);
+
+      const customOrder = cachedReports.map(r => r.credentialId || r.provider);
+      localStorage.setItem('usage_custom_order', JSON.stringify(customOrder));
+
+      currentSort = 'custom';
+      localStorage.setItem('usage_sort', 'custom');
+      const sortSelect = document.getElementById('sortSelect');
+      if (sortSelect) sortSelect.value = 'custom';
+
+      renderCards(cachedReports);
+    }
+
+    function handleDragEnd(e) {
+      draggedCardId = null;
+      document.querySelectorAll('#cardsGrid > div').forEach(el => {
+        el.classList.remove('opacity-40', 'drag-over');
+      });
+    }
+
+    function getReportScore(report) {
+      let score = 0;
+      for (const l of report.limits || []) {
+        if (l.amount?.unit === 'usd' && typeof l.amount.remaining === 'number') {
+          return l.amount.remaining * 10; // weigh USD
+        }
+        if (l.amount?.unit === 'percent' && typeof l.amount.remaining === 'number') {
+          return l.amount.remaining;
+        }
+      }
+      return score;
+    }
+
+    function sortReports(reports, sortKey) {
+      const list = [...reports];
+      if (sortKey === 'custom') {
+        const saved = localStorage.getItem('usage_custom_order');
+        if (saved) {
+          try {
+            const order = JSON.parse(saved);
+            list.sort((a, b) => {
+              const idA = a.credentialId || a.provider;
+              const idB = b.credentialId || b.provider;
+              const idxA = order.indexOf(idA);
+              const idxB = order.indexOf(idB);
+              if (idxA === -1 && idxB === -1) return 0;
+              if (idxA === -1) return 1;
+              if (idxB === -1) return -1;
+              return idxA - idxB;
+            });
+            return list;
+          } catch {}
+        }
+      } else if (sortKey === 'highest_available') {
+        list.sort((a, b) => getReportScore(b) - getReportScore(a));
+      } else if (sortKey === 'lowest_available') {
+        list.sort((a, b) => getReportScore(a) - getReportScore(b));
+      }
+      return list;
+    }
+
     function renderCards(reports) {
       const container = document.getElementById('cardsGrid');
       if (!container) return;
@@ -1008,7 +1205,9 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         return;
       }
 
-      container.innerHTML = reports.map(r => {
+      const sortedList = sortReports(reports, currentSort);
+
+      container.innerHTML = sortedList.map(r => {
         const limitsHtml = (r.limits || []).map(l => {
           let valueHtml = '';
           let barHtml = '';
@@ -1026,7 +1225,8 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
             const badgeCls = rem > 0 
               ? 'bg-appAccentSoft text-appAccent border border-appAccent/30' 
               : 'bg-appMuted text-appTextMuted border border-appBorder';
-            valueHtml = '<span class="font-semibold text-xs ' + badgeCls + ' px-2 py-0.5 rounded-md">🔄 ' + rem + ' ' + t('rights') + '</span>';
+            const labelText = currentLang === 'tr' ? (rem + ' Hak Mevcut') : (rem + ' ' + t('rightsAvailable'));
+            valueHtml = '<span class="font-semibold text-xs ' + badgeCls + ' px-2.5 py-0.5 rounded-md">' + labelText + '</span>';
           }
 
           let countdownHtml = '';
@@ -1056,12 +1256,32 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
                  '</div>';
         }).join('');
 
-        return '<div class="bg-appSurface border border-appBorder rounded-2xl p-5 space-y-4 transition-colors shadow-sm">' +
+        const cardKey = r.credentialId || r.provider;
+        const dragAttrs = isEditMode
+          ? ' draggable="true" ondragstart="handleDragStart(event, \\'' + cardKey + '\\')" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event, \\'' + cardKey + '\\')" ondragend="handleDragEnd(event)"'
+          : '';
+
+        const editBorderClass = isEditMode
+          ? ' border-dashed border-appAccent/60 cursor-grab active:cursor-grabbing hover:border-appAccent'
+          : ' border-appBorder hover:border-zinc-700';
+
+        const dragHandleHtml = isEditMode
+          ? '<span class="text-appAccent font-mono text-sm cursor-grab" title="Sürükle">⋮⋮</span>'
+          : '';
+
+        const providerTitle = (r.provider.toLowerCase() === 'antigravity' || r.provider.toLowerCase() === 'google-antigravity')
+          ? 'Antigravity'
+          : (r.provider.toLowerCase() === 'openai-codex' ? 'OpenAI Codex' : (r.provider.charAt(0).toUpperCase() + r.provider.slice(1)));
+
+        const cleanLabel = (r.accountLabel || 'Default').replace(/^Google \((.*)\)$/, '$1');
+
+        return '<div data-card-id="' + cardKey + '" class="bg-appSurface border ' + editBorderClass + ' rounded-2xl p-5 space-y-4 transition-all shadow-sm"' + dragAttrs + '>' +
                '  <div class="flex justify-between items-start">' +
                '    <div>' +
                '      <div class="flex items-center gap-2.5">' +
-               '        <h2 class="font-bold text-appText text-base tracking-tight capitalize">' + r.provider + '</h2>' +
-               '        <span class="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-appMuted text-appTextMuted border border-appBorder">' + (r.accountLabel || 'Default') + '</span>' +
+               '        ' + dragHandleHtml +
+               '        <h2 class="font-bold text-appText text-base tracking-tight">' + providerTitle + '</h2>' +
+               '        <span class="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-appMuted text-appTextMuted border border-appBorder">' + cleanLabel + '</span>' +
                '      </div>' +
                '      <span class="text-xs text-appTextMuted block mt-1.5">' + t('lastUpdate') + ': ' + new Date(r.fetchedAt).toLocaleTimeString() + '</span>' +
                '    </div>' +
@@ -1082,6 +1302,8 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
     applyLightDarkMode(currentMode);
     applyAccent(currentAccent);
     applyI18n();
+    const sortSelect = document.getElementById('sortSelect');
+    if (sortSelect) sortSelect.value = currentSort;
     setInterval(loadUsage, 10000);
   </script>
 </body>
