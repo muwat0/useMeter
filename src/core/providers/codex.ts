@@ -18,6 +18,19 @@ interface CodexUsageResponse {
   } | null;
 }
 
+interface CodexResetCreditItem {
+  id?: string;
+  status?: string;
+  expires_at?: string;
+  title?: string;
+  description?: string;
+}
+
+interface CodexResetCreditsResponse {
+  credits?: CodexResetCreditItem[];
+  available_count?: number;
+}
+
 export class CodexAdapter implements ProviderAdapter {
   readonly id = "openai-codex";
 
@@ -126,6 +139,38 @@ export class CodexAdapter implements ProviderAdapter {
       });
     }
 
+    // 3. Rate limit reset credits
+    try {
+      const resetRes = await fetchImpl("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", {
+        headers,
+        signal: ctx?.signal,
+      });
+
+      if (resetRes.ok) {
+        const resetData = (await resetRes.json()) as CodexResetCreditsResponse;
+        const count = typeof resetData.available_count === "number" ? resetData.available_count : 0;
+        const availableCredits = (resetData.credits ?? []).filter(c => c.status === "available");
+        const credit = availableCredits[0];
+
+        const notes: string[] = [];
+        if (credit?.title) notes.push(credit.title);
+        if (credit?.expires_at) {
+          const expDate = new Date(credit.expires_at);
+          notes.push(`Son Geçerlilik: ${expDate.toLocaleDateString("tr-TR")}`);
+        }
+
+        limits.push({
+          id: "reset_credits",
+          label: "Kota Sıfırlama Hakkı (Usage Reset)",
+          amount: {
+            remaining: count,
+            unit: "credits",
+          },
+          status: count > 0 ? "ok" : "exhausted",
+          notes: notes.length > 0 ? notes : [`${count} adet kullanılabilir reset hakkı`],
+        });
+      }
+    } catch {}
     return {
       provider: "openai-codex",
       credentialId: credential.id,

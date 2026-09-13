@@ -589,6 +589,10 @@ function renderDashboardHtml(): string {
           } else if (l.amount.unit === 'usd') {
             const rem = l.amount.remaining ?? 0;
             valueHtml = '<span class="font-bold text-sm text-emerald-400">$' + rem.toFixed(2) + '</span>';
+          } else if (l.amount.unit === 'credits') {
+            const rem = l.amount.remaining ?? 0;
+            const badgeBg = rem > 0 ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' : 'bg-zinc-800 text-zinc-500 border border-zinc-700';
+            valueHtml = '<span class="font-bold text-xs ' + badgeBg + ' px-2 py-0.5 rounded-md">🔄 ' + rem + ' Hak</span>';
           }
 
           let countdownHtml = '';

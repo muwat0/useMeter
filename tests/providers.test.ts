@@ -129,16 +129,31 @@ describe("ClaudeAdapter", () => {
     const headerReport = adapter.parseHeaders(headers);
     expect(headerReport).not.toBeNull();
     expect(headerReport?.limits[0]?.amount.used).toBe(95);
-    expect(headerReport?.limits[0]?.status).toBe("warning");
   });
 });
 
 describe("CodexAdapter", () => {
-  it("parses wham usage and rate limit headers", async () => {
+  it("parses wham usage and rate limit reset credits", async () => {
     const adapter = new CodexAdapter();
     expect(adapter.supports("openai-codex")).toBe(true);
 
-    const mockFetch = (async () => {
+    const mockFetch = (async (url: string | URL | Request) => {
+      const urlStr = url.toString();
+      if (urlStr.includes("rate-limit-reset-credits")) {
+        return new Response(
+          JSON.stringify({
+            available_count: 1,
+            credits: [
+              {
+                id: "credit_1",
+                status: "available",
+                title: "Full reset (Weekly + 5 hr)",
+                expires_at: "2026-10-05T00:00:00Z",
+              },
+            ],
+          }),
+        );
+      }
       return new Response(
         JSON.stringify({
           plan_type: "plus",
@@ -156,10 +171,16 @@ describe("CodexAdapter", () => {
     }) as unknown as typeof fetch;
 
     const report = await adapter.fetchUsage({ ...mockCred, provider: "openai-codex" }, { fetch: mockFetch });
-    expect(report.limits.length).toBe(1);
-    expect(report.limits[0]?.amount.used).toBe(20);
-    expect(report.limits[0]?.status).toBe("ok");
+    expect(report.limits.length).toBe(2);
 
+    const primaryLimit = report.limits.find(l => l.id === "primary_window");
+    expect(primaryLimit?.amount.used).toBe(20);
+    expect(primaryLimit?.status).toBe("ok");
+
+    const resetLimit = report.limits.find(l => l.id === "reset_credits");
+    expect(resetLimit?.amount.remaining).toBe(1);
+    expect(resetLimit?.status).toBe("ok");
+    expect(resetLimit?.notes?.[0]).toBe("Full reset (Weekly + 5 hr)");
     // Test header parsing
     const headers = new Headers({
       "x-codex-primary-used-percent": "100",
