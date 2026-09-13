@@ -1,9 +1,9 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import type { StorageVault } from "../core/storage/vault";
 import type { PollerEngine } from "../core/poller/poller";
 import type { ProviderRegistry } from "../core/providers/registry";
-import type { InputCredential } from "../types";
+import type { InputCredential, UsageReport } from "../types";
 import {
   initiateCodexDeviceAuth,
   pollCodexDeviceAuth,
@@ -42,11 +42,13 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
     });
   });
 
-  // API: Get latest usage
-  app.get("/api/usage", c => {
+  // API: Get latest usage & data
+  const handleUsage = (c: Context) => {
     const latest = vault.getLatestUsage();
     return c.json({ success: true, data: latest });
-  });
+  };
+  app.get("/api/usage", handleUsage);
+  app.get("/api/data", handleUsage);
 
   // API: Trigger poll now
   app.post("/api/poll", async c => {
@@ -235,15 +237,98 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
     return c.json(session);
   });
 
-  // UI: Dashboard
+  // UI: Dashboard (Server-Side Rendered on First Paint)
   app.get("/", c => {
-    return c.html(renderDashboardHtml());
+    const latest = vault.getLatestUsage();
+    return c.html(renderDashboardHtml(latest));
   });
 
   return app;
 }
 
-function renderDashboardHtml(): string {
+function renderDashboardHtml(initialReports: UsageReport[] = []): string {
+  // Pre-calculate server-side summary
+  let initialTotalBal = 0;
+  let initialExhausted = 0;
+
+  for (const r of initialReports) {
+    for (const l of r.limits || []) {
+      if (l.amount && l.amount.unit === "usd" && typeof l.amount.remaining === "number") {
+        if (l.id.includes("balance") || l.id.includes("credits")) initialTotalBal += l.amount.remaining;
+      }
+      if (l.status === "exhausted") initialExhausted++;
+    }
+  }
+
+  // Pre-render server-side cards
+  const initialCardsHtml = initialReports.length === 0
+    ? `<div class="col-span-full py-24 text-center text-appTextMuted text-sm">Henüz kayıtlı bir AI hesabı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.</div>`
+    : initialReports.map(r => {
+        const limitsHtml = (r.limits || []).map(l => {
+          let valueHtml = "";
+          let barHtml = "";
+
+          if (l.amount.unit === "percent") {
+            const used = l.amount.used || 0;
+            const barColor = used >= 90 ? "bg-rose-500" : used >= 75 ? "bg-amber-500" : "bg-emerald-500";
+            valueHtml = `<span class="font-bold text-sm text-appText">${used.toFixed(1)}%</span>`;
+            barHtml = `<div class="w-full bg-appBorder h-1.5 rounded-full overflow-hidden mt-2"><div class="${barColor} h-full transition-all duration-300" style="width: ${Math.min(100, used)}%"></div></div>`;
+          } else if (l.amount.unit === "usd") {
+            const rem = l.amount.remaining ?? 0;
+            valueHtml = `<span class="font-bold text-sm text-emerald-500">$${rem.toFixed(2)}</span>`;
+          } else if (l.amount.unit === "credits") {
+            const rem = l.amount.remaining ?? 0;
+            const badgeCls = rem > 0 
+              ? "bg-appAccentSoft text-appAccent border border-appAccent/30" 
+              : "bg-appMuted text-appTextMuted border border-appBorder";
+            valueHtml = `<span class="font-semibold text-xs ${badgeCls} px-2 py-0.5 rounded-md">🔄 ${rem} Hak</span>`;
+          }
+
+          let countdownHtml = "";
+          if (l.window && l.window.resetsAt) {
+            const diffMin = Math.max(0, Math.round((l.window.resetsAt - Date.now()) / 60000));
+            const hours = Math.floor(diffMin / 60);
+            const mins = diffMin % 60;
+            const timeLabel = hours > 0 ? `${hours}sa ${mins}dk` : `${mins}dk`;
+            countdownHtml = `<span class="text-xs text-appTextMuted flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-appTextMuted/70"></span>Sıfırlanma: ${timeLabel}</span>`;
+          }
+
+          const notesHtml = (l.notes || []).map(n => `<span class="text-xs text-appTextMuted block mt-0.5">${n}</span>`).join("");
+
+          return `
+            <div class="bg-appMuted/40 border border-appBorder rounded-xl p-3.5 space-y-1.5">
+              <div class="flex justify-between items-center">
+                <span class="text-sm font-semibold text-appText tracking-tight">${l.label}</span>
+                ${valueHtml}
+              </div>
+              ${barHtml}
+              <div class="flex justify-between items-center pt-1">
+                ${countdownHtml}
+              </div>
+              ${notesHtml}
+            </div>
+          `;
+        }).join("");
+
+        return `
+          <div class="bg-appSurface border border-appBorder rounded-2xl p-5 space-y-4 transition-colors shadow-sm">
+            <div class="flex justify-between items-start">
+              <div>
+                <div class="flex items-center gap-2.5">
+                  <h2 class="font-bold text-appText text-base tracking-tight capitalize">${r.provider}</h2>
+                  <span class="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-appMuted text-appTextMuted border border-appBorder">${r.accountLabel || "Default"}</span>
+                </div>
+                <span class="text-xs text-appTextMuted block mt-1.5">Son Güncelleme: ${new Date(r.fetchedAt).toLocaleTimeString()}</span>
+              </div>
+              <button data-id="${r.credentialId || ""}" onclick="deleteAccount(this.dataset.id)" title="Hesabı Kaldır" class="text-appTextMuted hover:text-rose-500 text-sm p-1.5 rounded-lg hover:bg-appMuted transition">✕</button>
+            </div>
+            <div class="space-y-2.5">${limitsHtml}</div>
+          </div>
+        `;
+      }).join("");
+
+  const initialJson = JSON.stringify(initialReports).replace(/</g, "\\u003c");
+
   return `<!DOCTYPE html>
 <html lang="tr" class="dark">
 <head>
@@ -355,7 +440,7 @@ function renderDashboardHtml(): string {
         </button>
 
         <!-- Connect Account Button -->
-        <button onclick="openModal()" class="h-9 px-4 rounded-lg text-xs font-semibold bg-appAccent hover:bg-appAccentHover text-zinc-950 transition flex items-center gap-1.5 shadow-sm" data-i18n="addAccount">
+        <button onclick="openModal()" class="h-9 px-4 rounded-lg text-xs font-semibold bg-appAccent hover:bg-appAccentHover text-zinc-950 transition flex items-center gap-1.5 shadow-sm">
           <span>+</span>
           <span data-i18n="addAccountText">Hesap Bağla</span>
         </button>
@@ -363,21 +448,21 @@ function renderDashboardHtml(): string {
     </div>
   </header>
 
-  <!-- Summary Stats Strip -->
+  <!-- Summary Stats Strip (Server-Rendered on Load) -->
   <section class="border-b border-appBorder bg-appSurface/30 px-6 py-3.5">
     <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4 text-xs font-medium">
       <div class="flex items-center gap-6">
         <div class="flex items-center gap-2">
           <span class="text-appTextMuted" data-i18n="summaryActive">Aktif Hesaplar:</span>
-          <span id="statActiveCount" class="font-bold text-appText text-sm">0</span>
+          <span id="statActiveCount" class="font-bold text-appText text-sm">${initialReports.length}</span>
         </div>
         <div class="flex items-center gap-2 border-l border-appBorder pl-6">
           <span class="text-appTextMuted" data-i18n="summaryBalance">Toplam Ön Ödemeli Bakiye:</span>
-          <span id="statTotalBalance" class="font-bold text-emerald-500 text-sm">$0.00</span>
+          <span id="statTotalBalance" class="font-bold text-emerald-500 text-sm">$${initialTotalBal.toFixed(2)}</span>
         </div>
         <div class="flex items-center gap-2 border-l border-appBorder pl-6">
           <span class="text-appTextMuted" data-i18n="summaryExhausted">Kilitli/Biten Kota:</span>
-          <span id="statExhaustedCount" class="font-bold text-appText text-sm">0</span>
+          <span id="statExhaustedCount" class="font-bold text-appText text-sm">${initialExhausted}</span>
         </div>
       </div>
       <div class="text-xs text-appTextMuted flex items-center gap-2">
@@ -387,12 +472,10 @@ function renderDashboardHtml(): string {
     </div>
   </section>
 
-  <!-- Main Container -->
+  <!-- Main Container (Server-Rendered Cards on First Paint) -->
   <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
     <div id="cardsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-      <div class="col-span-full py-24 text-center text-appTextMuted text-sm" data-i18n="loading">
-        Kullanım verileri yükleniyor...
-      </div>
+      ${initialCardsHtml}
     </div>
   </main>
 
@@ -510,14 +593,6 @@ function renderDashboardHtml(): string {
 
   <!-- Client Script -->
   <script>
-    window.onerror = function(msg, url, line) {
-      console.error('JS Error:', msg, line);
-      const grid = document.getElementById('cardsGrid');
-      if (grid) {
-        grid.innerHTML = '<div class="col-span-full p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-mono">JS Error: ' + msg + ' (Line: ' + line + ')</div>';
-      }
-    };
-
     const THEME_ACCENTS = {
       amber: { accent: '#ff9849', accentHover: '#ea7c2b', accentSoft: 'rgba(255, 152, 73, 0.12)' },
       emerald: { accent: '#10b981', accentHover: '#059669', accentSoft: 'rgba(16, 185, 129, 0.12)' },
@@ -525,19 +600,18 @@ function renderDashboardHtml(): string {
       violet: { accent: '#a855f7', accentHover: '#9333ea', accentSoft: 'rgba(168, 85, 247, 0.12)' },
       slate: { accent: '#38bdf8', accentHover: '#0284c7', accentSoft: 'rgba(56, 189, 248, 0.12)' }
     };
+
     const I18N = {
       tr: {
         flag: "🇹🇷",
         title: "AI Usage Tracker",
         subtitle: "Multi-Provider Quota & Balance Hub",
         refresh: "Yenile",
-        addAccount: "+ Hesap Bağla",
         addAccountText: "Hesap Bağla",
         summaryActive: "Aktif Hesaplar:",
         summaryBalance: "Toplam Ön Ödemeli Bakiye:",
         summaryExhausted: "Kilitli/Biten Kota:",
         autoSync: "Canlı Senkronizasyon:",
-        loading: "Kullanım verileri yükleniyor...",
         noAccounts: "Henüz kayıtlı bir AI hesabı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.",
         lastUpdate: "Son Güncelleme",
         deleteConfirm: "Bu hesabı kaldırmak istediğinizden emin misiniz?",
@@ -573,13 +647,11 @@ function renderDashboardHtml(): string {
         title: "AI Usage Tracker",
         subtitle: "Multi-Provider Quota & Balance Hub",
         refresh: "Refresh",
-        addAccount: "+ Connect Account",
         addAccountText: "Connect Account",
         summaryActive: "Active Accounts:",
         summaryBalance: "Total Prepaid Balance:",
         summaryExhausted: "Exhausted Quotas:",
         autoSync: "Live Telemetry:",
-        loading: "Loading usage metrics...",
         noAccounts: "No AI accounts connected yet. Click <b>+ Connect Account</b> to add one.",
         lastUpdate: "Updated",
         deleteConfirm: "Are you sure you want to remove this account?",
@@ -622,7 +694,7 @@ function renderDashboardHtml(): string {
     let currentLang = detectInitialLang();
     let currentMode = localStorage.getItem('usage_mode') || 'dark';
     let currentAccent = localStorage.getItem('usage_accent') || 'amber';
-    let cachedReports = [];
+    let cachedReports = ${initialJson};
 
     function t(key) {
       return (I18N[currentLang] && I18N[currentLang][key]) || (I18N['tr'][key]) || key;
@@ -698,7 +770,8 @@ function renderDashboardHtml(): string {
       const isDark = mode === 'dark';
       document.documentElement.classList.toggle('dark', isDark);
       document.documentElement.classList.toggle('light', !isDark);
-      document.getElementById('lightDarkIcon').innerText = isDark ? '☀️' : '🌙';
+      const icon = document.getElementById('lightDarkIcon');
+      if (icon) icon.innerText = isDark ? '☀️' : '🌙';
     }
 
     function toggleLightDark() {
@@ -767,19 +840,16 @@ function renderDashboardHtml(): string {
     }
 
     async function loadUsage() {
-      const grid = document.getElementById('cardsGrid');
       try {
-        const res = await fetch('/api/usage');
-        if (!res.ok) {
-          if (grid) grid.innerHTML = '<div class="col-span-full text-center text-red-500 py-12 text-sm">HTTP Error: ' + res.status + '</div>';
-          return;
+        const res = await fetch('/api/data');
+        if (res.ok) {
+          const json = await res.json();
+          cachedReports = json.data || [];
+          updateSummary(cachedReports);
+          renderCards(cachedReports);
         }
-        const json = await res.json();
-        cachedReports = json.data || [];
-        updateSummary(cachedReports);
-        renderCards(cachedReports);
       } catch (err) {
-        if (grid) grid.innerHTML = '<div class="col-span-full text-center text-red-500 py-12 text-sm">Telemetry load error: ' + String(err) + '</div>';
+        console.warn('Silent live sync failure:', err);
       }
     }
 
@@ -810,12 +880,12 @@ function renderDashboardHtml(): string {
 
     async function pollNow() {
       const spinner = document.getElementById('pollSpinner');
-      spinner.classList.remove('hidden');
+      if (spinner) spinner.classList.remove('hidden');
       try {
         await fetch('/api/poll', { method: 'POST' });
         await loadUsage();
       } finally {
-        spinner.classList.add('hidden');
+        if (spinner) spinner.classList.add('hidden');
       }
     }
 
@@ -928,6 +998,7 @@ function renderDashboardHtml(): string {
 
     function renderCards(reports) {
       const container = document.getElementById('cardsGrid');
+      if (!container) return;
       if (!reports.length) {
         container.innerHTML = '<div class="col-span-full py-24 text-center text-appTextMuted text-sm">' + t('noAccounts') + '</div>';
         return;
@@ -1007,7 +1078,6 @@ function renderDashboardHtml(): string {
     applyLightDarkMode(currentMode);
     applyAccent(currentAccent);
     applyI18n();
-    loadUsage();
     setInterval(loadUsage, 10000);
   </script>
 </body>
