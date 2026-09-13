@@ -180,6 +180,12 @@ export class StorageVault {
       };
     });
   }
+  deleteCredential(id: string): boolean {
+    if (this.#closed) return false;
+    const stmt = this.#db.prepare(`DELETE FROM credentials WHERE id = ?`);
+    const result = stmt.run(id);
+    return result.changes > 0;
+  }
   saveUsageSnapshot(report: UsageReport): void {
     if (this.#closed || !report.credentialId) return;
     const stmt = this.#db.prepare(`
