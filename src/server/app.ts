@@ -593,6 +593,10 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
 
   <!-- Client Script -->
   <script>
+    window.onerror = function(msg, url, line, col) {
+      console.error('Client Error:', msg, line, col);
+      alert('Arayüz Hatası: ' + msg + ' (Satır: ' + line + ')');
+    };
     const THEME_ACCENTS = {
       amber: { accent: '#ff9849', accentHover: '#ea7c2b', accentSoft: 'rgba(255, 152, 73, 0.12)' },
       emerald: { accent: '#10b981', accentHover: '#059669', accentSoft: 'rgba(16, 185, 129, 0.12)' },
@@ -739,29 +743,29 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       if (enMap[id]) return enMap[id];
 
       return str
-        .replace(/5 Saatlik Kayan Kota/g, '5-Hour Rolling Quota')
-        .replace(/Haftalık \/ Uzun Dönem Kotası/g, 'Weekly Quota')
-        .replace(/Haftalık Kota/g, 'Weekly Quota')
-        .replace(/Kayan Kota/g, 'Rolling Quota')
-        .replace(/Kota Sıfırlama Hakkı \(Usage Reset\)/g, 'Usage Reset Rights')
-        .replace(/Hesap Net Bakiyesi/g, 'Account Net Balance')
-        .replace(/Kullanılabilir Bakiye/g, 'Available Balance')
-        .replace(/İstek Hız Sınırı/g, 'Rate Limit');
+        .replaceAll('5 Saatlik Kayan Kota', '5-Hour Rolling Quota')
+        .replaceAll('Haftalık / Uzun Dönem Kotası', 'Weekly Quota')
+        .replaceAll('Haftalık Kota', 'Weekly Quota')
+        .replaceAll('Kayan Kota', 'Rolling Quota')
+        .replaceAll('Kota Sıfırlama Hakkı (Usage Reset)', 'Usage Reset Rights')
+        .replaceAll('Hesap Net Bakiyesi', 'Account Net Balance')
+        .replaceAll('Kullanılabilir Bakiye', 'Available Balance')
+        .replaceAll('İstek Hız Sınırı', 'Rate Limit');
     }
 
     function translateNote(note) {
       const str = String(note || '');
       if (currentLang === 'tr') return str;
       return str
-        .replace(/Son Geçerlilik:\s*/g, 'Expires: ')
-        .replace(/Toplam Yüklenen:\s*/g, 'Total Loaded: ')
-        .replace(/Toplam Harcanan:\s*/g, 'Total Spent: ')
-        .replace(/Nakit Yüklenen:\s*/g, 'Topped Up: ')
-        .replace(/Hediye\/Promosyon:\s*/g, 'Granted/Promo: ')
-        .replace(/Hesap kullanım dışı/g, 'Account inactive')
-        .replace(/Hesap aktif/g, 'Account active')
-        .replace(/Aralık:\s*/g, 'Interval: ')
-        .replace(/adet kullanılabilir reset hakkı/g, 'available reset credit(s)');
+        .replaceAll('Son Geçerlilik:', 'Expires:')
+        .replaceAll('Toplam Yüklenen:', 'Total Loaded:')
+        .replaceAll('Toplam Harcanan:', 'Total Spent:')
+        .replaceAll('Nakit Yüklenen:', 'Topped Up:')
+        .replaceAll('Hediye/Promosyon:', 'Granted/Promo:')
+        .replaceAll('Hesap kullanım dışı', 'Account inactive')
+        .replaceAll('Hesap aktif', 'Account active')
+        .replaceAll('Aralık:', 'Interval:')
+        .replaceAll('adet kullanılabilir reset hakkı', 'available reset credit(s)');
     }
 
     function applyLightDarkMode(mode) {
