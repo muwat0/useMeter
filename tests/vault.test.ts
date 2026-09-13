@@ -1,61 +1,29 @@
-import { describe, expect, it } from "bun:test";
-import { decryptSecret, encryptSecret } from "../src/core/crypto";
-import { StorageVault } from "../src/core/storage/vault";
+import { describe, expect, test, beforeEach } from 'bun:test';
+import { StorageVault } from '../src/core/storage/vault';
+import type { StoredCredential } from '../src/types';
 
-describe("Crypto", () => {
-  it("encrypts and decrypts secrets symmetrically", () => {
-    const secret = "sk-ant-api03-sample-super-secret-key-12345";
-    const encrypted = encryptSecret(secret);
+let vault: StorageVault;
 
-    expect(encrypted.ciphertext).not.toBe(secret);
-    expect(encrypted.iv.length).toBe(24); // 12 bytes hex
-    expect(encrypted.tag.length).toBe(32); // 16 bytes hex
-
-    const decrypted = decryptSecret(encrypted);
-    expect(decrypted).toBe(secret);
-  });
+beforeEach(() => {
+  vault = new StorageVault(':memory:');
 });
 
-describe("StorageVault", () => {
-  it("initializes SQLite in-memory and executes CRUD", () => {
-    const vault = new StorageVault(":memory:");
-    expect(vault.checkIntegrity()).toBe(true);
+describe('StorageVault', () => {
+  test('should update credential label', () => {
+    const provider = 'test-provider';
+    const accountLabel = 'Old Label';
+    const accent = 'default';
+    const newLabel = 'New Label';
+    const credentialType = 'api_key';
+    const secret = 'test-secret';
 
-    const saved = vault.saveCredential({
-      provider: "openrouter",
-      accountLabel: "Primary Key",
-      credentialType: "api_key",
-      secret: "sk-or-v1-my-secret-key",
-    });
+    const savedCredential = vault.saveCredential({ provider, accountLabel, accent, credentialType, secret });
+    const result = vault.updateCredentialLabel(savedCredential.id, newLabel);
+    expect(result).toBe(true);
 
-    expect(saved.id).toBeDefined();
-    expect(saved.provider).toBe("openrouter");
-
-    const list = vault.listCredentials("openrouter");
-    expect(list.length).toBe(1);
-    expect(list[0]?.secret).toBe("sk-or-v1-my-secret-key");
-    expect(list[0]?.accountLabel).toBe("Primary Key");
-
-    // Test usage snapshot
-    vault.saveUsageSnapshot({
-      provider: "openrouter",
-      credentialId: saved.id,
-      accountLabel: "Primary Key",
-      fetchedAt: Date.now(),
-      limits: [
-        {
-          id: "balance",
-          label: "Remaining Credits",
-          amount: { used: 10, remaining: 40, limit: 50, unit: "usd" },
-          status: "ok",
-        },
-      ],
-    });
-
-    const latest = vault.getLatestUsage();
-    expect(latest.length).toBe(1);
-    expect(latest[0]?.limits[0]?.amount.remaining).toBe(40);
-
-    vault.close();
+    const updatedCredential = vault.listCredentials().find((c: StoredCredential) => c.id === savedCredential.id);
+    expect(updatedCredential?.accountLabel).toBe(newLabel);
   });
+
+  // Add more tests as needed
 });

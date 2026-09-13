@@ -38,10 +38,13 @@ export interface UsageReport {
   raw?: unknown;
 }
 
+export type CardAccent = "default" | "amber" | "emerald" | "cyan" | "violet" | "slate";
+
 export interface StoredCredential {
   id: string;
   provider: string;
   accountLabel: string;
+  accent?: CardAccent;
   credentialType: CredentialType;
   secret: string; // Plaintext when decrypted
   metadata?: Record<string, unknown>;
@@ -52,6 +55,7 @@ export interface StoredCredential {
 export interface InputCredential {
   provider: string;
   accountLabel: string;
+  accent?: CardAccent;
   credentialType: CredentialType;
   secret: string;
   metadata?: Record<string, unknown>;

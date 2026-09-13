@@ -41,10 +41,26 @@ export function syncCredentialsFromOmp(
 
     for (const r of rows) {
       try {
-        // Skip non-LLM MCP OAuth profiles
-        if (r.provider.startsWith("mcp_")) continue;
-
-        const d = JSON.parse(r.data) as Record<string, unknown>;
+        // Only import verified providers that support usage/quota/balance tracking
+        const supported = new Set([
+          "google-antigravity", "antigravity",
+          "openai-codex", "codex",
+          "cursor",
+          "github-copilot", "copilot",
+          "openrouter",
+          "deepseek",
+          "xai-oauth", "grok",
+          "anthropic", "claude",
+          "minimax-code", "minimax",
+          "cline-pass", "clinepass",
+          "devin",
+          "umans",
+          "google-gemini-cli", "gemini-cli",
+          // Kimi Code requires OAuth; OMP's `moonshot` API key is not eligible.
+          "kimi-code", "kimi",
+          // OpenCode Go credentials are only imported manually after subscription activation.
+          "alibaba-token-plan"
+        ]);
         const secret = String(d["access"] || d["key"] || d["token"] || d["apiKey"] || "");
         if (!secret) continue;
 

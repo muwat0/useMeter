@@ -21,13 +21,18 @@ import {
 } from "../core/oauth/claude";
 import { syncCredentialsFromOmp } from "../core/omp-sync";
 
+interface VaultStorageExtension {
+  updateCredential?(id: string, updates: { accountLabel?: string; accent?: string | null }): boolean;
+  updateCredentialAccent?(id: string, accent: string | null): boolean;
+  updateCredentialMetadata?(id: string, metadata: Record<string, unknown>): boolean;
+}
+
 interface PendingOAuthSession {
   provider: string;
   status: "pending" | "complete" | "error";
   error?: string;
   accountLabel?: string;
 }
-
 export function createServer(vault: StorageVault, poller: PollerEngine, _registry: ProviderRegistry): Hono {
   const app = new Hono();
   const pendingOAuth = new Map<string, PendingOAuthSession>();
@@ -43,10 +48,18 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
     });
   });
 
-  // API: Get latest usage & data
   const handleUsage = (c: Context) => {
     const latest = vault.getLatestUsage();
-    return c.json({ success: true, data: latest });
+    const credentials = new Map(vault.listCredentials().map(credential => [credential.id, credential]));
+    const data = latest.map(report => {
+      const credential = report.credentialId ? credentials.get(report.credentialId) : undefined;
+      return {
+        ...report,
+        createdAt: credential?.createdAt,
+        accent: credential?.accent || "default",
+      };
+    });
+    return c.json({ success: true, data });
   };
   app.get("/api/usage", handleUsage);
   app.get("/api/data", handleUsage);
@@ -66,10 +79,9 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
       return {
         id: cr.id,
         provider: cr.provider,
-        accountLabel: cr.accountLabel,
-        credentialType: cr.credentialType,
         maskedSecret,
         createdAt: cr.createdAt,
+        accent: cr.accent || "default",
       };
     });
     return c.json({ success: true, data: masked });
@@ -78,9 +90,13 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
   // API: Add manual credential
   app.post("/api/credentials", async c => {
     try {
-      const body = (await c.req.json()) as InputCredential;
+      const body = (await c.req.json()) as InputCredential & { accent?: string | null };
       if (!body.provider || !body.accountLabel || !body.secret) {
         return c.json({ success: false, error: "Tüm alanlar zorunludur." }, 400);
+      }
+
+      if (body.accent) {
+        body.metadata = { ...(body.metadata || {}), accent: body.accent };
       }
 
       const saved = vault.saveCredential(body);
@@ -92,8 +108,36 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
           id: saved.id,
           provider: saved.provider,
           accountLabel: saved.accountLabel,
+          accent: body.accent || null,
         },
       });
+    } catch (err) {
+      return c.json({ success: false, error: String(err) }, 500);
+    }
+  });
+
+  // API: Update credential (label and/or accent)
+  app.patch("/api/credentials/:id", async c => {
+    try {
+      const id = c.req.param("id");
+      const body = (await c.req.json()) as { accountLabel?: string; accent?: string | null };
+
+      let updated = false;
+      const v = vault as unknown as VaultStorageExtension;
+      if (typeof v.updateCredential === "function") {
+        updated = Boolean(v.updateCredential(id, body));
+      } else {
+        if (body.accountLabel && typeof vault.updateCredentialLabel === "function") {
+          updated = vault.updateCredentialLabel(id, body.accountLabel);
+        }
+        if (body.accent !== undefined && typeof v.updateCredentialAccent === "function") {
+          updated = Boolean(v.updateCredentialAccent(id, body.accent)) || updated;
+        } else if (body.accent !== undefined && typeof v.updateCredentialMetadata === "function") {
+          updated = Boolean(v.updateCredentialMetadata(id, { accent: body.accent })) || updated;
+        }
+      }
+
+      return c.json({ success: true, updated });
     } catch (err) {
       return c.json({ success: false, error: String(err) }, 500);
     }
@@ -241,7 +285,18 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
   // UI: Dashboard (Server-Side Rendered on First Paint)
   app.get("/", c => {
     const latest = vault.getLatestUsage();
-    return c.html(renderDashboardHtml(latest));
+    const creds = vault.listCredentials();
+    const credsMap = new Map(creds.map(cr => [cr.id, cr]));
+    const enriched: (UsageReport & { createdAt?: number; accent?: string | null })[] = latest.map(r => {
+      const cr = r.credentialId ? credsMap.get(r.credentialId) : undefined;
+      const accent = cr?.accent || "default";
+      return {
+        ...r,
+        createdAt: cr?.createdAt,
+        accent,
+      };
+    });
+    return c.html(renderDashboardHtml(enriched));
   });
   // API: Sync all credentials from OMP agent.db
   app.post("/api/omp/sync", async c => {
@@ -259,8 +314,8 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
 }
 
 function formatProviderTitle(provider: string): string {
-  const p = provider.toLowerCase();
-  if (p === "antigravity" || p === "google-antigravity") return "Antigravity";
+  const p = (provider || "").toLowerCase();
+  if (p === "antigravity" || p === "google-antigravity" || p === "google") return "Antigravity";
   if (p === "openai-codex" || p === "codex") return "OpenAI Codex";
   if (p === "openrouter") return "OpenRouter";
   if (p === "deepseek") return "DeepSeek";
@@ -269,11 +324,18 @@ function formatProviderTitle(provider: string): string {
   if (p === "github-copilot" || p === "copilot") return "GitHub Copilot";
   if (p === "xai-oauth" || p === "grok" || p === "xai") return "xAI Grok";
   if (p === "zai" || p === "zhipu" || p === "glm") return "Zhipu AI (GLM)";
-  if (p.includes("opencode")) return "OpenCode";
+  if (p === "minimax-code" || p === "minimax") return "MiniMax Code";
+  if (p === "cline-pass" || p === "clinepass") return "Cline Pass";
+  if (p === "devin") return "Devin";
+  if (p === "umans") return "Umans";
+  if (p === "google-gemini-cli" || p === "gemini-cli") return "Gemini CLI";
+  if (p === "kimi-code" || p === "kimi" || p === "moonshot") return "Kimi Code";
+  if (p === "opencode-go") return "OpenCode Go";
+  if (p === "alibaba-token-plan") return "Alibaba Qwen";
   return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
-function renderDashboardHtml(initialReports: UsageReport[] = []): string {
+function renderDashboardHtml(initialReports: (UsageReport & { createdAt?: number; accent?: string | null })[] = []): string {
   let initialTotalBal = 0;
   let initialExhausted = 0;
 
@@ -287,7 +349,7 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
   }
 
   const initialCardsHtml = initialReports.length === 0
-    ? `<div class="col-span-full py-24 text-center text-appTextMuted text-sm">Henüz kayıtlı bir AI hesabı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.</div>`
+    ? `<div class="col-span-full py-24 text-center text-appTextMuted text-sm" data-i18n="noAccounts">Henüz kayıtlı bir AI hesabı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.</div>`
     : initialReports.map(r => {
         const limitsHtml = (r.limits || []).map(l => {
           let valueHtml = "";
@@ -304,9 +366,9 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
           } else if (l.amount.unit === "credits") {
             const rem = l.amount.remaining ?? 0;
             const badgeCls = rem > 0 
-              ? "bg-appAccentSoft text-appAccent border border-appAccent/30" 
+              ? "account-card-accent-badge" 
               : "bg-appMuted text-appTextMuted border border-appBorder";
-            valueHtml = `<span class="font-semibold text-xs ${badgeCls} px-2.5 py-0.5 rounded-md">${rem} Hak</span>`;
+            valueHtml = `<span class="font-semibold text-xs ${badgeCls} px-2.5 py-0.5 rounded-md">${rem} Hak Mevcut</span>`;
           }
 
           let countdownHtml = "";
@@ -318,7 +380,8 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
             countdownHtml = `<span class="text-xs text-appTextMuted flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-appTextMuted/70"></span>Sıfırlanma: ${timeLabel}</span>`;
           }
 
-          const notesHtml = (l.notes || []).map(n => `<span class="text-xs text-appTextMuted block mt-0.5">${n}</span>`).join("");
+          const cleanNotes = (l.notes || []).filter(n => !String(n).toLowerCase().includes("model"));
+          const notesHtml = cleanNotes.map(n => `<span class="text-xs text-appTextMuted block mt-0.5">${n}</span>`).join("");
 
           return `
             <div class="bg-appMuted/40 border border-appBorder rounded-xl p-3.5 space-y-1.5">
@@ -336,18 +399,19 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         }).join("");
 
         const cleanLabel = (r.accountLabel || "Default").replace(/^Google \((.*)\)$/, "$1");
+        const cardAccent = r.accent || "";
 
         return `
-          <div data-card-id="${r.credentialId || r.provider}" class="bg-appSurface border border-appBorder rounded-2xl p-5 space-y-4 transition-all shadow-sm">
+          <div data-card-id="${r.credentialId || r.provider}" data-accent="${cardAccent}" class="account-card bg-appSurface border border-appBorder rounded-2xl p-5 space-y-4 transition-all shadow-sm">
             <div class="flex justify-between items-start">
               <div>
                 <div class="flex items-center gap-2.5">
                   <h2 class="font-bold text-appText text-base tracking-tight">${formatProviderTitle(r.provider)}</h2>
                   <span class="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-appMuted text-appTextMuted border border-appBorder">${cleanLabel}</span>
                 </div>
-                <span class="text-xs text-appTextMuted block mt-1.5">Son Güncelleme: ${new Date(r.fetchedAt).toLocaleTimeString()}</span>
+                <span class="text-xs text-appTextMuted block mt-1.5" data-i18n="lastUpdate">Son Güncelleme: ${new Date(r.fetchedAt).toLocaleTimeString()}</span>
               </div>
-              <button data-id="${r.credentialId || ""}" onclick="deleteAccount(this.dataset.id)" title="Hesabı Kaldır" class="text-appTextMuted hover:text-rose-500 text-sm p-1.5 rounded-lg hover:bg-appMuted transition">✕</button>
+              <button data-id="${r.credentialId || ""}" onclick="deleteAccount(this.dataset.id)" title="Remove Account" data-i18n-title="deleteAccount" class="text-appTextMuted hover:text-rose-500 text-sm p-1.5 rounded-lg hover:bg-appMuted transition">✕</button>
             </div>
             <div class="space-y-2.5">${limitsHtml}</div>
           </div>
@@ -417,32 +481,73 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       outline: 2px dashed var(--color-accent) !important;
       outline-offset: 4px;
     }
+    .account-card {
+      --card-accent: var(--color-accent);
+      --card-accent-hover: var(--color-accent-hover);
+      --card-accent-soft: var(--color-accent-soft);
+    }
+    .account-card[data-accent="amber"] {
+      --card-accent: #ff9849;
+      --card-accent-hover: #ea7c2b;
+      --card-accent-soft: rgba(255, 152, 73, 0.14);
+    }
+    .account-card[data-accent="emerald"] {
+      --card-accent: #10b981;
+      --card-accent-hover: #059669;
+      --card-accent-soft: rgba(16, 185, 129, 0.14);
+    }
+    .account-card[data-accent="cyan"] {
+      --card-accent: #06b6d4;
+      --card-accent-hover: #0891b2;
+      --card-accent-soft: rgba(6, 182, 212, 0.14);
+    }
+    .account-card[data-accent="violet"] {
+      --card-accent: #a855f7;
+      --card-accent-hover: #9333ea;
+      --card-accent-soft: rgba(168, 85, 247, 0.14);
+    }
+    .account-card[data-accent="slate"] {
+      --card-accent: #38bdf8;
+      --card-accent-hover: #0284c7;
+      --card-accent-soft: rgba(56, 189, 248, 0.14);
+    }
+    .account-card-accent-badge {
+      background-color: var(--card-accent-soft);
+      color: var(--card-accent);
+      border: 1px solid var(--card-accent);
+    }
   </style>
 </head>
-<body class="min-h-screen flex flex-col transition-colors duration-200 text-sm">
+<body class="min-h-screen flex flex-col transition-colors duration-200 text-sm overflow-x-hidden">
   <!-- Top Control Bar (Clean Engineering Wordmark, Zero Slop) -->
-  <header class="border-b border-appBorder bg-appSurface/80 backdrop-blur-md px-6 py-4 sticky top-0 z-20 transition-colors">
-    <div class="max-w-7xl mx-auto flex items-center justify-between">
-      <!-- Minimalist Clean Logo -->
-      <div class="flex items-center gap-3">
+  <header class="border-b border-appBorder bg-appSurface/80 backdrop-blur-md px-4 sm:px-6 py-4 sticky top-0 z-20 transition-colors">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3">
+      <!-- Minimalist Clean Logo & Plain-Language Sync Status -->
+      <div class="flex items-center gap-2.5 sm:gap-3">
         <div class="flex items-center gap-2">
           <span class="font-extrabold tracking-wider text-appText text-lg font-mono">USAGE</span>
-          <span class="w-2 h-2 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20" title="Live Telemetry"></span>
+          <span id="syncLiveDot" class="w-2 h-2 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20" title="Last checked: just now" data-i18n-title="syncStatusJustNow"></span>
         </div>
-        <div class="hidden md:block h-4 w-px bg-appBorder"></div>
-        <span class="hidden md:inline text-xs text-appTextMuted tracking-tight font-medium" data-i18n="subtitle">Multi-Provider Quota & Balance Hub</span>
+        <div class="hidden sm:block h-4 w-px bg-appBorder"></div>
+        <span id="headerSyncStatus" class="text-xs text-appTextMuted tracking-tight font-medium" data-i18n="syncStatusJustNow">Son kontrol: az önce</span>
         <span class="sr-only" data-i18n="title">AI Usage Tracker</span>
       </div>
 
       <!-- Controls Right -->
-      <div class="flex items-center gap-2.5 sm:gap-3">
-        <!-- Edit Mode Button (Pen Icon) -->
-        <button onclick="toggleEditMode()" id="editModeBtn" title="Kart Sıralama / Düzenleme Modu" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
+      <div class="flex items-center gap-2 sm:gap-2.5 flex-wrap">
+        <!-- Edit Mode Button -->
+        <button onclick="toggleEditMode()" id="editModeBtn" title="Card Edit Mode" data-i18n-title="editModeTitle" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 20h9"></path>
             <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
           </svg>
         </button>
+
+        <!-- Grouping Dropdown -->
+        <select id="groupSelect" onchange="changeGroup(this.value)" class="h-9 px-2.5 sm:px-3 rounded-lg border border-appBorder bg-appSurface text-appText text-xs font-semibold hover:border-appAccent transition outline-none cursor-pointer">
+          <option value="none" data-i18n="groupNone">Gruplama Yok</option>
+          <option value="provider" data-i18n="groupProvider">Sağlayıcıya Göre</option>
+        </select>
 
         <!-- Sorting Dropdown -->
         <select id="sortSelect" onchange="changeSort(this.value)" class="h-9 px-2.5 sm:px-3 rounded-lg border border-appBorder bg-appSurface text-appText text-xs font-semibold hover:border-appAccent transition outline-none cursor-pointer">
@@ -452,8 +557,8 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
           <option value="lowest_available" data-i18n="sortLowest">En Düşük Kalan</option>
         </select>
 
-        <!-- Settings Modal Trigger (Gear Icon) -->
-        <button onclick="openSettingsModal()" id="settingsBtn" title="Ayarlar" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
+        <!-- Settings Modal Trigger -->
+        <button onclick="openSettingsModal()" id="settingsBtn" title="Settings" data-i18n-title="settingsTitle" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -461,18 +566,18 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         </button>
 
         <!-- Dark / Light Mode Toggle Button -->
-        <button onclick="toggleLightDark()" id="lightDarkBtn" title="Koyu / Aydınlık Mod" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
+        <button onclick="toggleLightDark()" id="lightDarkBtn" title="Dark / Light Mode" data-i18n-title="themeTitle" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
           <span id="lightDarkIcon">☀️</span>
         </button>
 
         <!-- Language Switcher Toggle with Flag -->
-        <button onclick="toggleLang()" id="langBtn" class="h-9 px-3 rounded-lg border border-appBorder bg-appSurface text-appText text-xs font-semibold hover:border-appAccent/50 transition flex items-center gap-2">
+        <button onclick="toggleLang()" id="langBtn" class="h-9 px-2.5 sm:px-3 rounded-lg border border-appBorder bg-appSurface text-appText text-xs font-semibold hover:border-appAccent/50 transition flex items-center gap-1.5 sm:gap-2">
           <span id="langFlag" class="text-base">🇹🇷</span>
           <span id="langLabel">TR</span>
         </button>
 
         <!-- Manual Poll Button -->
-        <button onclick="pollNow()" id="pollBtn" class="h-9 px-3.5 rounded-lg text-xs font-semibold bg-appMuted hover:bg-appBorder text-appText transition flex items-center gap-2 border border-appBorder">
+        <button onclick="pollNow()" id="pollBtn" class="h-9 px-3 sm:px-3.5 rounded-lg text-xs font-semibold bg-appMuted hover:bg-appBorder text-appText transition flex items-center gap-1.5 sm:gap-2 border border-appBorder">
           <svg id="pollSpinner" class="hidden animate-spin w-4 h-4 text-appAccent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
           </svg>
@@ -480,7 +585,7 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         </button>
 
         <!-- Connect Account Button -->
-        <button onclick="openModal()" class="h-9 px-4 rounded-lg text-xs font-semibold bg-appAccent hover:bg-appAccentHover text-zinc-950 transition flex items-center gap-1.5 shadow-sm">
+        <button onclick="openModal()" class="h-9 px-3.5 sm:px-4 rounded-lg text-xs font-semibold bg-appAccent hover:bg-appAccentHover text-zinc-950 transition flex items-center gap-1.5 shadow-sm">
           <span>+</span>
           <span data-i18n="addAccountText">Hesap Bağla</span>
         </button>
@@ -489,32 +594,32 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
   </header>
 
   <!-- Summary Stats Strip -->
-  <section class="border-b border-appBorder bg-appSurface/30 px-6 py-3.5">
+  <section class="border-b border-appBorder bg-appSurface/30 px-4 sm:px-6 py-3.5">
     <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4 text-xs font-medium">
-      <div class="flex items-center gap-6">
+      <div class="flex items-center gap-4 sm:gap-6 flex-wrap">
         <div class="flex items-center gap-2">
           <span class="text-appTextMuted" data-i18n="summaryActive">Aktif Hesaplar:</span>
           <span id="statActiveCount" class="font-bold text-appText text-sm">${initialReports.length}</span>
         </div>
-        <div class="flex items-center gap-2 border-l border-appBorder pl-6">
+        <div class="flex items-center gap-2 border-l border-appBorder pl-4 sm:pl-6">
           <span class="text-appTextMuted" data-i18n="summaryBalance">Toplam Ön Ödemeli Bakiye:</span>
           <span id="statTotalBalance" class="font-bold text-emerald-500 text-sm">$${initialTotalBal.toFixed(2)}</span>
         </div>
-        <div class="flex items-center gap-2 border-l border-appBorder pl-6">
+        <div class="flex items-center gap-2 border-l border-appBorder pl-4 sm:pl-6">
           <span class="text-appTextMuted" data-i18n="summaryExhausted">Kilitli/Biten Kota:</span>
           <span id="statExhaustedCount" class="font-bold text-appText text-sm">${initialExhausted}</span>
         </div>
       </div>
       <div class="text-xs text-appTextMuted flex items-center gap-2">
-        <span id="editModeNotice" class="hidden text-appAccent font-semibold animate-pulse" data-i18n="editModeActive">✏️ Düzenleme Modu Aktif (Sürükleyip Bırakın)</span>
-        <span data-i18n="autoSync">Canlı Senkronizasyon:</span>
+        <span id="editModeNotice" class="hidden text-appAccent font-semibold animate-pulse" data-i18n="editModeActive">✏️ Düzenleme Modu Aktif</span>
+        <span data-i18n="autoSync">Otomatik Yenileme:</span>
         <span class="text-appAccent font-semibold">10s</span>
       </div>
     </div>
   </section>
 
   <!-- Main Container -->
-  <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-6">
     <div id="cardsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
       ${initialCardsHtml}
     </div>
@@ -522,10 +627,10 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
 
   <!-- Settings Modal (Theme Accent Picker & Preferences) -->
   <div id="settingsModal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
-    <div class="bg-appSurface border border-appBorder rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl transition-colors">
+    <div class="bg-appSurface border border-appBorder rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 space-y-5 shadow-2xl transition-colors">
       <div class="flex justify-between items-center pb-3 border-b border-appBorder">
         <h3 class="font-bold text-appText text-base" data-i18n="settingsTitle">Ayarlar</h3>
-        <button onclick="closeSettingsModal()" class="text-appTextMuted hover:text-appText text-lg p-1">✕</button>
+        <button onclick="closeSettingsModal()" title="Close" data-i18n-title="close" class="text-appTextMuted hover:text-appText text-lg p-1">✕</button>
       </div>
 
       <div class="space-y-4">
@@ -573,13 +678,13 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
 
   <!-- Add Credential / OAuth Modal -->
   <div id="modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
-    <div class="bg-appSurface border border-appBorder rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl transition-colors">
+    <div class="bg-appSurface border border-appBorder rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 space-y-5 shadow-2xl transition-colors">
       <div class="flex justify-between items-center pb-3 border-b border-appBorder">
         <div>
           <h3 class="font-bold text-appText text-base" data-i18n="modalTitle">AI Hesabı Bağla</h3>
           <p class="text-xs text-appTextMuted mt-0.5" data-i18n="modalSubtitle">OAuth veya doğrudan API anahtarıyla kota takibi kurun.</p>
         </div>
-        <button onclick="closeModal()" class="text-appTextMuted hover:text-appText text-lg p-1">✕</button>
+        <button onclick="closeModal()" title="Close" data-i18n-title="close" class="text-appTextMuted hover:text-appText text-lg p-1">✕</button>
       </div>
 
       <!-- Segmented Tab Switcher -->
@@ -592,15 +697,22 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         </button>
       </div>
 
-      <!-- OAuth Flow Options -->
+      <!-- OAuth Flow Options with Crisp Brand Marks -->
       <div id="oauthSection" class="space-y-3.5">
         <p class="text-xs text-appTextMuted leading-relaxed" data-i18n="oauthDesc">Resmi sağlayıcı girişine yönlendirilirsiniz. Token'lar yerel veritabanında AES-256-GCM ile şifrelenir.</p>
 
         <div class="space-y-2.5">
-          <!-- Antigravity Button -->
-          <button onclick="startGoogleOAuth()" class="w-full flex items-center justify-between p-4 rounded-xl border border-appBorder bg-appMuted/40 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
+          <!-- Antigravity (Google Multicolor Mark) -->
+          <button onclick="startGoogleOAuth()" class="w-full flex items-center justify-between p-3.5 sm:p-4 rounded-xl border border-appBorder bg-appMuted/40 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
             <div class="flex items-center gap-3.5">
-              <div class="w-9 h-9 rounded-lg bg-white/10 flex items-center justify-center text-base font-bold text-blue-400">G</div>
+              <div class="w-9 h-9 rounded-lg bg-appMuted flex items-center justify-center p-2 border border-appBorder shrink-0" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="20" height="20" role="img" aria-label="Google">
+                  <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/>
+                  <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.34 24 12 24z"/>
+                  <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.17 0 9.99 0 12s.45 3.83 1.25 5.42l4.03-3.15z"/>
+                  <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.34 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+                </svg>
+              </div>
               <div>
                 <div class="text-sm font-semibold text-appText group-hover:text-appAccent transition" data-i18n="googleTitle">Antigravity (Google AI Pro)</div>
                 <div class="text-xs text-appTextMuted mt-0.5" data-i18n="googleDesc">Gemini ve Claude & GPT model havuzu kotaları</div>
@@ -609,10 +721,14 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
             <span class="text-xs font-semibold text-appAccent" data-i18n="loginBtn">Oturum Aç →</span>
           </button>
 
-          <!-- OpenAI Codex Card -->
-          <button onclick="startCodexOAuth()" class="w-full flex items-center justify-between p-4 rounded-xl border border-appBorder bg-appMuted/40 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
+          <!-- OpenAI Codex (Official Knot Spiral Mark) -->
+          <button onclick="startCodexOAuth()" class="w-full flex items-center justify-between p-3.5 sm:p-4 rounded-xl border border-appBorder bg-appMuted/40 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
             <div class="flex items-center gap-3.5">
-              <div class="w-9 h-9 rounded-lg bg-white/10 flex items-center justify-center text-base font-bold text-emerald-400">O</div>
+              <div class="w-9 h-9 rounded-lg bg-appMuted flex items-center justify-center p-2 border border-appBorder shrink-0" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" class="text-emerald-400" role="img" aria-label="OpenAI">
+                  <path d="M22.28 9.82a6 6 0 0 0-.52-4.91 6.05 6.05 0 0 0-6.51-2.9A6.06 6.06 0 0 0 4.98 4.18a5.98 5.98 0 0 0-4 2.9 6.05 6.05 0 0 0 .74 7.1 6 6 0 0 0 .51 4.91 6.05 6.05 0 0 0 6.52 2.9A5.98 5.98 0 0 0 13.26 24a6.06 6.06 0 0 0 5.77-4.2 6 6 0 0 0 4-2.9 6.06 6.06 0 0 0-.75-7.08zm-9.02 12.61a4.48 4.48 0 0 1-2.88-1.04l.14-.08 4.78-2.76a.8.8 0 0 0 .39-.68v-6.74l2.02 1.17a.07.07 0 0 1 .04.05v5.58a4.5 4.5 0 0 1-4.49 4.5zm-9.66-4.13a4.47 4.47 0 0 1-.54-3.01l.15.08 4.78 2.76a.77.77 0 0 0 .78 0l5.84-3.37v2.33a.08.08 0 0 1-.03.06l-4.84 2.8a4.5 4.5 0 0 1-6.14-1.65zM2.34 7.9a4.49 4.49 0 0 1 2.37-1.98V11.6a.77.77 0 0 0 .39.68l5.81 3.35-2.02 1.17a.08.08 0 0 1-.07 0l-4.83-2.79A4.5 4.5 0 0 1 2.34 7.9zm16.6 3.85L13.1 8.38l2.02-1.16a.08.08 0 0 1 .07 0l4.83 2.79a4.5 4.5 0 0 1-.68 8.1V12.44a.8.8 0 0 0-.4-.69zm2.01-3.02l-.14-.09-4.78-2.78a.78.78 0 0 0-.78 0L9.4 9.23V6.9a.07.07 0 0 1 .03-.06l4.83-2.79a4.5 4.5 0 0 1 6.68 4.66zM8.31 12.86l-2.02-1.16a.08.08 0 0 1-.04-.06V6.07a4.5 4.5 0 0 1 7.38-3.45l-.14.08-4.78 2.76a.8.8 0 0 0-.4.68v6.72zm1.14-1.63l2.55-1.47 2.55 1.47v2.94l-2.55 1.47-2.55-1.47z"/>
+                </svg>
+              </div>
               <div>
                 <div class="text-sm font-semibold text-appText group-hover:text-appAccent transition" data-i18n="codexTitle">OpenAI ChatGPT / Codex</div>
                 <div class="text-xs text-appTextMuted mt-0.5" data-i18n="codexDesc">Plus / Pro 5 saatlik ve haftalık kotalar</div>
@@ -621,10 +737,14 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
             <span class="text-xs font-semibold text-appAccent" data-i18n="loginBtn">Oturum Aç →</span>
           </button>
 
-          <!-- Anthropic Claude Card -->
-          <button onclick="startClaudeOAuth()" class="w-full flex items-center justify-between p-4 rounded-xl border border-appBorder bg-appMuted/40 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
+          <!-- Anthropic Claude (Official Asterisk Mark) -->
+          <button onclick="startClaudeOAuth()" class="w-full flex items-center justify-between p-3.5 sm:p-4 rounded-xl border border-appBorder bg-appMuted/40 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
             <div class="flex items-center gap-3.5">
-              <div class="w-9 h-9 rounded-lg bg-white/10 flex items-center justify-center text-base font-bold text-amber-400">A</div>
+              <div class="w-9 h-9 rounded-lg bg-appMuted flex items-center justify-center p-2 border border-appBorder shrink-0" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" class="text-amber-500" role="img" aria-label="Anthropic Claude">
+                  <path d="M13.2 2h-2.4v7.3L5.64 4.14 3.94 5.84l5.16 5.16H2v2.4h7.1l-5.16 5.16 1.7 1.7 5.16-5.16V22h2.4v-7.1l5.16 5.16 1.7-1.7-5.16-5.16H22v-2.4h-7.3l5.16-5.16-1.7-1.7-5.16 5.16V2z"/>
+                </svg>
+              </div>
               <div>
                 <div class="text-sm font-semibold text-appText group-hover:text-appAccent transition" data-i18n="claudeTitle">Anthropic Claude Pro/Max</div>
                 <div class="text-xs text-appTextMuted mt-0.5" data-i18n="claudeDesc">5h oturum ve haftalık Opus/Sonnet kotaları</div>
@@ -663,15 +783,30 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
             <option value="deepseek">DeepSeek</option>
             <option value="xai-oauth">xAI Grok</option>
             <option value="zai">Zhipu AI (GLM)</option>
+            <option value="minimax-code">MiniMax Code</option>
+            <option value="cline-pass">Cline Pass</option>
+            <option value="devin">Devin</option>
+            <option value="umans">Umans</option>
+            <option value="google-gemini-cli">Gemini CLI</option>
+            <option value="kimi-code">Kimi Code</option>
             <option value="opencode-go">OpenCode Go</option>
-            <option value="kimi">Moonshot Kimi</option>
-            <option value="groq">Groq</option>
-            <option value="alibaba-token-plan">Alibaba Qwen (Bailian)</option>
+            <option value="alibaba-token-plan">Alibaba Qwen</option>
           </select>
         </div>
         <div>
           <label class="block text-xs font-semibold text-appTextMuted mb-1.5" data-i18n="accountLabel">Hesap Adı / Etiket</label>
-          <input type="text" id="accountLabel" placeholder="Örn: Kişisel Pro, İş Hesabı" required class="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none" />
+          <input type="text" id="accountLabel" placeholder="Örn: Kişisel Pro, İş Hesabı" data-i18n-placeholder="accountLabelPlaceholder" required class="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none" />
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-appTextMuted mb-1.5" data-i18n="accountAccent">Kart Vurgu Rengi</label>
+          <select id="accountAccentSelect" class="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none cursor-pointer">
+            <option value="" data-i18n="accentDefault">Varsayılan (Tema Rengi)</option>
+            <option value="amber">Amber</option>
+            <option value="emerald">Emerald</option>
+            <option value="cyan">Cyan</option>
+            <option value="violet">Violet</option>
+            <option value="slate">Slate</option>
+          </select>
         </div>
         <div>
           <label class="block text-xs font-semibold text-appTextMuted mb-1.5" data-i18n="credentialType">Kimlik Türü</label>
@@ -713,8 +848,15 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         summaryActive: "Aktif Hesaplar:",
         summaryBalance: "Toplam Ön Ödemeli Bakiye:",
         summaryExhausted: "Kilitli/Biten Kota:",
-        autoSync: "Canlı Senkronizasyon:",
-        editModeActive: "✏️ Düzenleme Modu Aktif (Sürükleyip Bırakın)",
+        autoSync: "Otomatik Yenileme:",
+        editModeActive: "✏️ Düzenleme Modu Aktif",
+        editModeTitle: "Kart Düzenleme Modu",
+        settingsTitle: "Ayarlar",
+        themeTitle: "Koyu / Aydınlık Mod",
+        deleteAccount: "Hesabı Kaldır",
+        editLabel: "Etiketi Düzenle",
+        save: "Kaydet",
+        cancel: "İptal",
         noAccounts: "Henüz kayıtlı bir AI hesabı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.",
         lastUpdate: "Son Güncelleme",
         deleteConfirm: "Bu hesabı kaldırmak istediğinizden emin misiniz?",
@@ -738,15 +880,19 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         provider: "Sağlayıcı",
         accountLabel: "Hesap Adı / Etiket",
         accountLabelPlaceholder: "Örn: Kişisel Pro, İş Hesabı",
+        accountAccent: "Kart Vurgu Rengi",
+        cardAccent: "Kart Vurgusu",
+        accentDefault: "Varsayılan (Tema Rengi)",
         credentialType: "Kimlik Türü",
         apiKey: "API Anahtarı",
         oauthToken: "OAuth Access Token",
         secretLabel: "Secret / Token",
-        cancel: "İptal",
-        saveAndPoll: "Kaydet ve Sorgula",
-        settingsTitle: "Ayarlar",
         themeAccent: "Vurgu Rengi",
         close: "Kapat",
+        groupSelect: "Gruplama",
+        groupNone: "Gruplama Yok",
+        groupProvider: "Sağlayıcıya Göre",
+        editDisabledGrouped: "Gruplama etkinken düzenleme modu kullanılamaz",
         sortCustom: "Özel Sıralama",
         sortDateAdded: "Eklenme Tarihi",
         sortHighest: "En Yüksek Kalan",
@@ -756,7 +902,14 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         syncOmpBtn: "OMP Hesaplarını Eşitle",
         syncing: "Eşitleniyor...",
         syncSuccess: "Eşitleme Tamamlandı",
-        accountsImported: "hesap aktarıldı"
+        accountsImported: "hesap aktarıldı",
+        syncStatusJustNow: "Son kontrol: az önce",
+        syncStatusSec: "Son kontrol: {n} sn önce",
+        syncStatusMin: "Son kontrol: {n} dk önce",
+        pollingError: "Sorgulama Hatası",
+        authError: "Yetkilendirme Hatası (Token Geçersiz)",
+        rateLimitError: "İstek Hız Sınırı Aşıldı",
+        networkError: "Bağlantı Hatası"
       },
       en: {
         flag: "🇬🇧",
@@ -767,8 +920,15 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         summaryActive: "Active Accounts:",
         summaryBalance: "Total Prepaid Balance:",
         summaryExhausted: "Exhausted Quotas:",
-        autoSync: "Live Telemetry:",
-        editModeActive: "✏️ Edit Mode Active (Drag to Reorder)",
+        autoSync: "Auto-refresh:",
+        editModeActive: "✏️ Edit Mode Active",
+        editModeTitle: "Card Edit Mode",
+        settingsTitle: "Settings",
+        themeTitle: "Dark / Light Mode",
+        deleteAccount: "Remove Account",
+        editLabel: "Edit Label",
+        save: "Save",
+        cancel: "Cancel",
         noAccounts: "No AI accounts connected yet. Click <b>+ Connect Account</b> to add one.",
         lastUpdate: "Updated",
         deleteConfirm: "Are you sure you want to remove this account?",
@@ -792,15 +952,19 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         provider: "Provider",
         accountLabel: "Account Label",
         accountLabelPlaceholder: "e.g. Personal Pro, Work Key",
+        accountAccent: "Card Accent Color",
+        cardAccent: "Card Accent",
+        accentDefault: "Default (Theme Color)",
         credentialType: "Credential Type",
         apiKey: "API Key",
         oauthToken: "OAuth Access Token",
         secretLabel: "Secret / Token",
-        cancel: "Cancel",
-        saveAndPoll: "Save & Poll",
-        settingsTitle: "Settings",
         themeAccent: "Accent Color",
         close: "Close",
+        groupSelect: "Grouping",
+        groupNone: "No Grouping",
+        groupProvider: "By Provider",
+        editDisabledGrouped: "Edit mode is disabled while grouped",
         sortCustom: "Custom (Drag & Drop)",
         sortDateAdded: "Date Added",
         sortHighest: "Highest Available",
@@ -810,7 +974,14 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         syncOmpBtn: "Sync Accounts from OMP",
         syncing: "Syncing...",
         syncSuccess: "Sync Complete",
-        accountsImported: "account(s) imported"
+        accountsImported: "account(s) imported",
+        syncStatusJustNow: "Last checked: just now",
+        syncStatusSec: "Last checked: {n}s ago",
+        syncStatusMin: "Last checked: {n}m ago",
+        pollingError: "Polling Error",
+        authError: "Authentication Error (Token Invalid)",
+        rateLimitError: "Rate Limit Exceeded",
+        networkError: "Connection Error"
       }
     };
 
@@ -825,12 +996,75 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
     let currentMode = localStorage.getItem('usage_mode') || 'dark';
     let currentAccent = localStorage.getItem('usage_accent') || 'amber';
     let currentSort = localStorage.getItem('usage_sort') || 'custom';
+    let currentGroup = localStorage.getItem('usage_group') || 'none';
     let isEditMode = false;
+    let editingCardId = null;
     let draggedCardId = null;
     let cachedReports = ${initialJson};
+    let lastPolledAt = Date.now();
 
     function t(key) {
       return (I18N[currentLang] && I18N[currentLang][key]) || (I18N['tr'][key]) || key;
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function formatProviderTitle(provider) {
+      const p = (provider || '').toLowerCase();
+      if (p === 'antigravity' || p === 'google-antigravity' || p === 'google') return 'Antigravity';
+      if (p === 'openai-codex' || p === 'codex') return 'OpenAI Codex';
+      if (p === 'openrouter') return 'OpenRouter';
+      if (p === 'deepseek') return 'DeepSeek';
+      if (p === 'anthropic' || p === 'claude') return 'Anthropic Claude';
+      if (p === 'cursor') return 'Cursor';
+      if (p === 'github-copilot' || p === 'copilot') return 'GitHub Copilot';
+      if (p === 'xai-oauth' || p === 'grok' || p === 'xai') return 'xAI Grok';
+      if (p === 'zai' || p === 'zhipu' || p === 'glm') return 'Zhipu AI (GLM)';
+      if (p === 'minimax-code' || p === 'minimax') return 'MiniMax Code';
+      if (p === 'cline-pass' || p === 'clinepass') return 'Cline Pass';
+      if (p === 'devin') return 'Devin';
+      if (p === 'umans') return 'Umans';
+      if (p === 'google-gemini-cli' || p === 'gemini-cli') return 'Gemini CLI';
+      if (p === 'kimi-code' || p === 'kimi' || p === 'moonshot') return 'Kimi Code';
+      if (p === 'opencode-go') return 'OpenCode Go';
+      if (p === 'alibaba-token-plan') return 'Alibaba Qwen';
+      return provider.charAt(0).toUpperCase() + provider.slice(1);
+    }
+
+    function sanitizeErrorMessage(msg) {
+      if (!msg) return '';
+      let clean = String(msg);
+      clean = clean.replace(/ya29\.[a-zA-Z0-9_-]+/g, '[REDACTED_TOKEN]');
+      clean = clean.replace(/sk-[a-zA-Z0-9_-]+/g, '[REDACTED_KEY]');
+      clean = clean.replace(/gho_[a-zA-Z0-9_]+/g, '[REDACTED_TOKEN]');
+      clean = clean.replace(/Bearer\s+[a-zA-Z0-9._-]+/gi, 'Bearer [REDACTED]');
+      clean = clean.replace(/[a-f0-9]{32,64}/gi, '[REDACTED_HASH]');
+      return clean;
+    }
+
+    function getLocalizedReportError(report) {
+      const err = report.error || (report.status === 'error' ? (report.statusMessage || report.message || 'Error') : null);
+      if (!err) return null;
+      const raw = sanitizeErrorMessage(err);
+      const lower = raw.toLowerCase();
+      if (lower.includes('rate limit') || lower.includes('429')) {
+        return t('rateLimitError');
+      }
+      if (lower.includes('unauthorized') || lower.includes('401') || lower.includes('invalid_grant') || lower.includes('token expired') || lower.includes('auth')) {
+        return t('authError');
+      }
+      if (lower.includes('fetch') || lower.includes('network') || lower.includes('econnrefused') || lower.includes('timeout')) {
+        return t('networkError');
+      }
+      return t('pollingError') + ': ' + raw.slice(0, 60);
     }
 
     function translateLimitLabel(label, id) {
@@ -932,6 +1166,38 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       applyAccent(accentKey);
     }
 
+    function updateSyncStatus() {
+      const statusEl = document.getElementById('headerSyncStatus');
+      const dotEl = document.getElementById('syncLiveDot');
+      if (!statusEl) return;
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - lastPolledAt) / 1000));
+      let text = '';
+      if (elapsedSec < 5) {
+        text = t('syncStatusJustNow');
+      } else if (elapsedSec < 60) {
+        text = t('syncStatusSec').replace('{n}', elapsedSec);
+      } else {
+        const min = Math.floor(elapsedSec / 60);
+        text = t('syncStatusMin').replace('{n}', min);
+      }
+      statusEl.innerText = text;
+      if (dotEl) dotEl.title = text;
+    }
+
+    function updateEditButtonState() {
+      const btn = document.getElementById('editModeBtn');
+      if (!btn) return;
+      if (currentGroup !== 'none') {
+        btn.disabled = true;
+        btn.classList.add('opacity-40', 'cursor-not-allowed');
+        btn.title = t('editDisabledGrouped');
+      } else {
+        btn.disabled = false;
+        btn.classList.remove('opacity-40', 'cursor-not-allowed');
+        btn.title = t('editModeTitle');
+      }
+    }
+
     function applyI18n() {
       document.querySelectorAll('[data-i18n]').forEach(el => {
         const key = el.getAttribute('data-i18n');
@@ -939,12 +1205,22 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
           el.innerHTML = t(key);
         }
       });
+      document.querySelectorAll('[data-i18n-title]').forEach(el => {
+        const key = el.getAttribute('data-i18n-title');
+        if (key) el.title = t(key);
+      });
+      document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+        const key = el.getAttribute('data-i18n-placeholder');
+        if (key) el.placeholder = t(key);
+      });
       const flagEl = document.getElementById('langFlag');
       if (flagEl && I18N[currentLang]) flagEl.innerText = I18N[currentLang].flag;
       const labelEl = document.getElementById('langLabel');
       if (labelEl) labelEl.innerText = currentLang.toUpperCase();
       const accInput = document.getElementById('accountLabel');
       if (accInput) accInput.placeholder = t('accountLabelPlaceholder');
+      updateSyncStatus();
+      updateEditButtonState();
       if (cachedReports.length) renderCards(cachedReports);
     }
 
@@ -973,28 +1249,105 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       const typeSelect = document.getElementById('credentialType');
 
       const hints = {
-        'antigravity': { placeholder: 'ya29... veya OAuth Token', help: 'Google OAuth Access Token veya Refresh Token', type: 'oauth' },
-        'openai-codex': { placeholder: 'OpenAI Access Token (eyJ...)', help: 'OpenAI Bearer Access Token', type: 'oauth' },
-        'github-copilot': { placeholder: 'gho_... veya GitHub Personal Token', help: 'GitHub Copilot yetkili erişim tokenı', type: 'oauth' },
-        'cursor': { placeholder: 'Cursor Access Token veya WorkosCursorSessionToken', help: 'Cursor oturum tokenı veya çerezi', type: 'oauth' },
-        'anthropic': { placeholder: 'sk-ant-... veya OAuth Token', help: 'Anthropic API Anahtarı veya Claude Code Tokenı', type: 'oauth' },
-        'openrouter': { placeholder: 'sk-or-v1-...', help: 'OpenRouter API Anahtarı', type: 'api_key' },
-        'deepseek': { placeholder: 'sk-...', help: 'DeepSeek Platform API Anahtarı', type: 'api_key' },
-        'xai-oauth': { placeholder: 'xAI Access Token', help: 'xAI Grok CLI OAuth Tokenı', type: 'oauth' },
-        'zai': { placeholder: 'Zhipu API Key veya Token', help: 'Zhipu AI / GLM erişim anahtarı', type: 'oauth' },
-        'opencode-go': { placeholder: 'OpenCode Go API Key', help: 'OpenCode Zen/Go API Anahtarı', type: 'api_key' },
-        'kimi': { placeholder: 'Kimi API Key veya Bearer Token', help: 'Moonshot Kimi erişim anahtarı', type: 'api_key' },
-        'groq': { placeholder: 'gsk_...', help: 'Groq Cloud API Anahtarı', type: 'api_key' },
-        'alibaba-token-plan': { placeholder: 'Alibaba Token Plan Key / Cookie', help: 'Bailian Coding Plan erişim anahtarı', type: 'api_key' }
+        'antigravity': {
+          placeholder: 'ya29... veya OAuth Token',
+          help: currentLang === 'tr' ? 'Google OAuth Access Token veya Refresh Token' : 'Google OAuth Access Token or Refresh Token',
+          type: 'oauth'
+        },
+        'openai-codex': {
+          placeholder: 'OpenAI Access Token (eyJ...)',
+          help: currentLang === 'tr' ? 'OpenAI Bearer Access Token' : 'OpenAI Bearer Access Token',
+          type: 'oauth'
+        },
+        'github-copilot': {
+          placeholder: 'gho_... veya GitHub Personal Token',
+          help: currentLang === 'tr' ? 'GitHub Copilot yetkili erişim tokenı' : 'GitHub Copilot authorization token',
+          type: 'oauth'
+        },
+        'cursor': {
+          placeholder: 'Cursor Access Token veya WorkosCursorSessionToken',
+          help: currentLang === 'tr' ? 'Cursor oturum tokenı veya çerezi' : 'Cursor session token or cookie',
+          type: 'oauth'
+        },
+        'anthropic': {
+          placeholder: 'sk-ant-... veya OAuth Token',
+          help: currentLang === 'tr' ? 'Anthropic API Anahtarı veya Claude Code Tokenı' : 'Anthropic API Key or Claude Code Token',
+          type: 'oauth'
+        },
+        'openrouter': {
+          placeholder: 'sk-or-v1-...',
+          help: currentLang === 'tr' ? 'OpenRouter API Anahtarı' : 'OpenRouter API Key',
+          type: 'api_key'
+        },
+        'deepseek': {
+          placeholder: 'sk-...',
+          help: currentLang === 'tr' ? 'DeepSeek Platform API Anahtarı' : 'DeepSeek Platform API Key',
+          type: 'api_key'
+        },
+        'xai-oauth': {
+          placeholder: 'xAI Access Token',
+          help: currentLang === 'tr' ? 'xAI Grok CLI OAuth Tokenı' : 'xAI Grok CLI OAuth Token',
+          type: 'oauth'
+        },
+        'zai': {
+          placeholder: 'Zhipu API Key veya Token',
+          help: currentLang === 'tr' ? 'Zhipu AI / GLM erişim anahtarı' : 'Zhipu AI / GLM access key or token',
+          type: 'oauth'
+        },
+        'minimax-code': {
+          placeholder: 'MiniMax API Key veya Token',
+          help: currentLang === 'tr' ? 'MiniMax Code token plan erişim anahtarı' : 'MiniMax Code token-plan access key',
+          type: 'api_key'
+        },
+        'cline-pass': {
+          placeholder: 'ClinePass API Key',
+          help: currentLang === 'tr' ? 'Cline kullanım kotası API anahtarı' : 'Cline usage quota API key',
+          type: 'api_key'
+        },
+        'devin': {
+          placeholder: 'Devin Session Token',
+          help: currentLang === 'tr' ? 'Devin oturum tokenı' : 'Devin session token',
+          type: 'oauth'
+        },
+        'umans': {
+          placeholder: 'Umans API Key',
+          help: currentLang === 'tr' ? 'Umans Code kullanım API anahtarı' : 'Umans Code usage API key',
+          type: 'api_key'
+        },
+        'google-gemini-cli': {
+          placeholder: 'Google OAuth Access Token',
+          help: currentLang === 'tr' ? 'Gemini CLI OAuth erişim tokenı' : 'Gemini CLI OAuth access token',
+          type: 'oauth'
+        },
+        'kimi-code': {
+          placeholder: 'Kimi Code OAuth Token',
+          help: currentLang === 'tr' ? 'Kimi Code abonelik OAuth tokenı; standart Moonshot API key kabul edilmez' : 'Kimi Code subscription OAuth token; standard Moonshot API keys are not accepted',
+          type: 'oauth'
+        },
+        'opencode-go': {
+          placeholder: 'OpenCode Go API Key',
+          help: currentLang === 'tr' ? 'Aktif OpenCode Go aboneliği API anahtarı' : 'API key for an active OpenCode Go subscription',
+          type: 'api_key'
+        },
+        'alibaba-token-plan': {
+          placeholder: 'Alibaba Token Plan Key / Cookie',
+          help: currentLang === 'tr' ? 'Bailian/Qwen token plan anahtarı veya konsol oturumu' : 'Bailian/Qwen token-plan key or console session',
+          type: 'api_key'
+        }
       };
-
-      const h = hints[p] || { placeholder: 'Secret veya API Anahtarı', help: 'Sağlayıcı erişim anahtarı', type: 'api_key' };
+      const h = hints[p] || {
+        placeholder: 'Secret veya API Anahtarı',
+        help: currentLang === 'tr' ? 'Sağlayıcı erişim anahtarı' : 'Provider access credential',
+        type: 'api_key'
+      };
       if (input) input.placeholder = h.placeholder;
       if (help) help.innerText = h.help;
       if (typeSelect) typeSelect.value = h.type;
     }
+
     function openSettingsModal() { document.getElementById('settingsModal').classList.remove('hidden'); document.getElementById('settingsModal').classList.add('flex'); }
     function closeSettingsModal() { document.getElementById('settingsModal').classList.add('hidden'); document.getElementById('settingsModal').classList.remove('flex'); }
+
     async function syncFromOmp() {
       const btnText = document.getElementById('syncOmpBtnText');
       if (btnText) btnText.innerText = t('syncing');
@@ -1014,8 +1367,11 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         if (btnText) btnText.innerText = t('syncOmpBtn');
       }
     }
+
     function toggleEditMode() {
+      if (currentGroup !== 'none') return;
       isEditMode = !isEditMode;
+      editingCardId = null;
       const btn = document.getElementById('editModeBtn');
       const notice = document.getElementById('editModeNotice');
       if (btn) {
@@ -1030,9 +1386,25 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       renderCards(cachedReports);
     }
 
+    function changeGroup(groupKey) {
+      currentGroup = groupKey === 'provider' ? 'provider' : 'none';
+      localStorage.setItem('usage_group', currentGroup);
+      const select = document.getElementById('groupSelect');
+      if (select) select.value = currentGroup;
+      if (currentGroup !== 'none' && isEditMode) {
+        isEditMode = false;
+        editingCardId = null;
+      }
+      updateEditButtonState();
+      renderCards(cachedReports);
+    }
+
     function changeSort(sortKey) {
-      currentSort = sortKey;
-      localStorage.setItem('usage_sort', sortKey);
+      const allowed = ['custom', 'date_added', 'highest_available', 'lowest_available'];
+      currentSort = allowed.includes(sortKey) ? sortKey : 'custom';
+      localStorage.setItem('usage_sort', currentSort);
+      const select = document.getElementById('sortSelect');
+      if (select) select.value = currentSort;
       renderCards(cachedReports);
     }
 
@@ -1052,10 +1424,32 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
 
     async function loadUsage() {
       try {
-        const res = await fetch('/api/data');
-        if (res.ok) {
-          const json = await res.json();
-          cachedReports = json.data || [];
+        const [dataRes, credsRes] = await Promise.all([
+          fetch('/api/data'),
+          fetch('/api/credentials').catch(() => null)
+        ]);
+        if (dataRes.ok) {
+          const dataJson = await dataRes.json();
+          let reports = dataJson.data || [];
+          if (credsRes && credsRes.ok) {
+            try {
+              const credsJson = await credsRes.json();
+              const credsList = credsJson.data || [];
+              const credsMap = {};
+              credsList.forEach(c => { credsMap[c.id] = c; });
+              reports = reports.map(r => {
+                const cr = r.credentialId ? credsMap[r.credentialId] : null;
+                return {
+                  ...r,
+                  createdAt: r.createdAt || (cr ? cr.createdAt : undefined),
+                  accent: r.accent || (cr ? cr.accent : undefined)
+                };
+              });
+            } catch {}
+          }
+          cachedReports = reports;
+          lastPolledAt = Date.now();
+          updateSyncStatus();
           updateSummary(cachedReports);
           renderCards(cachedReports);
         }
@@ -1196,7 +1590,8 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         provider: document.getElementById('providerSelect').value,
         accountLabel: document.getElementById('accountLabel').value,
         credentialType: document.getElementById('credentialType').value,
-        secret: document.getElementById('secretValue').value
+        secret: document.getElementById('secretValue').value,
+        accent: document.getElementById('accountAccentSelect').value || null
       };
       await fetch('/api/credentials', {
         method: 'POST',
@@ -1208,16 +1603,77 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       setTimeout(pollNow, 500);
     }
 
+    function startEditingLabel(cardKey) {
+      editingCardId = cardKey;
+      renderCards(cachedReports);
+      const input = document.getElementById('editLabelInput_' + cardKey);
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }
+
+    function cancelEditingLabel() {
+      editingCardId = null;
+      renderCards(cachedReports);
+    }
+
+    async function saveAccountLabel(cardKey, newLabel) {
+      const trimmed = (newLabel || '').trim();
+      if (!cardKey || !trimmed) {
+        editingCardId = null;
+        renderCards(cachedReports);
+        return;
+      }
+      try {
+        const res = await fetch('/api/credentials/' + encodeURIComponent(cardKey), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accountLabel: trimmed })
+        });
+        const json = await res.json();
+        if (json.success) {
+          const rep = cachedReports.find(r => (r.credentialId || r.provider) === cardKey);
+          if (rep) rep.accountLabel = trimmed;
+        }
+      } catch (err) {
+        console.error('Failed to update account label:', err);
+      } finally {
+        editingCardId = null;
+        renderCards(cachedReports);
+      }
+    }
+
+    async function saveAccountAccent(cardKey, accentKey) {
+      if (!cardKey) return;
+      try {
+        const res = await fetch('/api/credentials/' + encodeURIComponent(cardKey), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accent: accentKey })
+        });
+        const json = await res.json();
+        if (json.success) {
+          const rep = cachedReports.find(r => (r.credentialId || r.provider) === cardKey);
+          if (rep) rep.accent = accentKey;
+        }
+      } catch (err) {
+        console.error('Failed to update account accent:', err);
+      } finally {
+        renderCards(cachedReports);
+      }
+    }
+
     // Drag & Drop handlers
     function handleDragStart(e, id) {
-      if (!isEditMode) return;
+      if (!isEditMode || currentGroup !== 'none' || currentSort !== 'custom') return;
       draggedCardId = id;
       e.dataTransfer.effectAllowed = 'move';
       e.currentTarget.classList.add('opacity-40');
     }
 
     function handleDragOver(e) {
-      if (!isEditMode) return;
+      if (!isEditMode || currentGroup !== 'none' || currentSort !== 'custom') return;
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
       e.currentTarget.classList.add('drag-over');
@@ -1230,7 +1686,7 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
     function handleDrop(e, targetId) {
       e.preventDefault();
       e.currentTarget.classList.remove('drag-over');
-      if (!isEditMode || !draggedCardId || draggedCardId === targetId) return;
+      if (!isEditMode || currentGroup !== 'none' || currentSort !== 'custom' || !draggedCardId || draggedCardId === targetId) return;
 
       const fromIdx = cachedReports.findIndex(r => (r.credentialId || r.provider) === draggedCardId);
       const toIdx = cachedReports.findIndex(r => (r.credentialId || r.provider) === targetId);
@@ -1261,7 +1717,7 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       let score = 0;
       for (const l of report.limits || []) {
         if (l.amount?.unit === 'usd' && typeof l.amount.remaining === 'number') {
-          return l.amount.remaining * 10; // weigh USD
+          return l.amount.remaining * 10;
         }
         if (l.amount?.unit === 'percent' && typeof l.amount.remaining === 'number') {
           return l.amount.remaining;
@@ -1290,12 +1746,145 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
             return list;
           } catch {}
         }
+      } else if (sortKey === 'date_added') {
+        const hasValidCreatedAt = list.some(r => typeof r.createdAt === 'number' && r.createdAt > 0);
+        if (hasValidCreatedAt) {
+          list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        }
+        return list;
       } else if (sortKey === 'highest_available') {
         list.sort((a, b) => getReportScore(b) - getReportScore(a));
       } else if (sortKey === 'lowest_available') {
         list.sort((a, b) => getReportScore(a) - getReportScore(b));
       }
       return list;
+    }
+
+    function renderCardHtml(r) {
+      const cardKey = r.credentialId || r.provider;
+      const cleanLabel = (r.accountLabel || 'Default').replace(/^Google \((.*)\)$/, '$1');
+      const providerTitle = formatProviderTitle(r.provider);
+      const cardAccent = r.accent || '';
+
+      const canDrag = isEditMode && currentGroup === 'none' && currentSort === 'custom';
+      const dragAttrs = canDrag
+        ? ' draggable="true" ondragstart="handleDragStart(event, this.dataset.cardId)" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event, this.dataset.cardId)" ondragend="handleDragEnd(event)"'
+        : '';
+
+      const editBorderClass = isEditMode
+        ? ' border-dashed border-appAccent/50 cursor-grab active:cursor-grabbing hover:border-appAccent'
+        : ' border-appBorder hover:border-zinc-700';
+
+      const errorMsg = getLocalizedReportError(r);
+      const errorHtml = errorMsg ? (
+        '<div class="bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs px-3 py-2 rounded-xl flex items-center gap-2">' +
+        '  <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
+        '  <span class="truncate">' + escapeHtml(errorMsg) + '</span>' +
+        '</div>'
+      ) : '';
+
+      const limitsHtml = (r.limits || []).map(l => {
+        let valueHtml = '';
+        let barHtml = '';
+
+        if (l.amount.unit === 'percent') {
+          const used = l.amount.used || 0;
+          const barColor = used >= 90 ? 'bg-rose-500' : used >= 75 ? 'bg-amber-500' : 'bg-emerald-500';
+          valueHtml = '<span class="font-bold text-sm text-appText">' + used.toFixed(1) + '%</span>';
+          barHtml = '<div class="w-full bg-appBorder h-1.5 rounded-full overflow-hidden mt-2"><div class="' + barColor + ' h-full transition-all duration-300" style="width: ' + Math.min(100, used) + '%"></div></div>';
+        } else if (l.amount.unit === 'usd') {
+          const rem = l.amount.remaining ?? 0;
+          valueHtml = '<span class="font-bold text-sm text-emerald-500">$' + rem.toFixed(2) + '</span>';
+        } else if (l.amount.unit === 'credits') {
+          const rem = l.amount.remaining ?? 0;
+          const labelText = currentLang === 'tr' ? (rem + ' Hak Mevcut') : (rem + ' Available');
+          valueHtml = '<span class="account-card-accent-badge font-semibold text-xs px-2.5 py-0.5 rounded-md">' + labelText + '</span>';
+        }
+
+        let countdownHtml = '';
+        if (l.window && l.window.resetsAt) {
+          const diffMin = Math.max(0, Math.round((l.window.resetsAt - Date.now()) / 60000));
+          const hours = Math.floor(diffMin / 60);
+          const mins = diffMin % 60;
+          const timeLabel = currentLang === 'tr'
+            ? (hours > 0 ? (hours + 'sa ' + mins + 'dk') : (mins + 'dk'))
+            : (hours > 0 ? (hours + 'h ' + mins + 'm') : (mins + 'm'));
+          countdownHtml = '<span class="text-xs text-appTextMuted flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-appTextMuted/70"></span>' + t('resetsIn') + ': ' + timeLabel + '</span>';
+        }
+
+        const cleanLabel = translateLimitLabel(l.label, l.id);
+        const cleanNotes = (l.notes || []).filter(n => !String(n).toLowerCase().includes('model'));
+        const notesHtml = cleanNotes.map(n => '<span class="text-xs text-appTextMuted block mt-0.5">' + translateNote(n) + '</span>').join('');
+
+        return '<div class="bg-appMuted/40 border border-appBorder rounded-xl p-3.5 space-y-1.5">' +
+               '  <div class="flex justify-between items-center">' +
+               '    <span class="text-sm font-semibold text-appText tracking-tight">' + cleanLabel + '</span>' +
+               '    ' + valueHtml +
+               '  </div>' +
+               barHtml +
+               '  <div class="flex justify-between items-center pt-1">' +
+               countdownHtml +
+               '  </div>' +
+               notesHtml +
+               '</div>';
+      }).join('');
+
+      let labelDisplayHtml = '';
+      if (isEditMode) {
+        if (editingCardId === cardKey) {
+          labelDisplayHtml =
+            '<div class="flex items-center gap-1.5 mt-1" draggable="false" onmousedown="event.stopPropagation()">' +
+            '  <input type="text" id="editLabelInput_' + cardKey + '" data-key="' + cardKey + '" value="' + escapeHtml(cleanLabel) + '" class="text-xs px-2.5 py-1 bg-appMuted border border-appAccent rounded-md text-appText outline-none w-36" onkeydown="if(event.key===&quot;Enter&quot;)saveAccountLabel(this.dataset.key, this.value); if(event.key===&quot;Escape&quot;)cancelEditingLabel();" />' +
+            '  <button type="button" data-key="' + cardKey + '" onclick="saveAccountLabel(this.dataset.key, document.getElementById(&quot;editLabelInput_&quot; + this.dataset.key).value)" class="px-2 py-1 text-xs bg-appAccent text-zinc-950 font-semibold rounded-md hover:bg-appAccentHover" data-i18n-title="save">✓</button>' +
+            '  <button type="button" onclick="cancelEditingLabel()" class="px-2 py-1 text-xs bg-appMuted text-appTextMuted rounded-md hover:text-appText" data-i18n-title="cancel">✕</button>' +
+            '</div>';
+        } else {
+          labelDisplayHtml =
+            '<div class="flex items-center gap-2 mt-1" draggable="false" onmousedown="event.stopPropagation()">' +
+            '  <span class="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-appMuted text-appTextMuted border border-appBorder">' + escapeHtml(cleanLabel) + '</span>' +
+            '  <button type="button" data-key="' + cardKey + '" onclick="startEditingLabel(this.dataset.key)" class="text-[11px] font-medium text-appAccent hover:underline flex items-center gap-1">' +
+            '    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>' +
+            '    <span>' + t('editLabel') + '</span>' +
+            '  </button>' +
+            '</div>';
+        }
+      } else {
+        labelDisplayHtml = '<span class="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-appMuted text-appTextMuted border border-appBorder">' + escapeHtml(cleanLabel) + '</span>';
+      }
+
+      let editAccentHtml = '';
+      if (isEditMode) {
+        const a = r.accent || '';
+        editAccentHtml =
+          '<div class="pt-2 border-t border-appBorder/50 flex items-center justify-between text-xs" draggable="false" onmousedown="event.stopPropagation()">' +
+          '  <span class="text-[11px] font-semibold text-appTextMuted">' + t('cardAccent') + ':</span>' +
+          '  <div class="flex items-center gap-1.5">' +
+          '    <button type="button" data-key="' + cardKey + '" onclick="saveAccountAccent(this.dataset.key, null)" title="' + t('accentDefault') + '" class="w-4 h-4 rounded-full border border-appBorder bg-transparent relative flex items-center justify-center ' + (!a ? 'ring-2 ring-appAccent' : '') + '"><span class="w-1.5 h-1.5 rounded-full bg-appTextMuted/40"></span></button>' +
+          '    <button type="button" data-key="' + cardKey + '" data-accent="amber" onclick="saveAccountAccent(this.dataset.key, this.dataset.accent)" title="Amber" class="w-4 h-4 rounded-full bg-[#ff9849] ' + (a === 'amber' ? 'ring-2 ring-white' : '') + '"></button>' +
+          '    <button type="button" data-key="' + cardKey + '" data-accent="emerald" onclick="saveAccountAccent(this.dataset.key, this.dataset.accent)" title="Emerald" class="w-4 h-4 rounded-full bg-[#10b981] ' + (a === 'emerald' ? 'ring-2 ring-white' : '') + '"></button>' +
+          '    <button type="button" data-key="' + cardKey + '" data-accent="cyan" onclick="saveAccountAccent(this.dataset.key, this.dataset.accent)" title="Cyan" class="w-4 h-4 rounded-full bg-[#06b6d4] ' + (a === 'cyan' ? 'ring-2 ring-white' : '') + '"></button>' +
+          '    <button type="button" data-key="' + cardKey + '" data-accent="violet" onclick="saveAccountAccent(this.dataset.key, this.dataset.accent)" title="Violet" class="w-4 h-4 rounded-full bg-[#a855f7] ' + (a === 'violet' ? 'ring-2 ring-white' : '') + '"></button>' +
+          '    <button type="button" data-key="' + cardKey + '" data-accent="slate" onclick="saveAccountAccent(this.dataset.key, this.dataset.accent)" title="Slate" class="w-4 h-4 rounded-full bg-[#38bdf8] ' + (a === 'slate' ? 'ring-2 ring-white' : '') + '"></button>' +
+          '  </div>' +
+          '</div>';
+      }
+
+      return '<div data-card-id="' + cardKey + '" data-accent="' + cardAccent + '" class="account-card bg-appSurface border ' + editBorderClass + ' rounded-2xl p-5 space-y-4 transition-all shadow-sm relative"' + dragAttrs + '>' +
+             '  <div class="flex justify-between items-start">' +
+             '    <div>' +
+             '      <div class="flex items-center gap-2.5 flex-wrap">' +
+             '        <h2 class="font-bold text-appText text-base tracking-tight">' + providerTitle + '</h2>' +
+             (!isEditMode ? labelDisplayHtml : '') +
+             '      </div>' +
+             (isEditMode ? labelDisplayHtml : '') +
+             '      <span class="text-xs text-appTextMuted block mt-1.5">' + t('lastUpdate') + ': ' + new Date(r.fetchedAt).toLocaleTimeString() + '</span>' +
+             '    </div>' +
+             '    <button data-id="' + (r.credentialId || '') + '" onclick="deleteAccount(this.dataset.id)" title="' + t('deleteAccount') + '" data-i18n-title="deleteAccount" class="text-appTextMuted hover:text-rose-500 text-sm p-1.5 rounded-lg hover:bg-appMuted transition">✕</button>' +
+             '  </div>' +
+             errorHtml +
+             '  <div class="space-y-2.5">' + limitsHtml + '</div>' +
+             editAccentHtml +
+             '</div>';
     }
 
     function renderCards(reports) {
@@ -1308,89 +1897,31 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
 
       const sortedList = sortReports(reports, currentSort);
 
-      container.innerHTML = sortedList.map(r => {
-        const limitsHtml = (r.limits || []).map(l => {
-          let valueHtml = '';
-          let barHtml = '';
+      if (currentGroup === 'provider') {
+        const groups = {};
+        sortedList.forEach(r => {
+          const p = r.provider || 'other';
+          if (!groups[p]) groups[p] = [];
+          groups[p].push(r);
+        });
 
-          if (l.amount.unit === 'percent') {
-            const used = l.amount.used || 0;
-            const barColor = used >= 90 ? 'bg-rose-500' : used >= 75 ? 'bg-amber-500' : 'bg-emerald-500';
-            valueHtml = '<span class="font-bold text-sm text-appText">' + used.toFixed(1) + '%</span>';
-            barHtml = '<div class="w-full bg-appBorder h-1.5 rounded-full overflow-hidden mt-2"><div class="' + barColor + ' h-full transition-all duration-300" style="width: ' + Math.min(100, used) + '%"></div></div>';
-          } else if (l.amount.unit === 'usd') {
-            const rem = l.amount.remaining ?? 0;
-            valueHtml = '<span class="font-bold text-sm text-emerald-500">$' + rem.toFixed(2) + '</span>';
-          } else if (l.amount.unit === 'credits') {
-            const rem = l.amount.remaining ?? 0;
-            const badgeCls = rem > 0 
-              ? 'bg-appAccentSoft text-appAccent border border-appAccent/30' 
-              : 'bg-appMuted text-appTextMuted border border-appBorder';
-            const labelText = currentLang === 'tr' ? (rem + ' Hak Mevcut') : (rem + ' ' + t('rightsAvailable'));
-            valueHtml = '<span class="font-semibold text-xs ' + badgeCls + ' px-2.5 py-0.5 rounded-md">' + labelText + '</span>';
-          }
-
-          let countdownHtml = '';
-          if (l.window && l.window.resetsAt) {
-            const diffMin = Math.max(0, Math.round((l.window.resetsAt - Date.now()) / 60000));
-            const hours = Math.floor(diffMin / 60);
-            const mins = diffMin % 60;
-            const timeLabel = currentLang === 'tr' 
-              ? (hours > 0 ? (hours + 'sa ' + mins + 'dk') : (mins + 'dk'))
-              : (hours > 0 ? (hours + 'h ' + mins + 'm') : (mins + 'm'));
-            countdownHtml = '<span class="text-xs text-appTextMuted flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-appTextMuted/70"></span>' + t('resetsIn') + ': ' + timeLabel + '</span>';
-          }
-
-          const cleanLabel = translateLimitLabel(l.label, l.id);
-          const notesHtml = (l.notes || []).map(n => '<span class="text-xs text-appTextMuted block mt-0.5">' + translateNote(n) + '</span>').join('');
-
-          return '<div class="bg-appMuted/40 border border-appBorder rounded-xl p-3.5 space-y-1.5">' +
-                 '  <div class="flex justify-between items-center">' +
-                 '    <span class="text-sm font-semibold text-appText tracking-tight">' + cleanLabel + '</span>' +
-                 '    ' + valueHtml +
-                 '  </div>' +
-                 barHtml +
-                 '  <div class="flex justify-between items-center pt-1">' +
-                 countdownHtml +
-                 '  </div>' +
-                 notesHtml +
-                 '</div>';
-        }).join('');
-
-        const cardKey = r.credentialId || r.provider;
-        const dragAttrs = isEditMode
-          ? ' draggable="true" ondragstart="handleDragStart(event, \\'' + cardKey + '\\')" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event, \\'' + cardKey + '\\')" ondragend="handleDragEnd(event)"'
-          : '';
-
-        const editBorderClass = isEditMode
-          ? ' border-dashed border-appAccent/60 cursor-grab active:cursor-grabbing hover:border-appAccent'
-          : ' border-appBorder hover:border-zinc-700';
-
-        const dragHandleHtml = isEditMode
-          ? '<span class="text-appAccent font-mono text-sm cursor-grab" title="Sürükle">⋮⋮</span>'
-          : '';
-
-        const providerTitle = (r.provider.toLowerCase() === 'antigravity' || r.provider.toLowerCase() === 'google-antigravity')
-          ? 'Antigravity'
-          : (r.provider.toLowerCase() === 'openai-codex' ? 'OpenAI Codex' : (r.provider.charAt(0).toUpperCase() + r.provider.slice(1)));
-
-        const cleanLabel = (r.accountLabel || 'Default').replace(/^Google \((.*)\)$/, '$1');
-
-        return '<div data-card-id="' + cardKey + '" class="bg-appSurface border ' + editBorderClass + ' rounded-2xl p-5 space-y-4 transition-all shadow-sm"' + dragAttrs + '>' +
-               '  <div class="flex justify-between items-start">' +
-               '    <div>' +
-               '      <div class="flex items-center gap-2.5">' +
-               '        ' + dragHandleHtml +
-               '        <h2 class="font-bold text-appText text-base tracking-tight">' + providerTitle + '</h2>' +
-               '        <span class="text-xs font-semibold px-2.5 py-0.5 rounded-md bg-appMuted text-appTextMuted border border-appBorder">' + cleanLabel + '</span>' +
-               '      </div>' +
-               '      <span class="text-xs text-appTextMuted block mt-1.5">' + t('lastUpdate') + ': ' + new Date(r.fetchedAt).toLocaleTimeString() + '</span>' +
-               '    </div>' +
-               '    <button data-id="' + (r.credentialId || '') + '" onclick="deleteAccount(this.dataset.id)" title="Hesabı Kaldır" class="text-appTextMuted hover:text-rose-500 text-sm p-1.5 rounded-lg hover:bg-appMuted transition">✕</button>' +
-               '  </div>' +
-               '  <div class="space-y-2.5">' + limitsHtml + '</div>' +
-               '</div>';
-      }).join('');
+        let html = '';
+        Object.keys(groups).sort().forEach(p => {
+          const groupReports = groups[p];
+          const providerTitle = formatProviderTitle(p);
+          html +=
+            '<div class="col-span-full pt-4 first:pt-0 pb-1.5 border-b border-appBorder flex items-center justify-between">' +
+            '  <div class="flex items-center gap-2">' +
+            '    <span class="font-bold text-sm text-appText tracking-tight">' + providerTitle + '</span>' +
+            '    <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-appMuted text-appTextMuted border border-appBorder">' + groupReports.length + '</span>' +
+            '  </div>' +
+            '</div>';
+          html += groupReports.map(renderCardHtml).join('');
+        });
+        container.innerHTML = html;
+      } else {
+        container.innerHTML = sortedList.map(renderCardHtml).join('');
+      }
     }
 
     async function deleteAccount(id) {
@@ -1402,10 +1933,14 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
     // Initialize
     applyLightDarkMode(currentMode);
     applyAccent(currentAccent);
-    applyI18n();
     const sortSelect = document.getElementById('sortSelect');
     if (sortSelect) sortSelect.value = currentSort;
+    const groupSelect = document.getElementById('groupSelect');
+    if (groupSelect) groupSelect.value = currentGroup;
+    applyI18n();
+    updateEditButtonState();
     setInterval(loadUsage, 10000);
+    setInterval(updateSyncStatus, 1000);
   </script>
 </body>
 </html>`;

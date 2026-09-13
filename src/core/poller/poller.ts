@@ -84,12 +84,10 @@ export class PollerEngine {
 
     // Jittered stagger: spread executions across 0..5000ms to avoid burst
     for (const cred of credentials) {
-      const jitterMs = Math.floor(Math.random() * 2000);
-      if (jitterMs > 0) {
-        const { promise, resolve } = Promise.withResolvers<void>();
-        setTimeout(resolve, jitterMs);
-        await promise;
-      }
+      const staggerMs = 400 + Math.floor(Math.random() * 600);
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, staggerMs);
+      await promise;
 
       const report = await this.pollCredential(cred);
       if (report) reports.push(report);

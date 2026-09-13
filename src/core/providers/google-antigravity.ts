@@ -95,22 +95,39 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
       }
     } catch {}
 
-    // 3. Fetch available models
-    const response = await fetchImpl(`${DEFAULT_ENDPOINT}/v1internal:fetchAvailableModels`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-        "User-Agent": ANTIGRAVITY_USER_AGENT,
-      },
-      body: JSON.stringify({ project: projectId }),
-      signal: ctx?.signal,
-    });
+    // 3. Fetch available models with retry on ECONNRESET
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      "User-Agent": ANTIGRAVITY_USER_AGENT,
+      Connection: "close",
+    };
 
-    if (!response.ok) {
-      throw new Error(`Google Antigravity kota sorgusu başarısız: HTTP ${response.status} ${response.statusText}`);
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        response = await fetchImpl(`${DEFAULT_ENDPOINT}/v1internal:fetchAvailableModels`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ project: projectId }),
+          signal: ctx?.signal,
+        });
+        break;
+      } catch (err: unknown) {
+        const isErrObj = typeof err === "object" && err !== null;
+        const isConnReset = err instanceof Error && (err.message.includes("ECONNRESET") || (isErrObj && "code" in err && err.code === "ECONNRESET"));
+        if (isConnReset && attempt === 0) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          await promise;
+          continue;
+        }
+        throw err;
+      }
     }
 
+    if (!response || !response.ok) {
+      throw new Error(`Google Antigravity kota sorgusu başarısız: HTTP ${response?.status || 0} ${response?.statusText || ""}`);
+    }
     const data = (await response.json()) as AntigravityUsageResponse;
     const models = data.models ?? {};
 

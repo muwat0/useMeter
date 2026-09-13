@@ -8,8 +8,14 @@ import { CopilotAdapter } from "./copilot";
 import { CursorAdapter } from "./cursor";
 import { XaiAdapter } from "./xai";
 import { ZaiAdapter } from "./zai";
+import { MiniMaxAdapter } from "./minimax-code";
+import { ClinePassAdapter } from "./cline-pass";
+import { DevinAdapter } from "./devin";
+import { UmansAdapter } from "./umans";
+import { GoogleGeminiCliAdapter } from "./google-gemini-cli";
+import { KimiCodeAdapter } from "./kimi-code";
 import { OpenCodeGoAdapter } from "./opencode-go";
-import { KimiAdapter } from "./kimi";
+import { AlibabaTokenPlanAdapter } from "./alibaba-token-plan";
 
 export class ProviderRegistry {
   readonly #adapters: ProviderAdapter[] = [];
@@ -38,7 +44,13 @@ export function createDefaultRegistry(): ProviderRegistry {
   registry.register(new CursorAdapter());
   registry.register(new XaiAdapter());
   registry.register(new ZaiAdapter());
+  registry.register(new MiniMaxAdapter());
+  registry.register(new ClinePassAdapter());
+  registry.register(new DevinAdapter());
+  registry.register(new UmansAdapter());
+  registry.register(new GoogleGeminiCliAdapter());
+  registry.register(new KimiCodeAdapter());
   registry.register(new OpenCodeGoAdapter());
-  registry.register(new KimiAdapter());
+  registry.register(new AlibabaTokenPlanAdapter());
   return registry;
 }
