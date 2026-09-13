@@ -19,6 +19,7 @@ import {
   exchangeClaudeCode,
   listenForClaudeCallback,
 } from "../core/oauth/claude";
+import { syncCredentialsFromOmp } from "../core/omp-sync";
 
 interface PendingOAuthSession {
   provider: string;
@@ -242,6 +243,17 @@ export function createServer(vault: StorageVault, poller: PollerEngine, _registr
     const latest = vault.getLatestUsage();
     return c.html(renderDashboardHtml(latest));
   });
+  // API: Sync all credentials from OMP agent.db
+  app.post("/api/omp/sync", async c => {
+    try {
+      const syncRes = syncCredentialsFromOmp(vault);
+      // Trigger background poll for all accounts
+      poller.pollAll().catch(() => {});
+      return c.json({ success: true, total: syncRes.total, imported: syncRes.imported });
+    } catch (err) {
+      return c.json({ success: false, error: String(err) }, 500);
+    }
+  });
 
   return app;
 }
@@ -253,6 +265,11 @@ function formatProviderTitle(provider: string): string {
   if (p === "openrouter") return "OpenRouter";
   if (p === "deepseek") return "DeepSeek";
   if (p === "anthropic" || p === "claude") return "Anthropic Claude";
+  if (p === "cursor") return "Cursor";
+  if (p === "github-copilot" || p === "copilot") return "GitHub Copilot";
+  if (p === "xai-oauth" || p === "grok" || p === "xai") return "xAI Grok";
+  if (p === "zai" || p === "zhipu" || p === "glm") return "Zhipu AI (GLM)";
+  if (p.includes("opencode")) return "OpenCode";
   return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
@@ -537,6 +554,15 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
             </button>
           </div>
         </div>
+        <!-- OMP Integration Section in Settings -->
+        <div class="pt-3 border-t border-appBorder space-y-2">
+          <label class="block text-xs font-semibold text-appTextMuted" data-i18n="ompSectionTitle">OMP (Oh My Pi) Entegrasyonu</label>
+          <p class="text-xs text-appTextMuted leading-relaxed" data-i18n="ompSectionDesc">OMP veritabanındaki (agent.db) tüm aktif AI hesaplarını (Antigravity, Codex, Cursor, Copilot, Grok, ZAI) tek tıkla içeri aktarın.</p>
+          <button onclick="syncFromOmp()" id="syncOmpBtn" class="w-full py-2.5 px-4 rounded-xl border border-appBorder bg-appMuted hover:border-appAccent text-appText text-xs font-semibold flex items-center justify-center gap-2 transition">
+            <span>⚡</span>
+            <span id="syncOmpBtnText" data-i18n="syncOmpBtn">OMP Hesaplarını Eşitle</span>
+          </button>
+        </div>
       </div>
 
       <div class="flex justify-end pt-3 border-t border-appBorder">
@@ -714,7 +740,13 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         sortCustom: "Özel Sıralama",
         sortDateAdded: "Eklenme Tarihi",
         sortHighest: "En Yüksek Kalan",
-        sortLowest: "En Düşük Kalan"
+        sortLowest: "En Düşük Kalan",
+        ompSectionTitle: "OMP (Oh My Pi) Entegrasyonu",
+        ompSectionDesc: "OMP veritabanındaki (agent.db) tüm aktif AI hesaplarını (Antigravity, Codex, Cursor, Copilot, Grok, ZAI) tek tıkla içeri aktarın.",
+        syncOmpBtn: "OMP Hesaplarını Eşitle",
+        syncing: "Eşitleniyor...",
+        syncSuccess: "Eşitleme Tamamlandı",
+        accountsImported: "hesap aktarıldı"
       },
       en: {
         flag: "🇬🇧",
@@ -762,7 +794,13 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         sortCustom: "Custom (Drag & Drop)",
         sortDateAdded: "Date Added",
         sortHighest: "Highest Available",
-        sortLowest: "Lowest Available"
+        sortLowest: "Lowest Available",
+        ompSectionTitle: "OMP (Oh My Pi) Integration",
+        ompSectionDesc: "Import all active AI accounts from OMP database (agent.db) in one click.",
+        syncOmpBtn: "Sync Accounts from OMP",
+        syncing: "Syncing...",
+        syncSuccess: "Sync Complete",
+        accountsImported: "account(s) imported"
       }
     };
 
@@ -912,7 +950,25 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
 
     function openSettingsModal() { document.getElementById('settingsModal').classList.remove('hidden'); document.getElementById('settingsModal').classList.add('flex'); }
     function closeSettingsModal() { document.getElementById('settingsModal').classList.add('hidden'); document.getElementById('settingsModal').classList.remove('flex'); }
-
+    async function syncFromOmp() {
+      const btnText = document.getElementById('syncOmpBtnText');
+      if (btnText) btnText.innerText = t('syncing');
+      try {
+        const res = await fetch('/api/omp/sync', { method: 'POST' });
+        const json = await res.json();
+        if (json.success) {
+          alert(t('syncSuccess') + ': ' + (json.total || 0) + ' ' + t('accountsImported'));
+          closeSettingsModal();
+          await pollNow();
+        } else {
+          alert('OMP Sync Error: ' + (json.error || 'Failed'));
+        }
+      } catch (err) {
+        alert('OMP Sync Error: ' + err);
+      } finally {
+        if (btnText) btnText.innerText = t('syncOmpBtn');
+      }
+    }
     function toggleEditMode() {
       isEditMode = !isEditMode;
       const btn = document.getElementById('editModeBtn');
