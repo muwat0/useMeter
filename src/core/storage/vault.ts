@@ -188,6 +188,14 @@ export class StorageVault {
   }
   saveUsageSnapshot(report: UsageReport): void {
     if (this.#closed || !report.credentialId) return;
+    const cleanReport: UsageReport = {
+      provider: report.provider,
+      credentialId: report.credentialId,
+      accountLabel: report.accountLabel,
+      fetchedAt: report.fetchedAt,
+      limits: report.limits || [],
+    };
+
     const stmt = this.#db.prepare(`
       INSERT INTO usage_snapshots (
         credential_id, provider, account_label, report_json, fetched_at
@@ -198,13 +206,12 @@ export class StorageVault {
       report.credentialId,
       report.provider,
       report.accountLabel || "Default",
-      JSON.stringify(report),
+      JSON.stringify(cleanReport),
       report.fetchedAt,
     );
   }
 
   getLatestUsage(): UsageReport[] {
-    // Select latest snapshot for each credential
     const stmt = this.#db.prepare(`
       SELECT s.report_json
       FROM usage_snapshots s
@@ -216,7 +223,15 @@ export class StorageVault {
     `);
 
     const rows = stmt.all() as { report_json: string }[];
-    return rows.map(r => JSON.parse(r.report_json) as UsageReport);
+    const result: UsageReport[] = [];
+    for (const r of rows) {
+      try {
+        const parsed = JSON.parse(r.report_json) as UsageReport;
+        delete parsed.raw;
+        result.push(parsed);
+      } catch {}
+    }
+    return result;
   }
 
   checkIntegrity(): boolean {

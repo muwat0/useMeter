@@ -510,6 +510,14 @@ function renderDashboardHtml(): string {
 
   <!-- Client Script -->
   <script>
+    window.onerror = function(msg, url, line) {
+      console.error('JS Error:', msg, line);
+      const grid = document.getElementById('cardsGrid');
+      if (grid) {
+        grid.innerHTML = '<div class="col-span-full p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-mono">JS Error: ' + msg + ' (Line: ' + line + ')</div>';
+      }
+    };
+
     const THEME_ACCENTS = {
       amber: { accent: '#ff9849', accentHover: '#ea7c2b', accentSoft: 'rgba(255, 152, 73, 0.12)' },
       emerald: { accent: '#10b981', accentHover: '#059669', accentSoft: 'rgba(16, 185, 129, 0.12)' },
@@ -517,7 +525,6 @@ function renderDashboardHtml(): string {
       violet: { accent: '#a855f7', accentHover: '#9333ea', accentSoft: 'rgba(168, 85, 247, 0.12)' },
       slate: { accent: '#38bdf8', accentHover: '#0284c7', accentSoft: 'rgba(56, 189, 248, 0.12)' }
     };
-
     const I18N = {
       tr: {
         flag: "🇹🇷",
@@ -622,6 +629,7 @@ function renderDashboardHtml(): string {
     }
 
     function translateLimitLabel(label, id) {
+      const str = String(label || id || '');
       if (currentLang === 'tr') {
         const trMap = {
           'gemini_5h': 'Gemini — 5 Saatlik Kayan Kota',
@@ -638,7 +646,7 @@ function renderDashboardHtml(): string {
           '5h': '5 Saatlik Kayan Kota',
           '7d': 'Haftalık Genel Kota'
         };
-        return trMap[id] || label;
+        return trMap[id] || str;
       }
 
       const enMap = {
@@ -658,7 +666,7 @@ function renderDashboardHtml(): string {
       };
       if (enMap[id]) return enMap[id];
 
-      return label
+      return str
         .replace(/5 Saatlik Kayan Kota/g, '5-Hour Rolling Quota')
         .replace(/Haftalık \/ Uzun Dönem Kotası/g, 'Weekly Quota')
         .replace(/Haftalık Kota/g, 'Weekly Quota')
@@ -670,8 +678,9 @@ function renderDashboardHtml(): string {
     }
 
     function translateNote(note) {
-      if (currentLang === 'tr') return note;
-      return note
+      const str = String(note || '');
+      if (currentLang === 'tr') return str;
+      return str
         .replace(/Son Geçerlilik:\s*/g, 'Expires: ')
         .replace(/Toplam Yüklenen:\s*/g, 'Total Loaded: ')
         .replace(/Toplam Harcanan:\s*/g, 'Total Spent: ')
@@ -721,11 +730,16 @@ function renderDashboardHtml(): string {
     function applyI18n() {
       document.querySelectorAll('[data-i18n]').forEach(el => {
         const key = el.getAttribute('data-i18n');
-        el.innerHTML = t(key);
+        if (key && key !== 'loading') {
+          el.innerHTML = t(key);
+        }
       });
-      document.getElementById('langFlag').innerText = I18N[currentLang].flag;
-      document.getElementById('langLabel').innerText = currentLang.toUpperCase();
-      document.getElementById('accountLabel').placeholder = t('accountLabelPlaceholder');
+      const flagEl = document.getElementById('langFlag');
+      if (flagEl && I18N[currentLang]) flagEl.innerText = I18N[currentLang].flag;
+      const labelEl = document.getElementById('langLabel');
+      if (labelEl) labelEl.innerText = currentLang.toUpperCase();
+      const accInput = document.getElementById('accountLabel');
+      if (accInput) accInput.placeholder = t('accountLabelPlaceholder');
       if (cachedReports.length) renderCards(cachedReports);
     }
 
@@ -753,33 +767,45 @@ function renderDashboardHtml(): string {
     }
 
     async function loadUsage() {
+      const grid = document.getElementById('cardsGrid');
       try {
         const res = await fetch('/api/usage');
+        if (!res.ok) {
+          if (grid) grid.innerHTML = '<div class="col-span-full text-center text-red-500 py-12 text-sm">HTTP Error: ' + res.status + '</div>';
+          return;
+        }
         const json = await res.json();
         cachedReports = json.data || [];
         updateSummary(cachedReports);
         renderCards(cachedReports);
       } catch (err) {
-        document.getElementById('cardsGrid').innerHTML = '<div class="col-span-full text-center text-red-500 py-12 text-sm">Telemetry load failed.</div>';
+        if (grid) grid.innerHTML = '<div class="col-span-full text-center text-red-500 py-12 text-sm">Telemetry load error: ' + String(err) + '</div>';
       }
     }
 
     function updateSummary(reports) {
-      document.getElementById('statActiveCount').innerText = reports.length;
+      if (!Array.isArray(reports)) return;
+      const countEl = document.getElementById('statActiveCount');
+      if (countEl) countEl.innerText = reports.length;
       let totalBal = 0;
       let exhausted = 0;
 
       reports.forEach(r => {
+        if (!r) return;
         (r.limits || []).forEach(l => {
-          if (l.amount && l.amount.unit === 'usd' && typeof l.amount.remaining === 'number') {
-            if (l.id.includes('balance') || l.id.includes('credits')) totalBal += l.amount.remaining;
+          if (!l || !l.amount) return;
+          if (l.amount.unit === 'usd' && typeof l.amount.remaining === 'number') {
+            const id = String(l.id || '');
+            if (id.includes('balance') || id.includes('credits')) totalBal += l.amount.remaining;
           }
           if (l.status === 'exhausted') exhausted++;
         });
       });
 
-      document.getElementById('statTotalBalance').innerText = '$' + totalBal.toFixed(2);
-      document.getElementById('statExhaustedCount').innerText = exhausted;
+      const balEl = document.getElementById('statTotalBalance');
+      if (balEl) balEl.innerText = '$' + totalBal.toFixed(2);
+      const exhEl = document.getElementById('statExhaustedCount');
+      if (exhEl) exhEl.innerText = exhausted;
     }
 
     async function pollNow() {

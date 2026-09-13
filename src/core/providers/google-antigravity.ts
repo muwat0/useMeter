@@ -244,7 +244,6 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
       accountLabel: credential.accountLabel,
       fetchedAt: now,
       limits,
-      raw: data,
     };
   }
 }
