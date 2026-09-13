@@ -34,7 +34,7 @@ describe("GoogleAntigravityAdapter", () => {
               displayName: "Gemini 3 Flash",
               quotaInfo: {
                 remainingFraction: 0.85,
-                resetTime: new Date(Date.now() + 86400 * 1000).toISOString(),
+                resetTime: new Date(Date.now() + 3600 * 1000).toISOString(),
                 windowLabel: "Günlük",
               },
             },
@@ -42,7 +42,7 @@ describe("GoogleAntigravityAdapter", () => {
               displayName: "Claude Sonnet 4.6",
               quotaInfo: {
                 remainingFraction: 0.4,
-                resetTime: new Date(Date.now() + 86400 * 1000).toISOString(),
+                resetTime: new Date(Date.now() + 3600 * 1000).toISOString(),
                 windowLabel: "Günlük",
               },
             },
