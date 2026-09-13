@@ -653,11 +653,20 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
       <form id="manualSection" onsubmit="handleManualSave(event)" class="hidden space-y-4">
         <div>
           <label class="block text-xs font-semibold text-appTextMuted mb-1.5" data-i18n="provider">Sağlayıcı</label>
-          <select id="providerSelect" class="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none">
-            <option value="openrouter">OpenRouter (API Key)</option>
-            <option value="deepseek">DeepSeek (API Key)</option>
-            <option value="anthropic">Anthropic (OAuth Token / API Key)</option>
-            <option value="openai-codex">OpenAI Codex (OAuth Token)</option>
+          <select id="providerSelect" onchange="updateSecretHelp(this.value)" class="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none cursor-pointer">
+            <option value="antigravity">Antigravity (Google AI Pro)</option>
+            <option value="openai-codex">OpenAI ChatGPT / Codex</option>
+            <option value="github-copilot">GitHub Copilot</option>
+            <option value="cursor">Cursor</option>
+            <option value="anthropic">Anthropic Claude</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="xai-oauth">xAI Grok</option>
+            <option value="zai">Zhipu AI (GLM)</option>
+            <option value="opencode-go">OpenCode Go</option>
+            <option value="kimi">Moonshot Kimi</option>
+            <option value="groq">Groq</option>
+            <option value="alibaba-token-plan">Alibaba Qwen (Bailian)</option>
           </select>
         </div>
         <div>
@@ -673,7 +682,8 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
         </div>
         <div>
           <label class="block text-xs font-semibold text-appTextMuted mb-1.5" data-i18n="secretLabel">Secret / Token</label>
-          <input type="password" id="secretValue" placeholder="sk-... veya bearer token" required class="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none" />
+          <input type="password" id="secretValue" placeholder="Bearer token veya API anahtarı" required class="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none" />
+          <p id="secretHelpText" class="text-[11px] text-appTextMuted mt-1">Google OAuth Access Token veya Refresh Token</p>
         </div>
         <div class="flex justify-end gap-2.5 pt-3 border-t border-appBorder">
           <button type="button" onclick="closeModal()" class="px-4 py-2 rounded-lg text-xs font-semibold bg-appMuted hover:bg-appBorder text-appText transition" data-i18n="cancel">İptal</button>
@@ -945,9 +955,44 @@ function renderDashboardHtml(initialReports: UsageReport[] = []): string {
     }
 
     // Modal controls
-    function openModal() { document.getElementById('modal').classList.remove('hidden'); document.getElementById('modal').classList.add('flex'); }
-    function closeModal() { document.getElementById('modal').classList.add('hidden'); document.getElementById('modal').classList.remove('flex'); document.getElementById('codexDevicePanel').classList.add('hidden'); }
+    function openModal() {
+      document.getElementById('modal').classList.remove('hidden');
+      document.getElementById('modal').classList.add('flex');
+      updateSecretHelp();
+    }
+    function closeModal() {
+      document.getElementById('modal').classList.add('hidden');
+      document.getElementById('modal').classList.remove('flex');
+      document.getElementById('codexDevicePanel').classList.add('hidden');
+    }
 
+    function updateSecretHelp(provider) {
+      const p = provider || (document.getElementById('providerSelect') ? document.getElementById('providerSelect').value : 'antigravity');
+      const input = document.getElementById('secretValue');
+      const help = document.getElementById('secretHelpText');
+      const typeSelect = document.getElementById('credentialType');
+
+      const hints = {
+        'antigravity': { placeholder: 'ya29... veya OAuth Token', help: 'Google OAuth Access Token veya Refresh Token', type: 'oauth' },
+        'openai-codex': { placeholder: 'OpenAI Access Token (eyJ...)', help: 'OpenAI Bearer Access Token', type: 'oauth' },
+        'github-copilot': { placeholder: 'gho_... veya GitHub Personal Token', help: 'GitHub Copilot yetkili erişim tokenı', type: 'oauth' },
+        'cursor': { placeholder: 'Cursor Access Token veya WorkosCursorSessionToken', help: 'Cursor oturum tokenı veya çerezi', type: 'oauth' },
+        'anthropic': { placeholder: 'sk-ant-... veya OAuth Token', help: 'Anthropic API Anahtarı veya Claude Code Tokenı', type: 'oauth' },
+        'openrouter': { placeholder: 'sk-or-v1-...', help: 'OpenRouter API Anahtarı', type: 'api_key' },
+        'deepseek': { placeholder: 'sk-...', help: 'DeepSeek Platform API Anahtarı', type: 'api_key' },
+        'xai-oauth': { placeholder: 'xAI Access Token', help: 'xAI Grok CLI OAuth Tokenı', type: 'oauth' },
+        'zai': { placeholder: 'Zhipu API Key veya Token', help: 'Zhipu AI / GLM erişim anahtarı', type: 'oauth' },
+        'opencode-go': { placeholder: 'OpenCode Go API Key', help: 'OpenCode Zen/Go API Anahtarı', type: 'api_key' },
+        'kimi': { placeholder: 'Kimi API Key veya Bearer Token', help: 'Moonshot Kimi erişim anahtarı', type: 'api_key' },
+        'groq': { placeholder: 'gsk_...', help: 'Groq Cloud API Anahtarı', type: 'api_key' },
+        'alibaba-token-plan': { placeholder: 'Alibaba Token Plan Key / Cookie', help: 'Bailian Coding Plan erişim anahtarı', type: 'api_key' }
+      };
+
+      const h = hints[p] || { placeholder: 'Secret veya API Anahtarı', help: 'Sağlayıcı erişim anahtarı', type: 'api_key' };
+      if (input) input.placeholder = h.placeholder;
+      if (help) help.innerText = h.help;
+      if (typeSelect) typeSelect.value = h.type;
+    }
     function openSettingsModal() { document.getElementById('settingsModal').classList.remove('hidden'); document.getElementById('settingsModal').classList.add('flex'); }
     function closeSettingsModal() { document.getElementById('settingsModal').classList.add('hidden'); document.getElementById('settingsModal').classList.remove('flex'); }
     async function syncFromOmp() {

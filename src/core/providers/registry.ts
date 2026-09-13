@@ -8,6 +8,8 @@ import { CopilotAdapter } from "./copilot";
 import { CursorAdapter } from "./cursor";
 import { XaiAdapter } from "./xai";
 import { ZaiAdapter } from "./zai";
+import { OpenCodeGoAdapter } from "./opencode-go";
+import { KimiAdapter } from "./kimi";
 
 export class ProviderRegistry {
   readonly #adapters: ProviderAdapter[] = [];
@@ -36,5 +38,7 @@ export function createDefaultRegistry(): ProviderRegistry {
   registry.register(new CursorAdapter());
   registry.register(new XaiAdapter());
   registry.register(new ZaiAdapter());
+  registry.register(new OpenCodeGoAdapter());
+  registry.register(new KimiAdapter());
   return registry;
 }
