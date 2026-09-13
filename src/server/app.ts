@@ -249,7 +249,7 @@ function renderDashboardHtml(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI Usage & Quota Tracker</title>
+  <title>AI Usage Tracker — Telemetry & Quota Hub</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -257,12 +257,15 @@ function renderDashboardHtml(): string {
       theme: {
         extend: {
           colors: {
-            bg: 'var(--color-bg)',
-            surface: 'var(--color-surface)',
-            surfaceBorder: 'var(--color-border)',
-            accent: 'var(--color-accent)',
-            accentHover: 'var(--color-accent-hover)',
-            accentBg: 'var(--color-accent-bg)'
+            appBg: 'var(--color-bg)',
+            appSurface: 'var(--color-surface)',
+            appBorder: 'var(--color-border)',
+            appMuted: 'var(--color-muted)',
+            appAccent: 'var(--color-accent)',
+            appAccentHover: 'var(--color-accent-hover)',
+            appAccentSoft: 'var(--color-accent-soft)',
+            appText: 'var(--color-text)',
+            appTextMuted: 'var(--color-text-muted)'
           }
         }
       }
@@ -270,150 +273,218 @@ function renderDashboardHtml(): string {
   </script>
   <style>
     :root {
-      --color-bg: #0a0a0b;
-      --color-surface: #121215;
-      --color-border: #27272a;
+      --color-bg: #090a0d;
+      --color-surface: #111318;
+      --color-border: #1f232b;
+      --color-muted: #171a21;
+      --color-text: #f4f4f6;
+      --color-text-muted: #858b98;
       --color-accent: #ff9849;
       --color-accent-hover: #ea7c2b;
-      --color-accent-bg: rgba(255, 152, 73, 0.15);
+      --color-accent-soft: rgba(255, 152, 73, 0.12);
+      --card-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5);
     }
-    body { background-color: var(--color-bg); color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    html.light {
+      --color-bg: #f8fafc;
+      --color-surface: #ffffff;
+      --color-border: #e2e8f0;
+      --color-muted: #f1f5f9;
+      --color-text: #0f172a;
+      --color-text-muted: #64748b;
+      --color-accent: #ea580c;
+      --color-accent-hover: #c2410c;
+      --color-accent-soft: rgba(234, 88, 12, 0.1);
+      --card-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05);
+    }
+    body {
+      background-color: var(--color-bg);
+      color: var(--color-text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", Roboto, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .font-mono-num {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-variant-numeric: tabular-nums;
+    }
   </style>
 </head>
-<body class="min-h-screen flex flex-col transition-colors duration-300">
-  <!-- Top Navigation -->
-  <header class="border-b border-surfaceBorder bg-surface/60 backdrop-blur px-6 py-4 flex items-center justify-between sticky top-0 z-10">
-    <div class="flex items-center gap-3">
-      <div class="w-8 h-8 rounded-lg bg-accentBg border border-accent/40 flex items-center justify-center text-accent font-bold">
-        ⚡
-      </div>
-      <div>
-        <h1 class="font-bold text-lg leading-none" data-i18n="title">AI Usage Tracker</h1>
-        <span class="text-xs text-zinc-500" data-i18n="subtitle">Multi-Provider Quota & Balance Hub</span>
-      </div>
-    </div>
-    <div class="flex items-center gap-3">
-      <!-- Theme Selector Dropdown -->
-      <div class="relative">
-        <select id="themeSelect" onchange="changeTheme(this.value)" class="bg-zinc-900 border border-surfaceBorder rounded-md px-2.5 py-1.5 text-xs text-zinc-300 outline-none focus:border-accent cursor-pointer">
-          <option value="amber">⚡ Amber</option>
-          <option value="emerald">🌿 Emerald</option>
-          <option value="cyan">🌊 Cyan</option>
-          <option value="violet">🔮 Violet</option>
-          <option value="slate">❄️ Slate</option>
-        </select>
+<body class="min-h-screen flex flex-col transition-colors duration-200 text-sm">
+  <!-- Top Control Bar -->
+  <header class="border-b border-appBorder bg-appSurface/80 backdrop-blur-md px-6 py-3.5 sticky top-0 z-20 transition-colors">
+    <div class="max-w-7xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <!-- Logo Icon -->
+        <div class="w-8 h-8 rounded border border-appAccent/40 bg-appAccentSoft flex items-center justify-center text-appAccent">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="font-bold tracking-tight text-appText leading-none text-base" data-i18n="title">AI Usage Tracker</h1>
+            <span class="inline-flex items-center gap-1 text-[10px] font-mono-num uppercase tracking-wider text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.2 rounded">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> live
+            </span>
+          </div>
+          <span class="text-[11px] text-appTextMuted tracking-tight" data-i18n="subtitle">Multi-Provider Quota & Balance Hub</span>
+        </div>
       </div>
 
-      <!-- Language Switcher Toggle -->
-      <button onclick="toggleLang()" id="langBtn" class="px-2.5 py-1.5 rounded-md text-xs font-semibold bg-zinc-900 border border-surfaceBorder text-zinc-300 hover:border-accent transition flex items-center gap-1.5">
-        <span>🌐</span>
-        <span id="langLabel">TR</span>
-      </button>
+      <!-- Controls Right -->
+      <div class="flex items-center gap-2 sm:gap-3">
+        <!-- Theme Accent Palette Picker -->
+        <div class="hidden sm:flex items-center border border-appBorder rounded-lg p-0.5 bg-appMuted/60">
+          <button onclick="changeTheme('amber')" title="Amber" class="w-5 h-5 rounded-md bg-[#ff9849] hover:scale-110 transition-transform m-0.5" id="themeDot_amber"></button>
+          <button onclick="changeTheme('emerald')" title="Emerald" class="w-5 h-5 rounded-md bg-[#10b981] hover:scale-110 transition-transform m-0.5" id="themeDot_emerald"></button>
+          <button onclick="changeTheme('cyan')" title="Cyan" class="w-5 h-5 rounded-md bg-[#06b6d4] hover:scale-110 transition-transform m-0.5" id="themeDot_cyan"></button>
+          <button onclick="changeTheme('violet')" title="Violet" class="w-5 h-5 rounded-md bg-[#a855f7] hover:scale-110 transition-transform m-0.5" id="themeDot_violet"></button>
+          <button onclick="changeTheme('slate')" title="Slate" class="w-5 h-5 rounded-md bg-[#38bdf8] hover:scale-110 transition-transform m-0.5" id="themeDot_slate"></button>
+        </div>
 
-      <!-- Refresh Button -->
-      <button onclick="pollNow()" id="pollBtn" class="px-3 py-1.5 rounded-md text-xs font-medium bg-zinc-800 hover:bg-zinc-700 transition flex items-center gap-1.5 text-zinc-200">
-        <span id="pollSpinner" class="hidden animate-spin">⟳</span>
-        <span data-i18n="refresh">Yenile</span>
-      </button>
+        <!-- Dark / Light Mode Toggle Button -->
+        <button onclick="toggleLightDark()" id="lightDarkBtn" title="Koyu / Aydınlık Mod" class="w-8 h-8 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent/50 transition flex items-center justify-center">
+          <span id="lightDarkIcon">☀️</span>
+        </button>
 
-      <!-- Connect Account Button -->
-      <button onclick="openModal()" class="px-3.5 py-1.5 rounded-md text-xs font-semibold bg-accent hover:bg-accentHover text-zinc-950 transition" data-i18n="addAccount">
-        + Hesap Bağla
-      </button>
+        <!-- Language Switcher Toggle with Flag -->
+        <button onclick="toggleLang()" id="langBtn" class="h-8 px-2.5 rounded-lg border border-appBorder bg-appSurface text-appText text-xs font-medium hover:border-appAccent/50 transition flex items-center gap-1.5 font-mono-num">
+          <span id="langFlag" class="text-sm">🇹🇷</span>
+          <span id="langLabel">TR</span>
+        </button>
+
+        <!-- Manual Poll Button -->
+        <button onclick="pollNow()" id="pollBtn" class="h-8 px-3 rounded-lg text-xs font-medium bg-appMuted hover:bg-appBorder text-appText transition flex items-center gap-1.5 border border-appBorder">
+          <svg id="pollSpinner" class="hidden animate-spin w-3.5 h-3.5 text-appAccent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+          </svg>
+          <span data-i18n="refresh">Yenile</span>
+        </button>
+
+        <!-- Connect Account Button -->
+        <button onclick="openModal()" class="h-8 px-3.5 rounded-lg text-xs font-semibold bg-appAccent hover:bg-appAccentHover text-zinc-950 transition flex items-center gap-1.5 shadow-sm" data-i18n="addAccount">
+          <span>+</span>
+          <span>Hesap Bağla</span>
+        </button>
+      </div>
     </div>
   </header>
 
+  <!-- Summary Stats Strip -->
+  <section class="border-b border-appBorder bg-appSurface/30 px-6 py-3">
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4 text-xs">
+      <div class="flex items-center gap-6">
+        <div class="flex items-center gap-2">
+          <span class="text-appTextMuted" data-i18n="summaryActive">Aktif Hesaplar:</span>
+          <span id="statActiveCount" class="font-mono-num font-bold text-appText">0</span>
+        </div>
+        <div class="flex items-center gap-2 border-l border-appBorder pl-6">
+          <span class="text-appTextMuted" data-i18n="summaryBalance">Toplam Ön Ödemeli Bakiye:</span>
+          <span id="statTotalBalance" class="font-mono-num font-bold text-emerald-500">$0.00</span>
+        </div>
+        <div class="flex items-center gap-2 border-l border-appBorder pl-6">
+          <span class="text-appTextMuted" data-i18n="summaryExhausted">Kilitli/Biten Kota:</span>
+          <span id="statExhaustedCount" class="font-mono-num font-bold text-appText">0</span>
+        </div>
+      </div>
+      <div class="text-[11px] text-appTextMuted flex items-center gap-2 font-mono-num">
+        <span data-i18n="autoSync">Canlı Senkronizasyon:</span>
+        <span class="text-appAccent">10s</span>
+      </div>
+    </div>
+  </section>
+
   <!-- Main Container -->
   <main class="flex-1 max-w-7xl w-full mx-auto p-6 space-y-6">
-    <!-- Quick Status Cards Grid -->
     <div id="cardsGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-      <div class="col-span-full py-12 text-center text-zinc-500 animate-pulse" data-i18n="loading">
+      <div class="col-span-full py-20 text-center text-appTextMuted" data-i18n="loading">
         Kullanım verileri yükleniyor...
       </div>
     </div>
   </main>
 
   <!-- Add Credential / OAuth Modal -->
-  <div id="modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
-    <div class="bg-surface border border-surfaceBorder rounded-xl max-w-lg w-full p-6 space-y-5 shadow-2xl">
-      <div class="flex justify-between items-center">
-        <h3 class="font-semibold text-zinc-100" data-i18n="modalTitle">AI Hesabı Bağla</h3>
-        <button onclick="closeModal()" class="text-zinc-500 hover:text-zinc-300 text-sm">✕</button>
+  <div id="modal" class="fixed inset-0 bg-black/60 backdrop-blur-sm hidden items-center justify-center z-50 p-4">
+    <div class="bg-appSurface border border-appBorder rounded-xl max-w-lg w-full p-6 space-y-5 shadow-2xl transition-colors">
+      <div class="flex justify-between items-center pb-2 border-b border-appBorder">
+        <div>
+          <h3 class="font-bold text-appText text-sm" data-i18n="modalTitle">AI Hesabı Bağla</h3>
+          <p class="text-[11px] text-appTextMuted mt-0.5" data-i18n="modalSubtitle">OAuth veya doğrudan API anahtarıyla kota takibi kurun.</p>
+        </div>
+        <button onclick="closeModal()" class="text-appTextMuted hover:text-appText text-base p-1">✕</button>
       </div>
 
-      <!-- Tab Buttons -->
-      <div class="flex border-b border-surfaceBorder">
-        <button onclick="switchTab('oauth')" id="tabOAuth" class="flex-1 pb-2.5 text-xs font-semibold border-b-2 border-accent text-accent" data-i18n="tabOAuth">
-          ⚡ Oturum Açarak Bağlan (OAuth)
+      <!-- Segmented Tab Switcher -->
+      <div class="flex p-1 bg-appMuted rounded-lg border border-appBorder text-xs">
+        <button onclick="switchTab('oauth')" id="tabOAuth" class="flex-1 py-1.5 font-medium rounded-md bg-appSurface text-appText shadow-sm transition" data-i18n="tabOAuth">
+          OAuth ile Oturum Aç
         </button>
-        <button onclick="switchTab('manual')" id="tabManual" class="flex-1 pb-2.5 text-xs font-semibold border-b-2 border-transparent text-zinc-400 hover:text-zinc-200" data-i18n="tabManual">
-          🔑 Manuel API Key / Token
+        <button onclick="switchTab('manual')" id="tabManual" class="flex-1 py-1.5 font-medium rounded-md text-appTextMuted hover:text-appText transition" data-i18n="tabManual">
+          Manuel API Key
         </button>
       </div>
 
-      <!-- OAuth Section -->
-      <div id="oauthSection" class="space-y-4">
-        <p class="text-xs text-zinc-400" data-i18n="oauthDesc">Tek tıkla resmi oturum açma penceresine yönlendirilirsiniz. Token'lar yerel kasada şifrelenir.</p>
-        
-        <div class="grid grid-cols-1 gap-2.5">
-          <!-- Google / Gemini Button -->
-          <button onclick="startGoogleOAuth()" class="flex items-center justify-between p-3 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-accent hover:bg-zinc-800/80 transition group">
+      <!-- OAuth Flow Options -->
+      <div id="oauthSection" class="space-y-3">
+        <p class="text-xs text-appTextMuted" data-i18n="oauthDesc">Resmi sağlayıcı girişine yönlendirilirsiniz. Token'lar yerel veritabanında AES-256-GCM ile şifrelenir.</p>
+
+        <div class="space-y-2">
+          <!-- Google Card -->
+          <button onclick="startGoogleOAuth()" class="w-full flex items-center justify-between p-3.5 rounded-lg border border-appBorder bg-appMuted/30 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
             <div class="flex items-center gap-3">
-              <span class="text-xl">🌐</span>
-              <div class="text-left">
-                <div class="text-xs font-semibold text-zinc-100 group-hover:text-accent transition" data-i18n="googleTitle">Google Gemini / Cloud Code</div>
-                <div class="text-[10px] text-zinc-500" data-i18n="googleDesc">Gemini 3 Flash, 2.5 Pro model kotaları</div>
+              <div class="w-7 h-7 rounded bg-white/10 flex items-center justify-center text-sm font-bold text-blue-400">G</div>
+              <div>
+                <div class="text-xs font-semibold text-appText group-hover:text-appAccent transition" data-i18n="googleTitle">Google Gemini / Cloud Code</div>
+                <div class="text-[11px] text-appTextMuted" data-i18n="googleDesc">Gemini 3 Flash, 2.5 Pro model kotaları</div>
               </div>
             </div>
-            <span class="text-xs font-medium text-accent" data-i18n="loginBtn">Giriş Yap →</span>
+            <span class="text-xs font-mono-num text-appAccent">Oturum Aç →</span>
           </button>
 
-          <!-- OpenAI / Codex Button -->
-          <button onclick="startCodexOAuth()" class="flex items-center justify-between p-3 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-accent hover:bg-zinc-800/80 transition group">
+          <!-- OpenAI Codex Card -->
+          <button onclick="startCodexOAuth()" class="w-full flex items-center justify-between p-3.5 rounded-lg border border-appBorder bg-appMuted/30 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
             <div class="flex items-center gap-3">
-              <span class="text-xl">🤖</span>
-              <div class="text-left">
-                <div class="text-xs font-semibold text-zinc-100 group-hover:text-accent transition" data-i18n="codexTitle">OpenAI ChatGPT / Codex</div>
-                <div class="text-[10px] text-zinc-500" data-i18n="codexDesc">Plus / Pro 5 saatlik kayan kotalar</div>
+              <div class="w-7 h-7 rounded bg-white/10 flex items-center justify-center text-sm font-bold text-emerald-400">O</div>
+              <div>
+                <div class="text-xs font-semibold text-appText group-hover:text-appAccent transition" data-i18n="codexTitle">OpenAI ChatGPT / Codex</div>
+                <div class="text-[11px] text-appTextMuted" data-i18n="codexDesc">Plus / Pro 5 saatlik ve haftalık kotalar</div>
               </div>
             </div>
-            <span class="text-xs font-medium text-accent" data-i18n="loginBtn">Giriş Yap →</span>
+            <span class="text-xs font-mono-num text-appAccent">Oturum Aç →</span>
           </button>
 
-          <!-- Anthropic Claude Button -->
-          <button onclick="startClaudeOAuth()" class="flex items-center justify-between p-3 rounded-lg bg-zinc-900 border border-zinc-800 hover:border-accent hover:bg-zinc-800/80 transition group">
+          <!-- Anthropic Claude Card -->
+          <button onclick="startClaudeOAuth()" class="w-full flex items-center justify-between p-3.5 rounded-lg border border-appBorder bg-appMuted/30 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
             <div class="flex items-center gap-3">
-              <span class="text-xl">🔮</span>
-              <div class="text-left">
-                <div class="text-xs font-semibold text-zinc-100 group-hover:text-accent transition" data-i18n="claudeTitle">Anthropic Claude Pro/Max</div>
-                <div class="text-[10px] text-zinc-500" data-i18n="claudeDesc">5h oturum ve haftalık Opus/Sonnet kotaları</div>
+              <div class="w-7 h-7 rounded bg-white/10 flex items-center justify-center text-sm font-bold text-amber-400">A</div>
+              <div>
+                <div class="text-xs font-semibold text-appText group-hover:text-appAccent transition" data-i18n="claudeTitle">Anthropic Claude Pro/Max</div>
+                <div class="text-[11px] text-appTextMuted" data-i18n="claudeDesc">5h oturum ve haftalık Opus/Sonnet kotaları</div>
               </div>
             </div>
-            <span class="text-xs font-medium text-accent" data-i18n="loginBtn">Giriş Yap →</span>
+            <span class="text-xs font-mono-num text-appAccent">Oturum Aç →</span>
           </button>
         </div>
 
         <!-- Codex Device Code Active State Panel -->
-        <div id="codexDevicePanel" class="hidden p-4 rounded-lg bg-zinc-900/90 border border-accent/40 space-y-3">
-          <div class="text-xs font-medium text-zinc-200" data-i18n="deviceWait">OpenAI Cihaz Onayı Bekleniyor:</div>
-          <div class="flex items-center gap-2">
-            <span class="text-xs text-zinc-400" data-i18n="confirmCode">Onay Kodu:</span>
-            <span id="codexUserCode" class="text-base font-mono font-bold tracking-wider text-accent bg-zinc-800 px-2 py-0.5 rounded">...</span>
+        <div id="codexDevicePanel" class="hidden p-4 rounded-lg bg-appMuted border border-appAccent/40 space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-semibold text-appText" data-i18n="deviceWait">OpenAI Onayı Bekleniyor:</span>
+            <span id="codexUserCode" class="text-xs font-mono-num font-bold tracking-widest text-appAccent bg-appSurface border border-appAccent/30 px-2 py-0.5 rounded">...</span>
           </div>
-          <p class="text-[11px] text-zinc-400" data-i18n="deviceDesc">
-            Açılan OpenAI sayfasında kodu onaylayın. Panel otomatik olarak tamamlanacaktır.
+          <p class="text-[11px] text-appTextMuted leading-relaxed" data-i18n="deviceDesc">
+            Yeni sekmede açılan OpenAI sayfasına bu kodu girin. Onaylandığı an bu pencere kendiliğinden kapanacaktır.
           </p>
-          <a id="codexAuthLink" href="#" target="_blank" class="inline-block text-xs font-semibold text-accent hover:underline" data-i18n="reopenLink">
-            Sayfayı Tekrar Aç ↗
+          <a id="codexAuthLink" href="#" target="_blank" class="inline-flex items-center gap-1 text-xs font-medium text-appAccent hover:underline" data-i18n="reopenLink">
+            Onay Sayfasını Yeniden Aç ↗
           </a>
         </div>
       </div>
 
       <!-- Manual API Key Form Section -->
-      <form id="manualSection" onsubmit="handleManualSave(event)" class="hidden space-y-4">
+      <form id="manualSection" onsubmit="handleManualSave(event)" class="hidden space-y-3.5">
         <div>
-          <label class="block text-xs font-medium text-zinc-400 mb-1" data-i18n="provider">Sağlayıcı</label>
-          <select id="providerSelect" class="w-full bg-zinc-900 border border-surfaceBorder rounded-md px-3 py-2 text-sm text-zinc-200 focus:border-accent outline-none">
+          <label class="block text-[11px] font-medium text-appTextMuted mb-1" data-i18n="provider">Sağlayıcı</label>
+          <select id="providerSelect" class="w-full bg-appMuted border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none">
             <option value="openrouter">OpenRouter (API Key)</option>
             <option value="deepseek">DeepSeek (API Key)</option>
             <option value="anthropic">Anthropic (OAuth Token / API Key)</option>
@@ -421,101 +492,69 @@ function renderDashboardHtml(): string {
           </select>
         </div>
         <div>
-          <label class="block text-xs font-medium text-zinc-400 mb-1" data-i18n="accountLabel">Hesap Adı / Etiket</label>
-          <input type="text" id="accountLabel" placeholder="Örn: Kişisel Pro, İş Hesabı" required class="w-full bg-zinc-900 border border-surfaceBorder rounded-md px-3 py-2 text-sm text-zinc-200 focus:border-accent outline-none" />
+          <label class="block text-[11px] font-medium text-appTextMuted mb-1" data-i18n="accountLabel">Hesap Adı / Etiket</label>
+          <input type="text" id="accountLabel" placeholder="Örn: Kişisel Pro, İş Hesabı" required class="w-full bg-appMuted border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none" />
         </div>
         <div>
-          <label class="block text-xs font-medium text-zinc-400 mb-1" data-i18n="credentialType">Kimlik Türü</label>
-          <select id="credentialType" class="w-full bg-zinc-900 border border-surfaceBorder rounded-md px-3 py-2 text-sm text-zinc-200 focus:border-accent outline-none">
+          <label class="block text-[11px] font-medium text-appTextMuted mb-1" data-i18n="credentialType">Kimlik Türü</label>
+          <select id="credentialType" class="w-full bg-appMuted border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none">
             <option value="api_key" data-i18n="apiKey">API Anahtarı</option>
             <option value="oauth" data-i18n="oauthToken">OAuth Access Token</option>
           </select>
         </div>
         <div>
-          <label class="block text-xs font-medium text-zinc-400 mb-1" data-i18n="secretLabel">Secret / Token</label>
-          <input type="password" id="secretValue" placeholder="sk-... veya bearer token" required class="w-full bg-zinc-900 border border-surfaceBorder rounded-md px-3 py-2 text-sm text-zinc-200 focus:border-accent outline-none" />
+          <label class="block text-[11px] font-medium text-appTextMuted mb-1" data-i18n="secretLabel">Secret / Token</label>
+          <input type="password" id="secretValue" placeholder="sk-... veya bearer token" required class="w-full bg-appMuted border border-appBorder rounded-lg px-3 py-2 text-xs text-appText font-mono-num focus:border-appAccent outline-none" />
         </div>
-        <div class="flex justify-end gap-2 pt-2">
-          <button type="button" onclick="closeModal()" class="px-4 py-2 rounded-md text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300" data-i18n="cancel">İptal</button>
-          <button type="submit" class="px-4 py-2 rounded-md text-xs font-semibold bg-accent hover:bg-accentHover text-zinc-950" data-i18n="saveAndPoll">Kaydet ve Sorgula</button>
+        <div class="flex justify-end gap-2 pt-2 border-t border-appBorder">
+          <button type="button" onclick="closeModal()" class="px-3.5 py-1.5 rounded-lg text-xs font-medium bg-appMuted hover:bg-appBorder text-appText transition" data-i18n="cancel">İptal</button>
+          <button type="submit" class="px-4 py-1.5 rounded-lg text-xs font-semibold bg-appAccent hover:bg-appAccentHover text-zinc-950 transition" data-i18n="saveAndPoll">Kaydet ve Sorgula</button>
         </div>
       </form>
     </div>
   </div>
 
+  <!-- Client Script -->
   <script>
-    // Theme presets
-    const THEMES = {
-      amber: {
-        bg: '#0a0a0b',
-        surface: '#121215',
-        border: '#27272a',
-        accent: '#ff9849',
-        accentHover: '#ea7c2b',
-        accentBg: 'rgba(255, 152, 73, 0.15)'
-      },
-      emerald: {
-        bg: '#000000',
-        surface: '#09090b',
-        border: '#18181b',
-        accent: '#10b981',
-        accentHover: '#059669',
-        accentBg: 'rgba(16, 185, 129, 0.15)'
-      },
-      cyan: {
-        bg: '#05070e',
-        surface: '#0b0f19',
-        border: '#1e293b',
-        accent: '#06b6d4',
-        accentHover: '#0891b2',
-        accentBg: 'rgba(6, 182, 212, 0.15)'
-      },
-      violet: {
-        bg: '#0c0a14',
-        surface: '#141021',
-        border: '#2e2640',
-        accent: '#a855f7',
-        accentHover: '#9333ea',
-        accentBg: 'rgba(168, 85, 247, 0.15)'
-      },
-      slate: {
-        bg: '#0f172a',
-        surface: '#1e293b',
-        border: '#334155',
-        accent: '#38bdf8',
-        accentHover: '#0284c7',
-        accentBg: 'rgba(56, 189, 248, 0.15)'
-      }
+    const THEME_ACCENTS = {
+      amber: { accent: '#ff9849', accentHover: '#ea7c2b', accentSoft: 'rgba(255, 152, 73, 0.12)' },
+      emerald: { accent: '#10b981', accentHover: '#059669', accentSoft: 'rgba(16, 185, 129, 0.12)' },
+      cyan: { accent: '#06b6d4', accentHover: '#0891b2', accentSoft: 'rgba(6, 182, 212, 0.12)' },
+      violet: { accent: '#a855f7', accentHover: '#9333ea', accentSoft: 'rgba(168, 85, 247, 0.12)' },
+      slate: { accent: '#38bdf8', accentHover: '#0284c7', accentSoft: 'rgba(56, 189, 248, 0.12)' }
     };
 
-    // i18n Dictionary
     const I18N = {
       tr: {
+        flag: "🇹🇷",
         title: "AI Usage Tracker",
         subtitle: "Multi-Provider Quota & Balance Hub",
         refresh: "Yenile",
-        addAccount: "+ Hesap Bağla",
+        addAccount: "Hesap Bağla",
+        summaryActive: "Aktif Hesaplar:",
+        summaryBalance: "Toplam Ön Ödemeli Bakiye:",
+        summaryExhausted: "Kilitli/Biten Kota:",
+        autoSync: "Canlı Senkronizasyon:",
         loading: "Kullanım verileri yükleniyor...",
-        noAccounts: "Henüz kayıtlı bir AI sağlayıcısı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.",
+        noAccounts: "Henüz kayıtlı bir AI hesabı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.",
         lastUpdate: "Son Güncelleme",
         deleteConfirm: "Bu hesabı kaldırmak istediğinizden emin misiniz?",
         resetsIn: "Sıfırlanma",
         rights: "Hak",
         modalTitle: "AI Hesabı Bağla",
-        tabOAuth: "⚡ Oturum Açarak Bağlan (OAuth)",
-        tabManual: "🔑 Manuel API Key / Token",
-        oauthDesc: "Tek tıkla resmi oturum açma penceresine yönlendirilirsiniz. Token'lar yerel kasada şifrelenir.",
+        modalSubtitle: "OAuth veya doğrudan API anahtarıyla kota takibi kurun.",
+        tabOAuth: "OAuth ile Oturum Aç",
+        tabManual: "Manuel API Key",
+        oauthDesc: "Resmi sağlayıcı girişine yönlendirilirsiniz. Token'lar yerel veritabanında AES-256-GCM ile şifrelenir.",
         googleTitle: "Google Gemini / Cloud Code",
         googleDesc: "Gemini 3 Flash, 2.5 Pro model kotaları",
         codexTitle: "OpenAI ChatGPT / Codex",
-        codexDesc: "Plus / Pro 5 saatlik kayan kotalar",
+        codexDesc: "Plus / Pro 5 saatlik ve haftalık kotalar",
         claudeTitle: "Anthropic Claude Pro/Max",
         claudeDesc: "5h oturum ve haftalık Opus/Sonnet kotaları",
-        loginBtn: "Giriş Yap →",
-        deviceWait: "OpenAI Cihaz Onayı Bekleniyor:",
-        confirmCode: "Onay Kodu:",
-        deviceDesc: "Açılan OpenAI sayfasında kodu onaylayın. Panel otomatik olarak tamamlanacaktır.",
-        reopenLink: "Sayfayı Tekrar Aç ↗",
+        deviceWait: "OpenAI Onayı Bekleniyor:",
+        deviceDesc: "Yeni sekmede açılan OpenAI sayfasına bu kodu girin. Onaylandığı an bu pencere kendiliğinden kapanacaktır.",
+        reopenLink: "Onay Sayfasını Yeniden Aç ↗",
         provider: "Sağlayıcı",
         accountLabel: "Hesap Adı / Etiket",
         accountLabelPlaceholder: "Örn: Kişisel Pro, İş Hesabı",
@@ -527,34 +566,38 @@ function renderDashboardHtml(): string {
         saveAndPoll: "Kaydet ve Sorgula"
       },
       en: {
+        flag: "🇬🇧",
         title: "AI Usage Tracker",
         subtitle: "Multi-Provider Quota & Balance Hub",
         refresh: "Refresh",
-        addAccount: "+ Connect Account",
+        addAccount: "Connect Account",
+        summaryActive: "Active Accounts:",
+        summaryBalance: "Total Prepaid Balance:",
+        summaryExhausted: "Exhausted Quotas:",
+        autoSync: "Live Telemetry:",
         loading: "Loading usage metrics...",
         noAccounts: "No AI accounts connected yet. Click <b>+ Connect Account</b> to add one.",
-        lastUpdate: "Last Updated",
+        lastUpdate: "Updated",
         deleteConfirm: "Are you sure you want to remove this account?",
         resetsIn: "Resets in",
         rights: "Resets",
         modalTitle: "Connect AI Account",
-        tabOAuth: "⚡ Login to Connect (OAuth)",
-        tabManual: "🔑 Manual API Key / Token",
-        oauthDesc: "Redirect to official login in one click. Tokens are AES-encrypted locally.",
+        modalSubtitle: "Track quotas and credits via OAuth or direct API key.",
+        tabOAuth: "Login with OAuth",
+        tabManual: "Manual API Key",
+        oauthDesc: "Redirect to official authorization. Tokens are encrypted locally via AES-256-GCM.",
         googleTitle: "Google Gemini / Cloud Code",
         googleDesc: "Gemini 3 Flash, 2.5 Pro model quotas",
         codexTitle: "OpenAI ChatGPT / Codex",
-        codexDesc: "Plus / Pro 5-hour rolling quotas",
+        codexDesc: "Plus / Pro 5-hour rolling & weekly quotas",
         claudeTitle: "Anthropic Claude Pro/Max",
         claudeDesc: "5h session and weekly Opus/Sonnet quotas",
-        loginBtn: "Login →",
-        deviceWait: "Waiting for OpenAI Device Approval:",
-        confirmCode: "Verification Code:",
-        deviceDesc: "Confirm the code on the OpenAI page. The dashboard will automatically update.",
+        deviceWait: "Waiting for OpenAI Approval:",
+        deviceDesc: "Enter the code on the OpenAI confirmation page. The dashboard will automatically update.",
         reopenLink: "Re-open Authorization Page ↗",
         provider: "Provider",
-        accountLabel: "Account Name / Label",
-        accountLabelPlaceholder: "e.g. Personal Pro, Work Account",
+        accountLabel: "Account Label",
+        accountLabelPlaceholder: "e.g. Personal Pro, Work Key",
         credentialType: "Credential Type",
         apiKey: "API Key",
         oauthToken: "OAuth Access Token",
@@ -565,29 +608,48 @@ function renderDashboardHtml(): string {
     };
 
     let currentLang = localStorage.getItem('usage_lang') || 'tr';
-    let currentTheme = localStorage.getItem('usage_theme') || 'amber';
+    let currentMode = localStorage.getItem('usage_mode') || 'dark';
+    let currentAccent = localStorage.getItem('usage_accent') || 'amber';
     let cachedReports = [];
 
     function t(key) {
       return (I18N[currentLang] && I18N[currentLang][key]) || (I18N['tr'][key]) || key;
     }
 
-    function applyTheme(themeKey) {
-      const p = THEMES[themeKey] || THEMES.amber;
-      const root = document.documentElement;
-      root.style.setProperty('--color-bg', p.bg);
-      root.style.setProperty('--color-surface', p.surface);
-      root.style.setProperty('--color-border', p.border);
-      root.style.setProperty('--color-accent', p.accent);
-      root.style.setProperty('--color-accent-hover', p.accentHover);
-      root.style.setProperty('--color-accent-bg', p.accentBg);
-      currentTheme = themeKey;
-      localStorage.setItem('usage_theme', themeKey);
-      document.getElementById('themeSelect').value = themeKey;
+    function applyLightDarkMode(mode) {
+      currentMode = mode;
+      localStorage.setItem('usage_mode', mode);
+      const isDark = mode === 'dark';
+      document.documentElement.classList.toggle('dark', isDark);
+      document.documentElement.classList.toggle('light', !isDark);
+      document.getElementById('lightDarkIcon').innerText = isDark ? '☀️' : '🌙';
     }
 
-    function changeTheme(themeKey) {
-      applyTheme(themeKey);
+    function toggleLightDark() {
+      applyLightDarkMode(currentMode === 'dark' ? 'light' : 'dark');
+    }
+
+    function applyAccent(accentKey) {
+      currentAccent = accentKey;
+      localStorage.setItem('usage_accent', accentKey);
+      const pal = THEME_ACCENTS[accentKey] || THEME_ACCENTS.amber;
+      const root = document.documentElement;
+      root.style.setProperty('--color-accent', pal.accent);
+      root.style.setProperty('--color-accent-hover', pal.accentHover);
+      root.style.setProperty('--color-accent-soft', pal.accentSoft);
+
+      // Highlight active dot
+      Object.keys(THEME_ACCENTS).forEach(k => {
+        const dot = document.getElementById('themeDot_' + k);
+        if (dot) {
+          dot.style.outline = k === accentKey ? '2px solid var(--color-text)' : 'none';
+          dot.style.outlineOffset = '1px';
+        }
+      });
+    }
+
+    function changeTheme(accentKey) {
+      applyAccent(accentKey);
     }
 
     function applyI18n() {
@@ -595,6 +657,7 @@ function renderDashboardHtml(): string {
         const key = el.getAttribute('data-i18n');
         el.innerHTML = t(key);
       });
+      document.getElementById('langFlag').innerText = I18N[currentLang].flag;
       document.getElementById('langLabel').innerText = currentLang.toUpperCase();
       document.getElementById('accountLabel').placeholder = t('accountLabelPlaceholder');
       if (cachedReports.length) renderCards(cachedReports);
@@ -614,13 +677,13 @@ function renderDashboardHtml(): string {
       document.getElementById('oauthSection').classList.toggle('hidden', !isOAuth);
       document.getElementById('manualSection').classList.toggle('hidden', isOAuth);
 
-      document.getElementById('tabOAuth').className = isOAuth 
-        ? 'flex-1 pb-2.5 text-xs font-semibold border-b-2 border-accent text-accent'
-        : 'flex-1 pb-2.5 text-xs font-semibold border-b-2 border-transparent text-zinc-400 hover:text-zinc-200';
+      document.getElementById('tabOAuth').className = isOAuth
+        ? 'flex-1 py-1.5 font-medium rounded-md bg-appSurface text-appText shadow-sm transition'
+        : 'flex-1 py-1.5 font-medium rounded-md text-appTextMuted hover:text-appText transition';
 
-      document.getElementById('tabManual').className = !isOAuth 
-        ? 'flex-1 pb-2.5 text-xs font-semibold border-b-2 border-accent text-accent'
-        : 'flex-1 pb-2.5 text-xs font-semibold border-b-2 border-transparent text-zinc-400 hover:text-zinc-200';
+      document.getElementById('tabManual').className = !isOAuth
+        ? 'flex-1 py-1.5 font-medium rounded-md bg-appSurface text-appText shadow-sm transition'
+        : 'flex-1 py-1.5 font-medium rounded-md text-appTextMuted hover:text-appText transition';
     }
 
     async function loadUsage() {
@@ -628,10 +691,29 @@ function renderDashboardHtml(): string {
         const res = await fetch('/api/usage');
         const json = await res.json();
         cachedReports = json.data || [];
+        updateSummary(cachedReports);
         renderCards(cachedReports);
       } catch (err) {
-        document.getElementById('cardsGrid').innerHTML = '<div class="col-span-full text-center text-red-400">Veriler yüklenirken hata oluştu.</div>';
+        document.getElementById('cardsGrid').innerHTML = '<div class="col-span-full text-center text-red-500 py-12">Telemetry load failed.</div>';
       }
+    }
+
+    function updateSummary(reports) {
+      document.getElementById('statActiveCount').innerText = reports.length;
+      let totalBal = 0;
+      let exhausted = 0;
+
+      reports.forEach(r => {
+        (r.limits || []).forEach(l => {
+          if (l.amount && l.amount.unit === 'usd' && typeof l.amount.remaining === 'number') {
+            if (l.id.includes('balance') || l.id.includes('credits')) totalBal += l.amount.remaining;
+          }
+          if (l.status === 'exhausted') exhausted++;
+        });
+      });
+
+      document.getElementById('statTotalBalance').innerText = '$' + totalBal.toFixed(2);
+      document.getElementById('statExhaustedCount').innerText = exhausted;
     }
 
     async function pollNow() {
@@ -645,7 +727,6 @@ function renderDashboardHtml(): string {
       }
     }
 
-    // Start OpenAI Codex Device Auth Flow
     async function startCodexOAuth() {
       try {
         const res = await fetch('/api/oauth/codex/initiate', { method: 'POST' });
@@ -681,7 +762,6 @@ function renderDashboardHtml(): string {
       }
     }
 
-    // Start Google / Gemini OAuth Flow
     async function startGoogleOAuth() {
       try {
         const res = await fetch('/api/oauth/google/initiate', { method: 'POST' });
@@ -701,15 +781,14 @@ function renderDashboardHtml(): string {
             pollNow();
           } else if (statusJson.status === 'error') {
             clearInterval(pollTimer);
-            alert('Google girişi başarısız: ' + statusJson.error);
+            alert('Google error: ' + statusJson.error);
           }
         }, 2000);
       } catch (err) {
-        alert('Hata: ' + err);
+        alert('Error: ' + err);
       }
     }
 
-    // Start Claude OAuth Flow
     async function startClaudeOAuth() {
       try {
         const res = await fetch('/api/oauth/claude/initiate', { method: 'POST' });
@@ -729,11 +808,11 @@ function renderDashboardHtml(): string {
             pollNow();
           } else if (statusJson.status === 'error') {
             clearInterval(pollTimer);
-            alert('Claude girişi başarısız: ' + statusJson.error);
+            alert('Claude error: ' + statusJson.error);
           }
         }, 2000);
       } catch (err) {
-        alert('Hata: ' + err);
+        alert('Error: ' + err);
       }
     }
 
@@ -758,7 +837,7 @@ function renderDashboardHtml(): string {
     function renderCards(reports) {
       const container = document.getElementById('cardsGrid');
       if (!reports.length) {
-        container.innerHTML = '<div class="col-span-full py-16 text-center text-zinc-500">' + t('noAccounts') + '</div>';
+        container.innerHTML = '<div class="col-span-full py-20 text-center text-appTextMuted">' + t('noAccounts') + '</div>';
         return;
       }
 
@@ -769,16 +848,18 @@ function renderDashboardHtml(): string {
 
           if (l.amount.unit === 'percent') {
             const used = l.amount.used || 0;
-            const barColor = used >= 90 ? 'bg-red-500' : used >= 75 ? 'bg-yellow-500' : 'bg-emerald-500';
-            valueHtml = '<span class="font-bold text-sm">' + used.toFixed(1) + '%</span>';
-            barHtml = '<div class="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden mt-1.5"><div class="' + barColor + ' h-full transition-all duration-500" style="width: ' + Math.min(100, used) + '%"></div></div>';
+            const barColor = used >= 90 ? 'bg-rose-500' : used >= 75 ? 'bg-amber-500' : 'bg-emerald-500';
+            valueHtml = '<span class="font-mono-num font-bold text-xs text-appText">' + used.toFixed(1) + '%</span>';
+            barHtml = '<div class="w-full bg-appBorder h-1 rounded-full overflow-hidden mt-1.5"><div class="' + barColor + ' h-full transition-all duration-300" style="width: ' + Math.min(100, used) + '%"></div></div>';
           } else if (l.amount.unit === 'usd') {
             const rem = l.amount.remaining ?? 0;
-            valueHtml = '<span class="font-bold text-sm text-emerald-400">$' + rem.toFixed(2) + '</span>';
+            valueHtml = '<span class="font-mono-num font-bold text-xs text-emerald-500">$' + rem.toFixed(2) + '</span>';
           } else if (l.amount.unit === 'credits') {
             const rem = l.amount.remaining ?? 0;
-            const badgeBg = rem > 0 ? 'bg-accent/20 text-accent border border-accent/40' : 'bg-zinc-800 text-zinc-500 border border-zinc-700';
-            valueHtml = '<span class="font-bold text-xs ' + badgeBg + ' px-2 py-0.5 rounded-md">🔄 ' + rem + ' ' + t('rights') + '</span>';
+            const badgeCls = rem > 0 
+              ? 'bg-appAccentSoft text-appAccent border border-appAccent/30' 
+              : 'bg-appMuted text-appTextMuted border border-appBorder';
+            valueHtml = '<span class="font-mono-num font-semibold text-[11px] ' + badgeCls + ' px-1.5 py-0.5 rounded">' + rem + ' ' + t('rights') + '</span>';
           }
 
           let countdownHtml = '';
@@ -787,36 +868,36 @@ function renderDashboardHtml(): string {
             const hours = Math.floor(diffMin / 60);
             const mins = diffMin % 60;
             const label = hours > 0 ? (hours + 'h ' + mins + 'm') : (mins + 'm');
-            countdownHtml = '<span class="text-[10px] text-zinc-400 bg-zinc-800/80 px-1.5 py-0.5 rounded">' + t('resetsIn') + ': ' + label + '</span>';
+            countdownHtml = '<span class="text-[10px] text-appTextMuted font-mono-num flex items-center gap-1"><span class="w-1 h-1 rounded-full bg-appTextMuted"></span>' + t('resetsIn') + ': ' + label + '</span>';
           }
 
-          const notesHtml = (l.notes || []).map(n => '<span class="text-[10px] text-zinc-500 block">' + n + '</span>').join('');
+          const notesHtml = (l.notes || []).map(n => '<span class="text-[10px] text-appTextMuted block font-mono-num">' + n + '</span>').join('');
 
-          return '<div class="bg-zinc-900/60 border border-zinc-800/80 rounded-lg p-3 space-y-1">' +
+          return '<div class="bg-appMuted/40 border border-appBorder rounded-lg p-3 space-y-1">' +
                  '  <div class="flex justify-between items-center">' +
-                 '    <span class="text-xs font-medium text-zinc-300">' + l.label + '</span>' +
+                 '    <span class="text-xs font-medium text-appText tracking-tight">' + l.label + '</span>' +
                  '    ' + valueHtml +
                  '  </div>' +
                  barHtml +
-                 '  <div class="flex justify-between items-center pt-1">' +
+                 '  <div class="flex justify-between items-center pt-0.5">' +
                  countdownHtml +
                  '  </div>' +
                  notesHtml +
                  '</div>';
         }).join('');
 
-        return '<div class="bg-surface border border-surfaceBorder rounded-xl p-5 space-y-4 hover:border-zinc-700 transition">' +
+        return '<div class="bg-appSurface border border-appBorder rounded-xl p-4 sm:p-5 space-y-3.5 transition-colors shadow-sm">' +
                '  <div class="flex justify-between items-start">' +
                '    <div>' +
                '      <div class="flex items-center gap-2">' +
-               '        <h2 class="font-semibold text-zinc-100 capitalize">' + r.provider + '</h2>' +
-               '        <span class="text-[10px] px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700">' + (r.accountLabel || 'Default') + '</span>' +
+               '        <h2 class="font-bold text-appText text-sm tracking-tight capitalize">' + r.provider + '</h2>' +
+               '        <span class="text-[10px] font-mono-num px-2 py-0.5 rounded bg-appMuted text-appTextMuted border border-appBorder">' + (r.accountLabel || 'Default') + '</span>' +
                '      </div>' +
-               '      <span class="text-[10px] text-zinc-500">' + t('lastUpdate') + ': ' + new Date(r.fetchedAt).toLocaleTimeString() + '</span>' +
+               '      <span class="text-[10px] text-appTextMuted font-mono-num block mt-1">' + t('lastUpdate') + ': ' + new Date(r.fetchedAt).toLocaleTimeString() + '</span>' +
                '    </div>' +
-               '    <button data-id="' + (r.credentialId || '') + '" onclick="deleteAccount(this.dataset.id)" title="Hesabı Kaldır" class="text-zinc-600 hover:text-red-400 text-xs p-1 rounded hover:bg-zinc-800 transition">✕</button>' +
+               '    <button data-id="' + (r.credentialId || '') + '" onclick="deleteAccount(this.dataset.id)" title="Hesabı Kaldır" class="text-appTextMuted hover:text-rose-500 text-xs p-1 rounded hover:bg-appMuted transition">✕</button>' +
                '  </div>' +
-               '  <div class="space-y-2.5">' + limitsHtml + '</div>' +
+               '  <div class="space-y-2">' + limitsHtml + '</div>' +
                '</div>';
       }).join('');
     }
@@ -827,8 +908,9 @@ function renderDashboardHtml(): string {
       await loadUsage();
     }
 
-    // Init theme and lang
-    applyTheme(currentTheme);
+    // Initialize Preferences
+    applyLightDarkMode(currentMode);
+    applyAccent(currentAccent);
     applyI18n();
     loadUsage();
     setInterval(loadUsage, 10000);
