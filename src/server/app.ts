@@ -624,7 +624,7 @@ function renderDashboardHtml(): string {
                '      </div>' +
                '      <span class="text-[10px] text-zinc-500">Son Güncelleme: ' + new Date(r.fetchedAt).toLocaleTimeString() + '</span>' +
                '    </div>' +
-               '    <button onclick="deleteAccount(\'' + (r.credentialId || '') + '\')" title="Hesabı Kaldır" class="text-zinc-600 hover:text-red-400 text-xs p-1 rounded hover:bg-zinc-800 transition">✕</button>' +
+               '    <button data-id="' + (r.credentialId || '') + '" onclick="deleteAccount(this.dataset.id)" title="Hesabı Kaldır" class="text-zinc-600 hover:text-red-400 text-xs p-1 rounded hover:bg-zinc-800 transition">✕</button>' +
                '  </div>' +
                '  <div class="space-y-2.5">' + limitsHtml + '</div>' +
                '</div>';
