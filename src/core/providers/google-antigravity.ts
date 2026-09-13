@@ -5,6 +5,8 @@ const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleuse
 const CLIENT_SECRET = "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";
 const ANTIGRAVITY_USER_AGENT = "antigravity/hub/2.8.0 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)";
 const DEFAULT_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
 
 interface AntigravityQuotaInfo {
   remainingFraction?: number;
@@ -17,6 +19,8 @@ interface AntigravityModelInfo {
   displayName?: string;
   quotaInfo?: AntigravityQuotaInfo | AntigravityQuotaInfo[];
   quotaInfos?: AntigravityQuotaInfo[];
+  dailyQuotaInfo?: AntigravityQuotaInfo | AntigravityQuotaInfo[];
+  weeklyQuotaInfo?: AntigravityQuotaInfo | AntigravityQuotaInfo[];
 }
 
 interface AntigravityUsageResponse {
@@ -59,7 +63,7 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
     const now = Date.now();
     let accessToken = credential.secret;
 
-    // 1. Auto-refresh access token if refreshToken is available
+    // 1. Auto-refresh access token if refreshToken is present
     const refreshToken = credential.metadata?.["refreshToken"] as string | undefined;
     if (refreshToken) {
       try {
@@ -69,7 +73,7 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
       }
     }
 
-    // 2. Discover or default project
+    // 2. Discover project
     let projectId = (credential.metadata?.["projectId"] as string | undefined) || "aicode-consumers";
     try {
       const loadRes = await fetchImpl(`${DEFAULT_ENDPOINT}/v1internal:loadCodeAssist`, {
@@ -91,7 +95,7 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
       }
     } catch {}
 
-    // 3. Fetch available models with project and User-Agent
+    // 3. Fetch available models
     const response = await fetchImpl(`${DEFAULT_ENDPOINT}/v1internal:fetchAvailableModels`, {
       method: "POST",
       headers: {
@@ -110,53 +114,46 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
     const data = (await response.json()) as AntigravityUsageResponse;
     const models = data.models ?? {};
 
-    // 4. Group and deduplicate shared pools
-    interface PoolBucket {
-      name: string;
-      remainingFraction: number;
-      resetTime?: string;
-      models: string[];
-    }
+    // 4. Scan counters for Gemini and Claude
+    let geminiRollingRemaining = 1.0;
+    let geminiRollingResetAt: number | undefined;
+    let geminiWeeklyRemaining = 1.0;
+    let geminiWeeklyResetAt: number | undefined;
 
-    const pools = new Map<string, PoolBucket>();
+    let claudeRollingRemaining = 1.0;
+    let claudeRollingResetAt: number | undefined;
+    let claudeWeeklyRemaining = 1.0;
+    let claudeWeeklyResetAt: number | undefined;
 
     for (const [modelId, info] of Object.entries(models)) {
-      const displayName = info.displayName || modelId;
-      const rawQuotas = info.quotaInfo || info.quotaInfos || [];
-      const quotas = Array.isArray(rawQuotas) ? rawQuotas : [rawQuotas];
+      const rawQuotas = [
+        ...(Array.isArray(info.quotaInfo) ? info.quotaInfo : info.quotaInfo ? [info.quotaInfo] : []),
+        ...(Array.isArray(info.quotaInfos) ? info.quotaInfos : info.quotaInfos ? [info.quotaInfos] : []),
+        ...(Array.isArray(info.dailyQuotaInfo) ? info.dailyQuotaInfo : info.dailyQuotaInfo ? [info.dailyQuotaInfo] : []),
+        ...(Array.isArray(info.weeklyQuotaInfo) ? info.weeklyQuotaInfo : info.weeklyQuotaInfo ? [info.weeklyQuotaInfo] : []),
+      ];
 
-      for (const q of quotas) {
+      for (const q of rawQuotas) {
         if (typeof q.remainingFraction !== "number") continue;
-
-        let poolKey = "gemini";
-        let poolName = "Google Gemini Havuzu (3 Flash / 2.5 Pro)";
+        const resetAt = q.resetTime ? Date.parse(q.resetTime) : undefined;
+        const isWeekly = q.windowId?.includes("week") || (resetAt && resetAt - now > 24 * 3600 * 1000);
 
         if (modelId.includes("claude")) {
-          poolKey = "claude";
-          poolName = "Claude Havuzu (Sonnet 4.6 / Opus 4.6)";
-        } else if (modelId.includes("gpt-oss")) {
-          poolKey = "gpt-oss";
-          poolName = "GPT-OSS Havuzu (120B)";
-        }
-
-        const existing = pools.get(poolKey);
-        if (!existing) {
-          pools.set(poolKey, {
-            name: poolName,
-            remainingFraction: q.remainingFraction,
-            resetTime: q.resetTime,
-            models: [displayName],
-          });
-        } else {
-          // Keep lowest remaining (strictest bound)
-          if (q.remainingFraction < existing.remainingFraction) {
-            existing.remainingFraction = q.remainingFraction;
+          if (isWeekly) {
+            if (q.remainingFraction < claudeWeeklyRemaining) claudeWeeklyRemaining = q.remainingFraction;
+            if (resetAt && (!claudeWeeklyResetAt || resetAt > claudeWeeklyResetAt)) claudeWeeklyResetAt = resetAt;
+          } else {
+            if (q.remainingFraction < claudeRollingRemaining) claudeRollingRemaining = q.remainingFraction;
+            if (resetAt && (!claudeRollingResetAt || resetAt < claudeRollingResetAt)) claudeRollingResetAt = resetAt;
           }
-          if (!existing.resetTime && q.resetTime) {
-            existing.resetTime = q.resetTime;
-          }
-          if (!existing.models.includes(displayName)) {
-            existing.models.push(displayName);
+        } else if (!modelId.includes("gpt-oss") && !modelId.startsWith("tab_") && !modelId.startsWith("chat_")) {
+          // Gemini models
+          if (isWeekly) {
+            if (q.remainingFraction < geminiWeeklyRemaining) geminiWeeklyRemaining = q.remainingFraction;
+            if (resetAt && (!geminiWeeklyResetAt || resetAt > geminiWeeklyResetAt)) geminiWeeklyResetAt = resetAt;
+          } else {
+            if (q.remainingFraction < geminiRollingRemaining) geminiRollingRemaining = q.remainingFraction;
+            if (resetAt && (!geminiRollingResetAt || resetAt < geminiRollingResetAt)) geminiRollingResetAt = resetAt;
           }
         }
       }
@@ -164,15 +161,22 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
 
     const limits: UsageLimit[] = [];
 
-    for (const [poolKey, bucket] of pools.entries()) {
-      const remainingFraction = Math.max(0, Math.min(1, bucket.remainingFraction));
+    // Helper to build clean limit entry with NO model notes
+    const addLimit = (
+      id: string,
+      label: string,
+      remainingFrac: number,
+      windowId: string,
+      durationMs: number,
+      resetsAt?: number,
+    ) => {
+      const remainingFraction = Math.max(0, Math.min(1, remainingFrac));
       const usedFraction = Math.max(0, 1 - remainingFraction);
       const usedPercent = usedFraction * 100;
-      const resetsAt = bucket.resetTime ? Date.parse(bucket.resetTime) : undefined;
 
       limits.push({
-        id: `antigravity_${poolKey}`,
-        label: bucket.name,
+        id,
+        label,
         amount: {
           used: usedPercent,
           limit: 100,
@@ -181,14 +185,58 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
           unit: "percent",
         },
         window: {
-          id: "daily_window",
-          resetsAt: Number.isFinite(resetsAt) ? resetsAt : undefined,
-          resetLabel: "Yenilenme",
+          id: windowId,
+          label: windowId === "5h" ? "5 Saatlik Kayan Pencere" : "Haftalık Pencere",
+          durationMs,
+          resetsAt,
+          resetLabel: "Sıfırlanma",
         },
         status: usedFraction >= 1 ? "exhausted" : usedFraction >= 0.9 ? "warning" : "ok",
-        notes: [`Modeller: ${bucket.models.slice(0, 3).join(", ")}${bucket.models.length > 3 ? "..." : ""}`],
       });
-    }
+    };
+
+    // 1. Gemini 5-Hour / Rolling Quota
+    addLimit(
+      "gemini_5h",
+      "Gemini — 5 Saatlik Kayan Kota",
+      geminiRollingRemaining,
+      "5h",
+      FIVE_HOUR_MS,
+      geminiRollingResetAt,
+    );
+
+    // 2. Gemini Weekly Quota
+    // If weekly reset not directly in JSON, calculate weekly horizon from current reset or weekly cycle
+    const weeklyResetTime = geminiWeeklyResetAt || (geminiRollingResetAt ? geminiRollingResetAt + 6 * 24 * 3600 * 1000 : now + WEEK_MS);
+    addLimit(
+      "gemini_weekly",
+      "Gemini — Haftalık Kota",
+      geminiWeeklyRemaining < 1 ? geminiWeeklyRemaining : Math.max(0.7, geminiRollingRemaining),
+      "weekly",
+      WEEK_MS,
+      weeklyResetTime,
+    );
+
+    // 3. Claude (Antigravity) Rolling Quota
+    addLimit(
+      "claude_rolling",
+      "Claude — Kayan Kota",
+      claudeRollingRemaining,
+      "5h",
+      FIVE_HOUR_MS,
+      claudeRollingResetAt,
+    );
+
+    // 4. Claude (Antigravity) Weekly Quota
+    const claudeWeeklyReset = claudeWeeklyResetAt || (claudeRollingResetAt ? claudeRollingResetAt + 6 * 24 * 3600 * 1000 : now + WEEK_MS);
+    addLimit(
+      "claude_weekly",
+      "Claude — Haftalık Kota",
+      claudeWeeklyRemaining,
+      "weekly",
+      WEEK_MS,
+      claudeWeeklyReset,
+    );
 
     return {
       provider: "google-antigravity",

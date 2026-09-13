@@ -53,15 +53,21 @@ describe("GoogleAntigravityAdapter", () => {
 
     const report = await adapter.fetchUsage(mockCred, { fetch: mockFetch });
     expect(report.provider).toBe("google-antigravity");
-    expect(report.limits.length).toBe(2);
+    expect(report.limits.length).toBe(4);
 
-    const geminiPool = report.limits.find(l => l.id.includes("gemini"));
-    expect(geminiPool?.amount.remaining).toBe(85);
-    expect(geminiPool?.amount.used).toBeCloseTo(15, 1);
+    const gemini5h = report.limits.find(l => l.id === "gemini_5h");
+    expect(gemini5h?.amount.remaining).toBe(85);
+    expect(gemini5h?.amount.used).toBeCloseTo(15, 1);
 
-    const claudePool = report.limits.find(l => l.id.includes("claude"));
-    expect(claudePool?.amount.remaining).toBe(40);
-    expect(claudePool?.amount.used).toBeCloseTo(60, 1);
+    const geminiWeekly = report.limits.find(l => l.id === "gemini_weekly");
+    expect(geminiWeekly?.amount.remaining).toBeDefined();
+
+    const claude5h = report.limits.find(l => l.id === "claude_rolling");
+    expect(claude5h?.amount.remaining).toBe(40);
+    expect(claude5h?.amount.used).toBeCloseTo(60, 1);
+
+    const claudeWeekly = report.limits.find(l => l.id === "claude_weekly");
+    expect(claudeWeekly?.amount.remaining).toBeDefined();
   });
 });
 
