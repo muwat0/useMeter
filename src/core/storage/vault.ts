@@ -59,11 +59,48 @@ export class StorageVault {
   }
 
   saveCredential(input: InputCredential): StoredCredential {
-    const id = randomUUID();
+    const provider = input.provider.toLowerCase();
+    const existing = this.#db.prepare(`
+      SELECT id, created_at FROM credentials WHERE provider = ? AND account_label = ?
+    `).get(provider, input.accountLabel) as { id: string; created_at: number } | undefined;
+
     const now = Date.now();
     const enc = encryptSecret(input.secret);
     const metadataJson = input.metadata ? JSON.stringify(input.metadata) : null;
 
+    if (existing) {
+      this.#db.prepare(`
+        UPDATE credentials SET
+          credential_type = ?,
+          encrypted_secret = ?,
+          iv = ?,
+          tag = ?,
+          metadata = ?,
+          updated_at = ?
+        WHERE id = ?
+      `).run(
+        input.credentialType,
+        enc.ciphertext,
+        enc.iv,
+        enc.tag,
+        metadataJson,
+        now,
+        existing.id,
+      );
+
+      return {
+        id: existing.id,
+        provider,
+        accountLabel: input.accountLabel,
+        credentialType: input.credentialType,
+        secret: input.secret,
+        metadata: input.metadata,
+        createdAt: existing.created_at,
+        updatedAt: now,
+      };
+    }
+
+    const id = randomUUID();
     const query = this.#db.prepare(`
       INSERT INTO credentials (
         id, provider, account_label, credential_type,
@@ -74,7 +111,7 @@ export class StorageVault {
 
     query.run(
       id,
-      input.provider.toLowerCase(),
+      provider,
       input.accountLabel,
       input.credentialType,
       enc.ciphertext,
@@ -84,7 +121,6 @@ export class StorageVault {
       now,
       now,
     );
-
     return {
       id,
       provider: input.provider.toLowerCase(),
