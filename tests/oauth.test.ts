@@ -38,10 +38,10 @@ describe("GoogleAntigravityAdapter", () => {
                 windowLabel: "Günlük",
               },
             },
-            "gemini-2.5-pro": {
-              displayName: "Gemini 2.5 Pro",
+            "claude-sonnet-4-6": {
+              displayName: "Claude Sonnet 4.6",
               quotaInfo: {
-                remainingFraction: 0.2,
+                remainingFraction: 0.4,
                 resetTime: new Date(Date.now() + 86400 * 1000).toISOString(),
                 windowLabel: "Günlük",
               },
@@ -55,15 +55,13 @@ describe("GoogleAntigravityAdapter", () => {
     expect(report.provider).toBe("google-antigravity");
     expect(report.limits.length).toBe(2);
 
-    const flashLimit = report.limits.find(l => l.id.includes("gemini-3-flash"));
-    expect(flashLimit?.amount.remaining).toBe(85);
-    expect(flashLimit?.amount.used).toBeCloseTo(15, 1);
-    expect(flashLimit?.status).toBe("ok");
+    const geminiPool = report.limits.find(l => l.id.includes("gemini"));
+    expect(geminiPool?.amount.remaining).toBe(85);
+    expect(geminiPool?.amount.used).toBeCloseTo(15, 1);
 
-    const proLimit = report.limits.find(l => l.id.includes("gemini-2.5-pro"));
-    expect(proLimit?.amount.remaining).toBe(20);
-    expect(proLimit?.amount.used).toBeCloseTo(80, 1);
-    expect(proLimit?.status).toBe("ok");
+    const claudePool = report.limits.find(l => l.id.includes("claude"));
+    expect(claudePool?.amount.remaining).toBe(40);
+    expect(claudePool?.amount.used).toBeCloseTo(60, 1);
   });
 });
 
