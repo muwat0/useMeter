@@ -1033,6 +1033,10 @@ export class StorageVault {
       fetchedAt: report.fetchedAt,
       limits: report.limits || [],
       error: report.error,
+      health: report.health,
+      stale: report.stale,
+      lastGoodFetchedAt: report.lastGoodFetchedAt,
+      source: report.source,
     };
 
     const res = this.#db.prepare(`
@@ -1079,6 +1083,10 @@ export class StorageVault {
       fetchedAt: report.fetchedAt,
       limits: report.limits || [],
       error: report.error,
+      health: report.health,
+      stale: report.stale,
+      lastGoodFetchedAt: report.lastGoodFetchedAt,
+      source: report.source,
     };
 
     const res = this.#db.prepare(`
@@ -1167,6 +1175,67 @@ export class StorageVault {
       } catch {}
     }
     return result;
+  }
+
+  getLastSuccessfulUsage(ownerId: string, credentialId: string): UsageReport | null {
+    if (this.#closed || !ownerId || !credentialId) return null;
+    const rows = this.#db.prepare(`
+      SELECT s.report_json, s.owner_id FROM usage_snapshots s
+      INNER JOIN credentials c ON c.id = s.credential_id AND c.owner_id = ?
+      WHERE s.owner_id = ? AND s.credential_id = ?
+      ORDER BY s.fetched_at DESC
+    `).all(ownerId, ownerId, credentialId) as { report_json: string; owner_id: string | null }[];
+
+    for (const row of rows) {
+      try {
+        const report = JSON.parse(row.report_json) as UsageReport;
+        delete report.raw;
+        if (report.error) continue;
+        if (report.health === "error" || report.health === "stale") continue;
+        if (report.source === "error" || report.source === "stale") continue;
+        if (report.stale === true) continue;
+
+        return {
+          ...report,
+          ownerId: row.owner_id ?? ownerId,
+          health: report.health ?? "healthy",
+          stale: report.stale ?? false,
+          source: report.source ?? "live",
+          lastGoodFetchedAt: report.lastGoodFetchedAt ?? report.fetchedAt,
+        };
+      } catch {}
+    }
+    return null;
+  }
+
+  getLastSuccessfulUsageInternal(credentialId: string): UsageReport | null {
+    if (this.#closed || !credentialId) return null;
+    const rows = this.#db.prepare(`
+      SELECT s.report_json, s.owner_id FROM usage_snapshots s
+      WHERE s.credential_id = ?
+      ORDER BY s.fetched_at DESC
+    `).all(credentialId) as { report_json: string; owner_id: string | null }[];
+
+    for (const row of rows) {
+      try {
+        const report = JSON.parse(row.report_json) as UsageReport;
+        delete report.raw;
+        if (report.error) continue;
+        if (report.health === "error" || report.health === "stale") continue;
+        if (report.source === "error" || report.source === "stale") continue;
+        if (report.stale === true) continue;
+
+        return {
+          ...report,
+          ownerId: row.owner_id ?? report.ownerId,
+          health: report.health ?? "healthy",
+          stale: report.stale ?? false,
+          source: report.source ?? "live",
+          lastGoodFetchedAt: report.lastGoodFetchedAt ?? report.fetchedAt,
+        };
+      } catch {}
+    }
+    return null;
   }
 
   // ==================== Health & Lifecycle ====================

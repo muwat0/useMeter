@@ -115,6 +115,9 @@ export interface UsageLimit {
   notes?: string[];
 }
 
+export type UsageReportHealth = "healthy" | "stale" | "error";
+export type UsageReportSource = "live" | "stale" | "error";
+
 export interface UsageReport {
   ownerId?: string;
   provider: string;
@@ -124,6 +127,10 @@ export interface UsageReport {
   limits: UsageLimit[];
   error?: string;
   raw?: unknown;
+  health?: UsageReportHealth;
+  stale?: boolean;
+  lastGoodFetchedAt?: number;
+  source?: UsageReportSource;
 }
 
 export type CardAccent = "default" | "amber" | "emerald" | "cyan" | "violet" | "slate";

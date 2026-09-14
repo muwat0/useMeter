@@ -80,7 +80,21 @@ export class PollerEngine {
           },
         };
         const fetched = await adapter.fetchUsage(cred, ctx);
-        const report: UsageReport = { ...fetched, ownerId: cred.ownerId, credentialId: cred.id };
+        if (fetched.error) {
+          throw new Error(fetched.error);
+        }
+        const now = Date.now();
+        const fetchedAt = fetched.fetchedAt ?? now;
+        const report: UsageReport = {
+          ...fetched,
+          ownerId: cred.ownerId,
+          credentialId: cred.id,
+          fetchedAt,
+          health: "healthy",
+          stale: false,
+          source: "live",
+          lastGoodFetchedAt: fetchedAt,
+        };
         if (daemon) this.#vault.saveUsageSnapshotInternal(report);
         else this.#vault.saveUsageSnapshot(cred.ownerId!, report);
 
@@ -91,18 +105,41 @@ export class PollerEngine {
         }
         return report;
       } catch (error) {
-        const errorReport: UsageReport = {
-          ownerId: cred.ownerId,
-          provider: cred.provider,
-          credentialId: cred.id,
-          accountLabel: cred.accountLabel,
-          fetchedAt: Date.now(),
-          limits: [],
-          error: error instanceof Error ? error.message : String(error),
-        };
-        if (daemon) this.#vault.saveUsageSnapshotInternal(errorReport);
-        else this.#vault.saveUsageSnapshot(cred.ownerId!, errorReport);
-        return errorReport;
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        const lastGood = (cred.ownerId && !daemon)
+          ? this.#vault.getLastSuccessfulUsage(cred.ownerId, cred.id)
+          : this.#vault.getLastSuccessfulUsageInternal(cred.id);
+
+        const now = Date.now();
+        const fallbackReport: UsageReport = lastGood
+          ? {
+              ownerId: cred.ownerId ?? lastGood.ownerId,
+              provider: cred.provider || lastGood.provider,
+              credentialId: cred.id,
+              accountLabel: cred.accountLabel || lastGood.accountLabel,
+              fetchedAt: now,
+              limits: lastGood.limits || [],
+              error: errorMessage,
+              health: "stale",
+              stale: true,
+              source: "stale",
+              lastGoodFetchedAt: lastGood.lastGoodFetchedAt ?? lastGood.fetchedAt,
+            }
+          : {
+              ownerId: cred.ownerId,
+              provider: cred.provider,
+              credentialId: cred.id,
+              accountLabel: cred.accountLabel,
+              fetchedAt: now,
+              limits: [],
+              error: errorMessage,
+              health: "error",
+              stale: false,
+              source: "error",
+            };
+        if (daemon) this.#vault.saveUsageSnapshotInternal(fallbackReport);
+        else this.#vault.saveUsageSnapshot(cred.ownerId!, fallbackReport);
+        return fallbackReport;
       } finally {
         this.#inFlight.delete(cred.id);
       }
