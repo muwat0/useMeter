@@ -1,7 +1,7 @@
 {
-  "name": "ai-usage-tracker",
+  "name": "usemeter",
   "version": "1.0.0",
-  "description": "Multi-provider AI usage, credit, and quota tracking dashboard",
+  "description": "useMeter — Multi-provider AI usage, credit, and quota tracking dashboard",
   "main": "src/index.ts",
   "type": "module",
   "scripts": {

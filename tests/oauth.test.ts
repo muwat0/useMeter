@@ -3,6 +3,11 @@ import { GoogleAntigravityAdapter } from "../src/core/providers/google-antigravi
 import { generatePKCE } from "../src/core/oauth/pkce";
 import { initiateGoogleAuth } from "../src/core/oauth/google";
 import { initiateClaudeAuth } from "../src/core/oauth/claude";
+import { initiateGeminiCliAuth } from "../src/core/oauth/gemini-cli";
+import { initiateOpenRouterAuth } from "../src/core/oauth/openrouter";
+import { initiateZaiAuth } from "../src/core/oauth/zai";
+import { initiateDevinAuth } from "../src/core/oauth/devin";
+import { initiateCursorAuth } from "../src/core/oauth/cursor";
 import { decodeJwtPayload } from "../src/core/oauth/codex-device";
 import { StorageVault } from "../src/core/storage/vault";
 import { createDefaultRegistry } from "../src/core/providers/registry";
@@ -12,6 +17,7 @@ import type { StoredCredential } from "../src/types";
 
 const mockCred: StoredCredential = {
   id: "google-test-1",
+  ownerId: "mock-owner",
   provider: "google-antigravity",
   accountLabel: "Google Test",
   credentialType: "oauth",
@@ -21,32 +27,32 @@ const mockCred: StoredCredential = {
 };
 
 describe("GoogleAntigravityAdapter", () => {
-  it("parses models and quotaInfo with remainingFraction and resetTime", async () => {
+  it("parses quota summary groups with explicit 5h and weekly windows", async () => {
     const adapter = new GoogleAntigravityAdapter();
     expect(adapter.supports("google-antigravity")).toBe(true);
     expect(adapter.supports("gemini")).toBe(true);
 
+    const inOneHour = new Date(Date.now() + 3600 * 1000).toISOString();
+    const inTwoDays = new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString();
     const mockFetch = (async () => {
       return new Response(
         JSON.stringify({
-          models: {
-            "gemini-3-flash": {
-              displayName: "Gemini 3 Flash",
-              quotaInfo: {
-                remainingFraction: 0.85,
-                resetTime: new Date(Date.now() + 3600 * 1000).toISOString(),
-                windowLabel: "Günlük",
-              },
+          groups: [
+            {
+              displayName: "Gemini Models",
+              buckets: [
+                { bucketId: "gemini-5h", displayName: "Five Hour Limit Remaining", window: "5h", remainingFraction: 0.85, resetTime: inOneHour },
+                { bucketId: "gemini-weekly", displayName: "Weekly Limit Remaining", window: "weekly", remainingFraction: 0.7, resetTime: inTwoDays },
+              ],
             },
-            "claude-sonnet-4-6": {
-              displayName: "Claude Sonnet 4.6",
-              quotaInfo: {
-                remainingFraction: 0.4,
-                resetTime: new Date(Date.now() + 3600 * 1000).toISOString(),
-                windowLabel: "Günlük",
-              },
+            {
+              displayName: "Claude and GPT models",
+              buckets: [
+                { bucketId: "3p-5h", displayName: "Five Hour Limit Remaining", window: "5h", remainingFraction: 0.4, resetTime: inOneHour },
+                { bucketId: "3p-weekly", displayName: "Weekly Limit Remaining", window: "weekly", remainingFraction: 0.6, resetTime: inTwoDays },
+              ],
             },
-          },
+          ],
         }),
       );
     }) as unknown as typeof fetch;
@@ -60,14 +66,63 @@ describe("GoogleAntigravityAdapter", () => {
     expect(gemini5h?.amount.used).toBeCloseTo(15, 1);
 
     const geminiWeekly = report.limits.find(l => l.id === "gemini_weekly");
-    expect(geminiWeekly?.amount.remaining).toBeDefined();
+    expect(geminiWeekly?.amount.remaining).toBe(70);
 
     const claudeGpt5h = report.limits.find(l => l.id === "claude_gpt_5h");
     expect(claudeGpt5h?.amount.remaining).toBe(40);
     expect(claudeGpt5h?.amount.used).toBeCloseTo(60, 1);
 
     const claudeGptWeekly = report.limits.find(l => l.id === "claude_gpt_weekly");
-    expect(claudeGptWeekly?.amount.remaining).toBeDefined();
+    expect(claudeGptWeekly?.amount.remaining).toBe(60);
+  });
+
+  it("omits a window instead of rendering a fabricated 100% bar", async () => {
+    const adapter = new GoogleAntigravityAdapter();
+    const inOneHour = new Date(Date.now() + 3600 * 1000).toISOString();
+    const mockFetch = (async () => {
+      return new Response(
+        JSON.stringify({
+          groups: [
+            {
+              displayName: "Gemini Models",
+              buckets: [
+                { bucketId: "gemini-5h", displayName: "Five Hour Limit Remaining", window: "5h", remainingFraction: 0.85, resetTime: inOneHour },
+              ],
+            },
+          ],
+        }),
+      );
+    }) as unknown as typeof fetch;
+
+    const report = await adapter.fetchUsage(mockCred, { fetch: mockFetch });
+    expect(report.provider).toBe("Antigravity");
+    expect(report.limits.map(l => l.id)).toEqual(["gemini_5h"]);
+    expect(report.limits.find(l => l.id === "gemini_weekly")).toBeUndefined();
+  });
+
+  it("treats an omitted fraction with only resetTime as exhausted", async () => {
+    const adapter = new GoogleAntigravityAdapter();
+    const inOneHour = new Date(Date.now() + 3600 * 1000).toISOString();
+    const mockFetch = (async () => {
+      return new Response(
+        JSON.stringify({
+          groups: [
+            {
+              displayName: "Gemini Models",
+              buckets: [
+                { bucketId: "gemini-5h", displayName: "Five Hour Limit Remaining", window: "5h", resetTime: inOneHour },
+              ],
+            },
+          ],
+        }),
+      );
+    }) as unknown as typeof fetch;
+
+    const report = await adapter.fetchUsage(mockCred, { fetch: mockFetch });
+    const gemini5h = report.limits.find(l => l.id === "gemini_5h");
+    expect(gemini5h?.amount.remaining).toBe(0);
+    expect(gemini5h?.amount.used).toBe(100);
+    expect(gemini5h?.status).toBe("exhausted");
   });
 });
 
@@ -98,6 +153,27 @@ describe("OAuth PKCE & URLs", () => {
     expect(auth.verifier).toBeDefined();
     expect(auth.state).toBeDefined();
   });
+  it("initiates Gemini CLI, OpenRouter, ZAI, Devin, and Cursor OAuth flows", async () => {
+    const gemini = initiateGeminiCliAuth();
+    expect(gemini.authUrl).toContain("accounts.google.com");
+    expect(gemini.authUrl).toContain("oauth2callback");
+
+    const openrouter = initiateOpenRouterAuth();
+    expect(openrouter.authUrl).toContain("openrouter.ai/auth");
+    expect(openrouter.verifier).toBeDefined();
+
+    const zai = initiateZaiAuth();
+    expect(zai.authUrl).toContain("chat.z.ai/api/oauth/authorize");
+    expect(zai.state).toBeDefined();
+
+    const devin = initiateDevinAuth();
+    expect(devin.authUrl).toContain("app.devin.ai/auth/cli/continue");
+    expect(devin.verifier).toBeDefined();
+
+    const cursor = await initiateCursorAuth();
+    expect(cursor.uuid).toBeDefined();
+    expect(cursor.verifier).toBeDefined();
+  });
 
   it("decodes JWT payload correctly", () => {
     // Standard payload: {"sub":"123","email":"test@example.com"}
@@ -110,7 +186,6 @@ describe("OAuth PKCE & URLs", () => {
     expect(decoded?.["email"]).toBe("test@example.com");
   });
 });
-
 describe("Server OAuth Routes", () => {
   it("handles OAuth initiate endpoints", async () => {
     const vault = new StorageVault(":memory:");
@@ -118,17 +193,74 @@ describe("Server OAuth Routes", () => {
     const poller = new PollerEngine(vault, registry);
     const app = createServer(vault, poller, registry);
 
-    const googleRes = await app.request("/api/oauth/google/initiate", { method: "POST" });
+    // Anonymous attempt must be rejected with 401
+    const anonRes = await app.request("/api/oauth/google/initiate", { method: "POST" });
+    expect(anonRes.status).toBe(401);
+
+    // Register authenticated user
+    const regRes = await app.request("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "oauth-tester@example.com", password: "Password12345678!" }),
+    });
+    const cookie = regRes.headers.get("Set-Cookie")!.split(";")[0]!;
+
+    const googleRes = await app.request("/api/oauth/google/initiate", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
     expect(googleRes.status).toBe(200);
     const googleJson = (await googleRes.json()) as { success: boolean; data: { authUrl: string } };
     expect(googleJson.success).toBe(true);
     expect(googleJson.data.authUrl).toContain("accounts.google.com");
 
-    const claudeRes = await app.request("/api/oauth/claude/initiate", { method: "POST" });
-    expect(claudeRes.status).toBe(200);
+    const claudeRes = await app.request("/api/oauth/claude/initiate", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
     const claudeJson = (await claudeRes.json()) as { success: boolean; data: { authUrl: string } };
     expect(claudeJson.success).toBe(true);
     expect(claudeJson.data.authUrl).toContain("claude.ai");
+
+    const geminiRes = await app.request("/api/oauth/gemini-cli/initiate", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
+    const geminiJson = (await geminiRes.json()) as { success: boolean; data: { authUrl: string } };
+    expect(geminiJson.success).toBe(true);
+    expect(geminiJson.data.authUrl).toContain("accounts.google.com");
+
+    const openrouterRes = await app.request("/api/oauth/openrouter/initiate", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
+    const openrouterJson = (await openrouterRes.json()) as { success: boolean; data: { authUrl: string } };
+    expect(openrouterJson.success).toBe(true);
+    expect(openrouterJson.data.authUrl).toContain("openrouter.ai");
+
+    const zaiRes = await app.request("/api/oauth/zai/initiate", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
+    const zaiJson = (await zaiRes.json()) as { success: boolean; data: { authUrl: string } };
+    expect(zaiJson.success).toBe(true);
+    expect(zaiJson.data.authUrl).toContain("chat.z.ai");
+
+    const devinRes = await app.request("/api/oauth/devin/initiate", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
+    const devinJson = (await devinRes.json()) as { success: boolean; data: { authUrl: string } };
+    expect(devinJson.success).toBe(true);
+    expect(devinJson.data.authUrl).toContain("app.devin.ai");
+
+    const cursorRes = await app.request("/api/oauth/cursor/initiate", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
+    const cursorJson = (await cursorRes.json()) as { success: boolean; data: { authUrl: string } };
+    expect(cursorJson.success).toBe(true);
+    expect(cursorJson.data.authUrl).toContain("cursor.com");
 
     vault.close();
   });
