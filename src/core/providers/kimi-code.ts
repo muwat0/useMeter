@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 import * as os from "node:os";
 import type { FetchContext, ProviderAdapter } from "./adapter";
 import type { StoredCredential, UsageLimit, UsageReport, UsageStatus, UsageWindow } from "../../types";
-
+import { refreshKimiToken } from "../oauth/kimi";
 const DEFAULT_BASE_URL = "https://api.kimi.com/coding/v1";
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -212,7 +212,7 @@ function extractBearerToken(secret: string): string {
 
 let cachedDeviceId: string | undefined;
 
-function getKimiHeaders(token: string): Record<string, string> {
+function getKimiHeaders(token: string, deviceId?: string): Record<string, string> {
   const platform = os.platform();
   const release = os.release();
   const arch = os.arch();
@@ -221,8 +221,21 @@ function getKimiHeaders(token: string): Record<string, string> {
   const deviceName = os.hostname().replace(/[^\x20-\x7E]/g, "").trim() || "unknown";
   const osVersion = os.version().replace(/[^\x20-\x7E]/g, "").trim() || "unknown";
 
-  if (!cachedDeviceId) {
-    cachedDeviceId = crypto.randomUUID().replace(/-/g, "");
+  let effectiveDeviceId = deviceId;
+  if (!effectiveDeviceId) {
+    try {
+      const parts = token.split(".");
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf-8"));
+        if (typeof payload.device_id === "string" && payload.device_id) {
+          effectiveDeviceId = payload.device_id;
+        }
+      }
+    } catch {}
+  }
+  if (!effectiveDeviceId) {
+    if (!cachedDeviceId) cachedDeviceId = crypto.randomUUID().replace(/-/g, "");
+    effectiveDeviceId = cachedDeviceId;
   }
 
   return {
@@ -234,7 +247,7 @@ function getKimiHeaders(token: string): Record<string, string> {
     "X-Msh-Device-Name": deviceName,
     "X-Msh-Device-Model": deviceModel,
     "X-Msh-Os-Version": osVersion,
-    "X-Msh-Device-Id": cachedDeviceId,
+    "X-Msh-Device-Id": effectiveDeviceId,
   };
 }
 
@@ -306,7 +319,7 @@ export class KimiCodeAdapter implements ProviderAdapter {
       throw new Error("Kimi Code kullanım uç noktası OAuth kimlik doğrulaması gerektirir; diğer kimlik tipleri desteklenmez.");
     }
 
-    const token = extractBearerToken(credential.secret);
+    let token = extractBearerToken(credential.secret);
     if (!token) {
       throw new Error("Kimi Code OAuth erişim belirteci (access token) eksik veya boş.");
     }
@@ -315,17 +328,79 @@ export class KimiCodeAdapter implements ProviderAdapter {
       throw new Error("Kimi Code kullanım API'si yalnızca OAuth belirteçlerini destekler; standart API anahtarları desteklenmez.");
     }
 
+    const refreshToken = credential.metadata?.["refreshToken"] as string | undefined;
+    let deviceId = credential.metadata?.["deviceId"] as string | undefined;
+    let isExpired = false;
+
+    try {
+      const parts = token.split(".");
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf-8"));
+        if (!deviceId && typeof payload.device_id === "string") {
+          deviceId = payload.device_id;
+        }
+        if (typeof payload.exp === "number" && payload.exp * 1000 - Date.now() < 60_000) {
+          isExpired = true;
+        }
+      }
+    } catch {}
+
+    if (isExpired && refreshToken) {
+      try {
+        const refreshed = await refreshKimiToken(refreshToken, deviceId);
+        token = refreshed.accessToken;
+        credential.secret = refreshed.accessToken;
+        const metaUpdates: Record<string, unknown> = {};
+        if (refreshed.refreshToken) {
+          credential.metadata = { ...(credential.metadata || {}), refreshToken: refreshed.refreshToken };
+          metaUpdates["refreshToken"] = refreshed.refreshToken;
+        }
+        if (ctx?.onTokenRefresh) {
+          ctx.onTokenRefresh(refreshed.accessToken, metaUpdates);
+        }
+      } catch (err) {
+        if (process.env["DEBUG"] === "true") {
+          console.warn("[KimiCode] Pre-emptive token refresh failed:", err);
+        }
+      }
+    }
+
     const fetchImpl = ctx?.fetch ?? fetch;
     const nowMs = Date.now();
     const envBase = process.env["KIMI_CODE_BASE_URL"]?.trim();
     const baseUrl = envBase ? envBase.replace(/\/+$/, "") : DEFAULT_BASE_URL;
     const url = `${baseUrl}/usages`;
 
-    const response = await fetchImpl(url, {
+    let response = await fetchImpl(url, {
       method: "GET",
-      headers: getKimiHeaders(token),
+      headers: getKimiHeaders(token, deviceId),
       signal: ctx?.signal,
     });
+
+    if (response.status === 401 && refreshToken) {
+      try {
+        const refreshed = await refreshKimiToken(refreshToken, deviceId);
+        token = refreshed.accessToken;
+        credential.secret = refreshed.accessToken;
+        const metaUpdates: Record<string, unknown> = {};
+        if (refreshed.refreshToken) {
+          credential.metadata = { ...(credential.metadata || {}), refreshToken: refreshed.refreshToken };
+          metaUpdates["refreshToken"] = refreshed.refreshToken;
+        }
+        if (ctx?.onTokenRefresh) {
+          ctx.onTokenRefresh(refreshed.accessToken, metaUpdates);
+        }
+        response = await fetchImpl(url, {
+          method: "GET",
+          headers: getKimiHeaders(token, deviceId),
+          signal: ctx?.signal,
+        });
+      } catch (err) {
+        if (process.env["DEBUG"] === "true") {
+          console.warn("[KimiCode] 401 token refresh retry failed:", err);
+        }
+      }
+    }
 
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {

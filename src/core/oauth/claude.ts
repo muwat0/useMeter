@@ -1,5 +1,5 @@
 import { generatePKCE } from "./pkce";
-
+import { listenForOAuthCallback } from "./callback-server";
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const REDIRECT_URI = "http://localhost:54545/callback";
 const AUTH_URL = "https://claude.ai/oauth/authorize";
@@ -75,41 +75,11 @@ export async function listenForClaudeCallback(
   expectedState: string,
   timeoutMs: number = 120_000,
 ): Promise<string> {
-  const { promise, resolve, reject } = Promise.withResolvers<string>();
-
-  const server = Bun.serve({
+  return listenForOAuthCallback({
     port: 54545,
-    hostname: "127.0.0.1",
-    fetch(req) {
-      const url = new URL(req.url);
-      if (url.pathname === "/callback") {
-        const code = url.searchParams.get("code");
-        const state = url.searchParams.get("state");
-
-        if (state !== expectedState) {
-          return new Response("Geçersiz state parametresi.", { status: 400 });
-        }
-
-        if (!code) {
-          return new Response("Yetkilendirme kodu bulunamadı.", { status: 400 });
-        }
-
-        resolve(code);
-        setTimeout(() => server.stop(), 500);
-
-        return new Response(
-          "<html><body style='font-family:sans-serif;background:#0a0a0b;color:#10b981;text-align:center;padding:50px;'><h2>Claude Girişi Başarılı!</h2><p style='color:#a1a1aa;'>Bu sekmeyi kapatıp AI Usage Tracker paneline dönebilirsiniz.</p></body></html>",
-          { headers: { "Content-Type": "text/html; charset=utf-8" } },
-        );
-      }
-      return new Response("Not found", { status: 404 });
-    },
+    pathname: "/callback",
+    expectedState,
+    providerName: "Claude",
+    timeoutMs,
   });
-
-  const timer = setTimeout(() => {
-    server.stop();
-    reject(new Error("Zaman aşımı: Claude giriş isteği zamanında tamamlanmadı."));
-  }, timeoutMs);
-
-  return promise.finally(() => clearTimeout(timer));
 }

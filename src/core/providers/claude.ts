@@ -68,6 +68,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         },
         window: {
           id: "5h",
+          label: "5 Saatlik Kayan Pencere",
           durationMs: 5 * 60 * 60 * 1000,
           resetsAt: Number.isFinite(resetsAt) ? resetsAt : undefined,
           resetLabel: "Sıfırlanma",
@@ -94,6 +95,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         },
         window: {
           id: "7d",
+          label: "7 Günlük Pencere",
           durationMs: 7 * 24 * 60 * 60 * 1000,
           resetsAt: Number.isFinite(resetsAt) ? resetsAt : undefined,
           resetLabel: "Sıfırlanma",
@@ -121,8 +123,10 @@ export class ClaudeAdapter implements ProviderAdapter {
         },
         window: {
           id: "7d_model",
+          label: `${modelName} Haftalık Pencere`,
           durationMs: 7 * 24 * 60 * 60 * 1000,
           resetsAt: Number.isFinite(resetsAt) ? resetsAt : undefined,
+          resetLabel: "Sıfırlanma",
         },
         status: usedFraction >= 1 ? "exhausted" : usedFraction >= 0.9 ? "warning" : "ok",
       });
@@ -164,8 +168,10 @@ export class ClaudeAdapter implements ProviderAdapter {
         },
         window: {
           id: "5h",
+          label: "5 Saatlik Kayan Pencere",
           durationMs: 5 * 60 * 60 * 1000,
           resetsAt,
+          resetLabel: "Sıfırlanma",
         },
         status: usedFraction >= 1 ? "exhausted" : usedFraction >= 0.9 ? "warning" : "ok",
       });

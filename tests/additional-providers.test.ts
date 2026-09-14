@@ -6,9 +6,10 @@ import { ZaiAdapter } from "../src/core/providers/zai";
 import type { StoredCredential } from "../src/types";
 
 const mockCred: StoredCredential = {
-  id: "test-omp-1",
+  id: "test-provider-1",
+  ownerId: "test-owner",
   provider: "copilot",
-  accountLabel: "Test OMP",
+  accountLabel: "Test Provider",
   credentialType: "oauth",
   secret: "mock-secret-token",
   createdAt: Date.now(),

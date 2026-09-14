@@ -29,6 +29,49 @@ export class CursorAdapter implements ProviderAdapter {
     const now = Date.now();
     const limits: UsageLimit[] = [];
 
+    // Auto-discover account email if label is still generic "Cursor" or "Default"
+    let accountLabel = credential.accountLabel;
+    const existingEmail = typeof credential.metadata?.["email"] === "string" ? (credential.metadata["email"] as string).trim() : undefined;
+    if (existingEmail && (accountLabel === "Cursor" || accountLabel === "Default")) {
+      accountLabel = existingEmail;
+      if (ctx?.onTokenRefresh) {
+        ctx.onTokenRefresh(credential.secret, credential.metadata, existingEmail);
+      }
+    } else if (accountLabel === "Cursor" || accountLabel === "Default" || !existingEmail) {
+      try {
+        const parts = credential.secret.split(".");
+        if (parts.length === 3) {
+          const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as { sub?: string; email?: string };
+          let email = typeof payload.email === "string" && payload.email.trim() ? payload.email.trim() : undefined;
+          if (!email && typeof payload.sub === "string") {
+            const subParts = payload.sub.trim().split("|");
+            const userId = subParts.length > 1 ? subParts[1] : payload.sub.trim();
+            const meRes = await fetchImpl("https://cursor.com/api/auth/me", {
+              headers: {
+                Accept: "application/json",
+                Cookie: `WorkosCursorSessionToken=${encodeURIComponent(`${userId}::${credential.secret}`)}`,
+                "User-Agent": "Cursor/0.46.1",
+              },
+              signal: ctx?.signal,
+            });
+            if (meRes.ok) {
+              const meJson = (await meRes.json()) as { email?: string };
+              if (typeof meJson.email === "string" && meJson.email.trim()) {
+                email = meJson.email.trim();
+              }
+            }
+          }
+          if (email) {
+            accountLabel = email;
+            credential.accountLabel = email;
+            if (ctx?.onTokenRefresh) {
+              ctx.onTokenRefresh(credential.secret, { ...(credential.metadata || {}), email }, email);
+            }
+          }
+        }
+      } catch {}
+    }
+
     const res = await fetchImpl("https://api2.cursor.sh/auth/usage", {
       headers: {
         Authorization: `Bearer ${credential.secret}`,
@@ -80,7 +123,7 @@ export class CursorAdapter implements ProviderAdapter {
     return {
       provider: "Cursor",
       credentialId: credential.id,
-      accountLabel: credential.accountLabel,
+      accountLabel,
       fetchedAt: now,
       limits,
     };

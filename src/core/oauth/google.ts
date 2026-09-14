@@ -1,5 +1,5 @@
-import { generatePKCE, type PKCEPair } from "./pkce";
-
+import { generatePKCE } from "./pkce";
+import { listenForOAuthCallback } from "./callback-server";
 const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const CLIENT_SECRET = "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";
 const REDIRECT_URI = "http://127.0.0.1:51121/oauth-callback";
@@ -96,41 +96,11 @@ export async function listenForGoogleCallback(
   expectedState: string,
   timeoutMs: number = 120_000,
 ): Promise<string> {
-  const { promise, resolve, reject } = Promise.withResolvers<string>();
-
-  const server = Bun.serve({
+  return listenForOAuthCallback({
     port: 51121,
-    hostname: "127.0.0.1",
-    fetch(req) {
-      const url = new URL(req.url);
-      if (url.pathname === "/oauth-callback") {
-        const code = url.searchParams.get("code");
-        const state = url.searchParams.get("state");
-
-        if (state !== expectedState) {
-          return new Response("Geçersiz state parametresi.", { status: 400 });
-        }
-
-        if (!code) {
-          return new Response("Yetkilendirme kodu bulunamadı.", { status: 400 });
-        }
-
-        resolve(code);
-        setTimeout(() => server.stop(), 500);
-
-        return new Response(
-          "<html><body style='font-family:sans-serif;background:#0a0a0b;color:#10b981;text-align:center;padding:50px;'><h2>Giriş Başarılı!</h2><p style='color:#a1a1aa;'>Bu sekmeyi kapatıp AI Usage Tracker paneline dönebilirsiniz.</p></body></html>",
-          { headers: { "Content-Type": "text/html; charset=utf-8" } },
-        );
-      }
-      return new Response("Not found", { status: 404 });
-    },
+    pathname: "/oauth-callback",
+    expectedState,
+    providerName: "Google",
+    timeoutMs,
   });
-
-  const timer = setTimeout(() => {
-    server.stop();
-    reject(new Error("Zaman aşımı: Google giriş isteği zamanında tamamlanmadı."));
-  }, timeoutMs);
-
-  return promise.finally(() => clearTimeout(timer));
 }

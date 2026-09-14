@@ -402,6 +402,12 @@ function creditLimit(
   };
 }
 
+function isGenericDevinLabel(label: string | undefined): boolean {
+  if (!label) return true;
+  const normalized = label.trim().toLowerCase();
+  return normalized === "" || normalized === "devin" || normalized === "default" || normalized === "devin ai";
+}
+
 function buildReport(data: StatusData, credential: StoredCredential): UsageReport {
   const plan = data.plan;
   const window: UsageWindow = {
@@ -462,10 +468,15 @@ function buildReport(data: StatusData, credential: StoredCredential): UsageRepor
     throw new Error("Devin usage response contained no plan credits or quota windows");
   }
 
-  return {
-    provider: PROVIDER,
-    credentialId: credential.id,
-    accountLabel: credential.accountLabel,
+  const discoveredIdentity = data.email || data.userId || plan?.orgName || plan?.orgId;
+  const resolvedLabel = !isGenericDevinLabel(credential.accountLabel)
+    ? credential.accountLabel
+    : (discoveredIdentity && discoveredIdentity.trim().length > 0 ? discoveredIdentity.trim() : credential.accountLabel);
+
+   return {
+     provider: PROVIDER,
+     credentialId: credential.id,
+    accountLabel: resolvedLabel,
     fetchedAt: Date.now(),
     limits,
   };
@@ -534,6 +545,16 @@ export class DevinAdapter implements ProviderAdapter {
       throw new Error(`Devin kullanım sorgusu başarısız: HTTP ${response.status}${detail}`);
     }
 
-    return buildReport(await decodeResponse(response), credential);
+    const data = await decodeResponse(response);
+    const report = buildReport(data, credential);
+    const discoveredIdentity = data.email || data.userId || data.plan?.orgName || data.plan?.orgId;
+    if (discoveredIdentity && discoveredIdentity.trim().length > 0 && isGenericDevinLabel(credential.accountLabel)) {
+      const resolvedLabel = discoveredIdentity.trim();
+      credential.accountLabel = resolvedLabel;
+      if (ctx?.onTokenRefresh) {
+        ctx.onTokenRefresh(credential.secret, { ...(credential.metadata || {}), ...(data.email ? { email: data.email } : {}), ...(data.userId ? { userId: data.userId } : {}) }, resolvedLabel);
+      }
+    }
+    return report;
   }
 }

@@ -101,9 +101,9 @@ function unwrapGatewayData(value: unknown): Record<string, unknown> {
 
   let current: Record<string, unknown> = { ...(value as Record<string, unknown>) };
 
-  if (typeof current.Data === "string") {
+  if (typeof current["Data"] === "string") {
     try {
-      const parsed: unknown = JSON.parse(current.Data);
+      const parsed: unknown = JSON.parse(current["Data"] as string);
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         current = parsed as Record<string, unknown>;
       }
@@ -112,15 +112,15 @@ function unwrapGatewayData(value: unknown): Record<string, unknown> {
     }
   }
 
-  const dataV2 = current.DataV2;
+  const dataV2 = current["DataV2"];
   if (typeof dataV2 === "object" && dataV2 !== null && !Array.isArray(dataV2)) {
-    const innerData = (dataV2 as Record<string, unknown>).data;
+    const innerData = (dataV2 as Record<string, unknown>)["data"];
     if (typeof innerData === "object" && innerData !== null && !Array.isArray(innerData)) {
       current = innerData as Record<string, unknown>;
     }
   }
 
-  const directData = current.data;
+  const directData = current["data"];
   if (typeof directData === "object" && directData !== null && !Array.isArray(directData)) {
     current = directData as Record<string, unknown>;
   }
@@ -139,20 +139,20 @@ function parseCredential(secret: string, metadata?: Record<string, unknown>): Al
       const parsed: unknown = JSON.parse(trimmed);
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         const obj = parsed as Record<string, unknown>;
-        if (typeof obj.token === "string" && obj.token.trim().length > 0) {
-          token = obj.token.trim();
-        } else if (typeof obj.apiKey === "string" && obj.apiKey.trim().length > 0) {
-          token = obj.apiKey.trim();
-        } else if (typeof obj.key === "string" && obj.key.trim().length > 0) {
-          token = obj.key.trim();
+        if (typeof obj["token"] === "string" && (obj["token"] as string).trim().length > 0) {
+          token = (obj["token"] as string).trim();
+        } else if (typeof obj["apiKey"] === "string" && (obj["apiKey"] as string).trim().length > 0) {
+          token = (obj["apiKey"] as string).trim();
+        } else if (typeof obj["key"] === "string" && (obj["key"] as string).trim().length > 0) {
+          token = (obj["key"] as string).trim();
         }
 
-        if (typeof obj.cookie === "string" && obj.cookie.trim().length > 0) {
-          cookie = obj.cookie.trim();
+        if (typeof obj["cookie"] === "string" && (obj["cookie"] as string).trim().length > 0) {
+          cookie = (obj["cookie"] as string).trim();
         }
 
-        if (typeof obj.baseUrl === "string" && obj.baseUrl.trim().length > 0) {
-          baseUrl = obj.baseUrl.trim();
+        if (typeof obj["baseUrl"] === "string" && (obj["baseUrl"] as string).trim().length > 0) {
+          baseUrl = (obj["baseUrl"] as string).trim();
         }
       }
     } catch {
@@ -164,12 +164,12 @@ function parseCredential(secret: string, metadata?: Record<string, unknown>): Al
     token = trimmed;
   }
 
-  if (!cookie && metadata && typeof metadata.cookie === "string" && metadata.cookie.trim().length > 0) {
-    cookie = metadata.cookie.trim();
+  if (!cookie && metadata && typeof metadata["cookie"] === "string" && (metadata["cookie"] as string).trim().length > 0) {
+    cookie = (metadata["cookie"] as string).trim();
   }
 
-  if (!baseUrl && metadata && typeof metadata.baseUrl === "string" && metadata.baseUrl.trim().length > 0) {
-    baseUrl = metadata.baseUrl.trim();
+  if (!baseUrl && metadata && typeof metadata["baseUrl"] === "string" && (metadata["baseUrl"] as string).trim().length > 0) {
+    baseUrl = (metadata["baseUrl"] as string).trim();
   }
 
   if (!cookie && (trimmed.includes("login_aliyunid_csrf") || (trimmed.includes("=") && trimmed.includes(";")))) {
@@ -299,16 +299,16 @@ export class AlibabaTokenPlanAdapter implements ProviderAdapter {
           : undefined;
 
       const dataObj =
-        payloadObj && typeof payloadObj.data === "object" && payloadObj.data !== null && !Array.isArray(payloadObj.data)
-          ? (payloadObj.data as Record<string, unknown>)
+        payloadObj && typeof payloadObj["data"] === "object" && payloadObj["data"] !== null && !Array.isArray(payloadObj["data"])
+          ? (payloadObj["data"] as Record<string, unknown>)
           : undefined;
 
-      if (!dataObj || typeof dataObj.secToken !== "string" || dataObj.secToken.trim().length === 0) {
+      if (!dataObj || typeof dataObj["secToken"] !== "string" || (dataObj["secToken"] as string).trim().length === 0) {
         throw new Error(
           "QwenCloud oturum yanıtında geçerli secToken bulunamadı. Oturum çerezi geçersiz veya süresi dolmuş olabilir.",
         );
       }
-      secToken = dataObj.secToken;
+      secToken = dataObj["secToken"] as string;
     }
 
     // 2. Query Usage API
@@ -368,28 +368,28 @@ export class AlibabaTokenPlanAdapter implements ProviderAdapter {
     const isPayloadValidObj = typeof payload === "object" && payload !== null && !Array.isArray(payload);
     const payloadObj = isPayloadValidObj ? (payload as Record<string, unknown>) : undefined;
 
-    if (!payloadObj || payloadObj.successResponse === false || typeof payloadObj.data !== "object" || payloadObj.data === null) {
+    if (!payloadObj || payloadObj["successResponse"] === false || typeof payloadObj["data"] !== "object" || payloadObj["data"] === null) {
       const errMsg =
-        payloadObj && typeof payloadObj.errorMsg === "string" ? `: ${payloadObj.errorMsg}` : "";
+        payloadObj && typeof payloadObj["errorMsg"] === "string" ? `: ${payloadObj["errorMsg"]}` : "";
       throw new Error(`Alibaba Token Plan kota yanıtı geçersiz veya hata döndürdü${errMsg}`);
     }
 
-    const responseData = unwrapGatewayData(payloadObj.data);
+    const responseData = unwrapGatewayData(payloadObj["data"]);
 
     const limits = [
       buildLimit(
         "5h",
         "5 Hour Credits",
         5 * HOUR_MS,
-        parseUsedFraction(responseData.per5HourPercentage),
-        parsePositiveTimestamp(responseData.per5HourResetTime),
+        parseUsedFraction(responseData["per5HourPercentage"]),
+        parsePositiveTimestamp(responseData["per5HourResetTime"]),
       ),
       buildLimit(
         "7d",
         "7 Day Credits",
         WEEK_MS,
-        parseUsedFraction(responseData.per1WeekPercentage),
-        parsePositiveTimestamp(responseData.per1WeekResetTime),
+        parseUsedFraction(responseData["per1WeekPercentage"]),
+        parsePositiveTimestamp(responseData["per1WeekResetTime"]),
       ),
     ].filter((limit): limit is UsageLimit => limit !== undefined);
 

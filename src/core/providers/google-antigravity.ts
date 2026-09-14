@@ -8,23 +8,24 @@ const DEFAULT_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
 
-interface AntigravityQuotaInfo {
+interface AntigravityQuotaBucket {
+  bucketId?: string;
+  displayName?: string;
+  window?: string;
   remainingFraction?: number;
   resetTime?: string;
-  windowId?: string;
-  windowLabel?: string;
+  description?: string;
 }
 
-interface AntigravityModelInfo {
+interface AntigravityQuotaGroup {
   displayName?: string;
-  quotaInfo?: AntigravityQuotaInfo | AntigravityQuotaInfo[];
-  quotaInfos?: AntigravityQuotaInfo[];
-  dailyQuotaInfo?: AntigravityQuotaInfo | AntigravityQuotaInfo[];
-  weeklyQuotaInfo?: AntigravityQuotaInfo | AntigravityQuotaInfo[];
+  description?: string;
+  buckets?: AntigravityQuotaBucket[];
 }
 
-interface AntigravityUsageResponse {
-  models?: Record<string, AntigravityModelInfo>;
+interface AntigravityQuotaSummary {
+  groups?: AntigravityQuotaGroup[];
+  description?: string;
 }
 
 export class GoogleAntigravityAdapter implements ProviderAdapter {
@@ -68,8 +69,14 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
     if (refreshToken) {
       try {
         accessToken = await this.refreshAccessToken(refreshToken);
+        credential.secret = accessToken;
+        if (ctx?.onTokenRefresh) {
+          ctx.onTokenRefresh(accessToken);
+        }
       } catch (err) {
-        console.warn("[GoogleAntigravity] Token refresh fallback to current secret:", err);
+        if (process.env["DEBUG"] === "true") {
+          console.warn("[GoogleAntigravity] Token refresh fallback to current secret:", err);
+        }
       }
     }
 
@@ -95,7 +102,14 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
       }
     } catch {}
 
-    // 3. Fetch available models with retry on ECONNRESET
+    // 3. Quota source: v1internal:retrieveUserQuotaSummary (with retry on
+    // ECONNRESET). This endpoint is the exact source backing the `agy` CLI
+    // "Models & Quota" screen: per-group (Gemini / Claude+GPT) buckets with
+    // explicit window ("weekly" | "5h"), remainingFraction, resetTime and
+    // description. The legacy v1internal:fetchAvailableModels per-model
+    // quotaInfo counters only reflect ONE backend pool per group and go
+    // silently stale (they kept reporting 100% after the Gemini 5h pool was
+    // exhausted), so they are no longer used at all.
     const headers: Record<string, string> = {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
@@ -106,7 +120,7 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
     let response: Response | undefined;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        response = await fetchImpl(`${DEFAULT_ENDPOINT}/v1internal:fetchAvailableModels`, {
+        response = await fetchImpl(`${DEFAULT_ENDPOINT}/v1internal:retrieveUserQuotaSummary`, {
           method: "POST",
           headers,
           body: JSON.stringify({ project: projectId }),
@@ -117,8 +131,7 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
         const isErrObj = typeof err === "object" && err !== null;
         const isConnReset = err instanceof Error && (err.message.includes("ECONNRESET") || (isErrObj && "code" in err && err.code === "ECONNRESET"));
         if (isConnReset && attempt === 0) {
-          const { promise, resolve } = Promise.withResolvers<void>();
-          await promise;
+          await new Promise(res => setTimeout(res, 500));
           continue;
         }
         throw err;
@@ -128,55 +141,57 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
     if (!response || !response.ok) {
       throw new Error(`Google Antigravity kota sorgusu başarısız: HTTP ${response?.status || 0} ${response?.statusText || ""}`);
     }
-    const data = (await response.json()) as AntigravityUsageResponse;
-    const models = data.models ?? {};
 
-    // 4. Scan counters for Gemini and Claude
-    let geminiRollingRemaining = 1.0;
+    // 4. Parse per-group buckets with explicit window ("weekly" | "5h").
+    const summary = (await response.json()) as AntigravityQuotaSummary;
+
+    let geminiRollingRemaining: number | undefined;
     let geminiRollingResetAt: number | undefined;
-    let geminiWeeklyRemaining = 1.0;
+    let geminiWeeklyRemaining: number | undefined;
     let geminiWeeklyResetAt: number | undefined;
 
-    let claudeGptRollingRemaining = 1.0;
+    let claudeGptRollingRemaining: number | undefined;
     let claudeGptRollingResetAt: number | undefined;
-    let claudeGptWeeklyRemaining = 1.0;
+    let claudeGptWeeklyRemaining: number | undefined;
     let claudeGptWeeklyResetAt: number | undefined;
 
-    for (const [modelId, info] of Object.entries(models)) {
-      const rawQuotas = [
-        ...(Array.isArray(info.quotaInfo) ? info.quotaInfo : info.quotaInfo ? [info.quotaInfo] : []),
-        ...(Array.isArray(info.quotaInfos) ? info.quotaInfos : info.quotaInfos ? [info.quotaInfos] : []),
-        ...(Array.isArray(info.dailyQuotaInfo) ? info.dailyQuotaInfo : info.dailyQuotaInfo ? [info.dailyQuotaInfo] : []),
-        ...(Array.isArray(info.weeklyQuotaInfo) ? info.weeklyQuotaInfo : info.weeklyQuotaInfo ? [info.weeklyQuotaInfo] : []),
-      ];
-
-      for (const q of rawQuotas) {
-        if (typeof q.remainingFraction !== "number") continue;
-        const resetAt = q.resetTime ? Date.parse(q.resetTime) : undefined;
-        const isWeekly = q.windowId?.includes("week") || (resetAt && resetAt - now > 24 * 3600 * 1000);
-
-        if (modelId.includes("claude") || modelId.includes("gpt-oss")) {
-          // Claude and GPT models share a combined quota pool in Antigravity
+    for (const group of summary.groups ?? []) {
+      const name = (group.displayName || "").toLowerCase();
+      const target = name.includes("gemini") ? "gemini" : name.includes("claude") || name.includes("gpt") || name.includes("3p") ? "claudeGpt" : undefined;
+      if (!target) continue;
+      for (const bucket of group.buckets ?? []) {
+        // OMP's canonical observation (verified in their google-antigravity
+        // usage provider): exhausted Google/Gemini counters OMIT
+        // remainingFraction entirely and keep only resetTime ("blocked until
+        // reset"). Treat that shape as remaining 0 so a healthy sibling
+        // bucket cannot mask the exhaustion; skip only buckets that carry
+        // neither a fraction nor a reset time.
+        const remainingFraction = typeof bucket.remainingFraction === "number"
+          ? bucket.remainingFraction
+          : (bucket.resetTime ? 0 : undefined);
+        if (remainingFraction === undefined) continue;
+        const resetAt = bucket.resetTime ? Date.parse(bucket.resetTime) : undefined;
+        const window = (bucket.window || bucket.bucketId || "").toLowerCase();
+        const isWeekly = window.includes("week");
+        if (target === "gemini") {
           if (isWeekly) {
-            if (q.remainingFraction < claudeGptWeeklyRemaining) claudeGptWeeklyRemaining = q.remainingFraction;
-            if (resetAt && (!claudeGptWeeklyResetAt || resetAt > claudeGptWeeklyResetAt)) claudeGptWeeklyResetAt = resetAt;
+            geminiWeeklyRemaining = remainingFraction;
+            if (resetAt !== undefined) geminiWeeklyResetAt = resetAt;
           } else {
-            if (q.remainingFraction < claudeGptRollingRemaining) claudeGptRollingRemaining = q.remainingFraction;
-            if (resetAt && (!claudeGptRollingResetAt || resetAt < claudeGptRollingResetAt)) claudeGptRollingResetAt = resetAt;
+            geminiRollingRemaining = remainingFraction;
+            if (resetAt !== undefined) geminiRollingResetAt = resetAt;
           }
-        } else if (!modelId.startsWith("tab_") && !modelId.startsWith("chat_")) {
-          // Gemini models pool
+        } else {
           if (isWeekly) {
-            if (q.remainingFraction < geminiWeeklyRemaining) geminiWeeklyRemaining = q.remainingFraction;
-            if (resetAt && (!geminiWeeklyResetAt || resetAt > geminiWeeklyResetAt)) geminiWeeklyResetAt = resetAt;
+            claudeGptWeeklyRemaining = remainingFraction;
+            if (resetAt !== undefined) claudeGptWeeklyResetAt = resetAt;
           } else {
-            if (q.remainingFraction < geminiRollingRemaining) geminiRollingRemaining = q.remainingFraction;
-            if (resetAt && (!geminiRollingResetAt || resetAt < geminiRollingResetAt)) geminiRollingResetAt = resetAt;
+            claudeGptRollingRemaining = remainingFraction;
+            if (resetAt !== undefined) claudeGptRollingResetAt = resetAt;
           }
         }
       }
     }
-
     const limits: UsageLimit[] = [];
 
     // Helper to build clean limit entry with NO model notes
@@ -213,47 +228,30 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
       });
     };
 
-    // 1. Gemini 5-Hour Limit
-    addLimit(
-      "gemini_5h",
-      "Gemini: 5-Hour Limit",
-      geminiRollingRemaining,
-      "5h",
-      FIVE_HOUR_MS,
-      geminiRollingResetAt,
-    );
+    // 1. Gemini 5-Hour Limit: only render when a rolling-window counter was seen.
+    // Missing counter => omit the card instead of rendering a fake 100% bar.
+    if (geminiRollingRemaining !== undefined) {
+      addLimit("gemini_5h", "Gemini: 5-Hour Limit", geminiRollingRemaining, "5h", FIVE_HOUR_MS, geminiRollingResetAt);
+    }
 
-    // 2. Gemini Weekly Limit
-    const weeklyResetTime = geminiWeeklyResetAt || (geminiRollingResetAt ? geminiRollingResetAt + 6 * 24 * 3600 * 1000 : now + WEEK_MS);
-    addLimit(
-      "gemini_weekly",
-      "Gemini: Weekly Limit",
-      geminiWeeklyRemaining < 1 ? geminiWeeklyRemaining : Math.max(0.7, geminiRollingRemaining),
-      "weekly",
-      WEEK_MS,
-      weeklyResetTime,
-    );
+    // 2. Gemini Weekly Limit: never fabricate from the rolling window.
+    if (geminiWeeklyRemaining !== undefined) {
+      addLimit("gemini_weekly", "Gemini: Weekly Limit", geminiWeeklyRemaining, "weekly", WEEK_MS, geminiWeeklyResetAt ?? now + WEEK_MS);
+    }
 
     // 3. Claude & GPT 5-Hour Limit
-    addLimit(
-      "claude_gpt_5h",
-      "Claude & GPT: 5-Hour Limit",
-      claudeGptRollingRemaining,
-      "5h",
-      FIVE_HOUR_MS,
-      claudeGptRollingResetAt,
-    );
+    if (claudeGptRollingRemaining !== undefined) {
+      addLimit("claude_gpt_5h", "Claude & GPT: 5-Hour Limit", claudeGptRollingRemaining, "5h", FIVE_HOUR_MS, claudeGptRollingResetAt);
+    }
 
     // 4. Claude & GPT Weekly Limit
-    const claudeGptWeeklyReset = claudeGptWeeklyResetAt || (claudeGptRollingResetAt ? claudeGptRollingResetAt + 6 * 24 * 3600 * 1000 : now + WEEK_MS);
-    addLimit(
-      "claude_gpt_weekly",
-      "Claude & GPT: Weekly Limit",
-      claudeGptWeeklyRemaining,
-      "weekly",
-      WEEK_MS,
-      claudeGptWeeklyReset,
-    );
+    if (claudeGptWeeklyRemaining !== undefined) {
+      addLimit("claude_gpt_weekly", "Claude & GPT: Weekly Limit", claudeGptWeeklyRemaining, "weekly", WEEK_MS, claudeGptWeeklyResetAt ?? now + WEEK_MS);
+    }
+
+    if (limits.length === 0) {
+      throw new Error("Google Antigravity kota yanıtında pencere sayacı bulunamadı.");
+    }
 
     const cleanLabel = credential.accountLabel.replace(/^Google \((.*)\)$/, "$1");
 

@@ -96,6 +96,7 @@ export class CodexAdapter implements ProviderAdapter {
         },
         window: {
           id: "primary",
+          label: "5 Saatlik Kayan Pencere",
           durationMs,
           resetsAt,
           resetLabel: "Sıfırlanma",
@@ -132,8 +133,10 @@ export class CodexAdapter implements ProviderAdapter {
         },
         window: {
           id: "secondary",
+          label: "Haftalık / Uzun Dönem Penceresi",
           durationMs,
           resetsAt,
+          resetLabel: "Sıfırlanma",
         },
         status: usedFraction >= 1 ? "exhausted" : usedFraction >= 0.9 ? "warning" : "ok",
       });
@@ -207,7 +210,9 @@ export class CodexAdapter implements ProviderAdapter {
         },
         window: {
           id: "primary",
+          label: "5 Saatlik Kayan Pencere (Header)",
           resetsAt,
+          resetLabel: "Sıfırlanma",
         },
         status: usedFraction >= 1 ? "exhausted" : usedFraction >= 0.9 ? "warning" : "ok",
       });
