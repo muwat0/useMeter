@@ -2644,6 +2644,29 @@ function renderAdminDashboardHtml(params: {
 </body>
 </html>`;
 }
+function sanitizeReportError(msg: string): string {
+  if (!msg) return "";
+  let clean = String(msg);
+  clean = clean.replace(/ya29\.[a-zA-Z0-9_-]+/g, "[REDACTED_TOKEN]");
+  clean = clean.replace(/sk-[a-zA-Z0-9_-]+/g, "[REDACTED_KEY]");
+  clean = clean.replace(/gho_[a-zA-Z0-9_]+/g, "[REDACTED_TOKEN]");
+  clean = clean.replace(/Bearer\s+[a-zA-Z0-9._-]+/gi, "Bearer [REDACTED]");
+  clean = clean.replace(/[a-f0-9]{32,64}/gi, "[REDACTED_HASH]");
+  return clean;
+}
+
+function getReportErrorMessage(report: UsageReport): string {
+  const err = report.error || "";
+  if (!err) return "";
+  const raw = sanitizeReportError(err);
+  const lower = raw.toLowerCase();
+  if (lower.includes("rate limit") || lower.includes("429")) return "İstek Hız Sınırı Aşıldı";
+  if (lower.includes("subscription") || lower.includes("aboneli") || lower.includes("subscription_required")) return "Abonelik Gerekli veya Süresi Dolmuş";
+  if (lower.includes("permission_denied") || lower.includes("permission denied") || lower.includes("403")) return "Bu Servis İçin Yetkiniz Yok";
+  if (lower.includes("unauthorized") || lower.includes("401") || lower.includes("invalid_grant") || lower.includes("token expired") || lower.includes("auth")) return "Yetkilendirme Hatası / Token Geçersiz";
+  if (lower.includes("fetch") || lower.includes("network") || lower.includes("econnrefused") || lower.includes("timeout")) return "Bağlantı Hatası";
+  return "Sorgulama Hatası: " + raw.slice(0, 60);
+}
 
 function renderDashboardHtml(initialReports: (UsageReport & { createdAt?: number; accent?: string | null })[] = [], user?: User): string {
   let initialTotalBal = 0;
@@ -2721,18 +2744,71 @@ function renderDashboardHtml(initialReports: (UsageReport & { createdAt?: number
           ? `<span class="px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider rounded-md bg-appAccentSoft text-appAccent border border-appAccent/30 shadow-xs">${planName}</span>`
           : "";
 
+        const hasLimits = Array.isArray(r.limits) && r.limits.length > 0;
+        const isStale = Boolean(
+          r.stale ||
+          r.health === "stale" ||
+          r.source === "stale" ||
+          (Boolean(r.error) && hasLimits)
+        );
+        const isFirstError = Boolean(
+          (r.health === "error" || r.error) && !isStale && !hasLimits
+        );
+        const cardStatus = isStale ? "stale" : isFirstError ? "error" : "healthy";
+
+        const successTimestamp = (isStale && r.lastGoodFetchedAt) ? r.lastGoodFetchedAt : r.fetchedAt;
+        const timeStr = successTimestamp ? new Date(successTimestamp).toLocaleTimeString() : "";
+        const updateText = isStale
+          ? `Son başarılı güncelleme: ${escapeHtml(timeStr)}`
+          : `Son Güncelleme: ${escapeHtml(timeStr)}`;
+
+        const staleBadgeHtml = isStale
+          ? `<span data-status="stale" class="account-card-stale-badge bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-medium px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0" title="Önbelleğe alınmış kotalar gösteriliyor">
+              <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+              <span data-i18n="staleBadge">Eski Veri</span>
+            </span>`
+          : "";
+
+        const rawError = getReportErrorMessage(r);
+        let statusNoticeHtml = "";
+        if (isStale) {
+          const errorDesc = rawError ? `<span class="text-[11px] text-amber-400/90 block truncate">${escapeHtml(rawError)}</span>` : "";
+          statusNoticeHtml = `
+            <div data-stale-notice="true" role="status" aria-live="polite" class="account-card-stale-notice bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs px-3 py-2 rounded-xl flex items-start gap-2.5">
+              <svg class="w-4 h-4 shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <div class="flex-1 space-y-0.5 min-w-0">
+                <div class="font-medium flex items-center justify-between gap-2 flex-wrap">
+                  <span data-i18n="staleNotice">Önbelleğe alınmış kotalar gösteriliyor</span>
+                  <span class="text-[11px] text-amber-400/80 font-normal">Son başarılı güncelleme: ${escapeHtml(timeStr)}</span>
+                </div>
+                ${errorDesc}
+              </div>
+            </div>
+          `;
+        } else if (isFirstError) {
+          const displayErr = rawError || "Kullanım verisi henüz alınamadı";
+          statusNoticeHtml = `
+            <div data-status="error" class="bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs px-3 py-2 rounded-xl flex items-center gap-2">
+              <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <span class="truncate">${escapeHtml(displayErr)}</span>
+            </div>
+          `;
+        }
+
         return `
-          <div data-card-id="${r.credentialId || r.provider}" data-accent="${cardAccent}" class="account-card border rounded-2xl p-5 space-y-4 transition-all shadow-sm">
+          <div data-card-id="${r.credentialId || r.provider}" data-status="${cardStatus}" data-accent="${cardAccent}" class="account-card border rounded-2xl p-5 space-y-4 transition-all shadow-sm">
             <div class="flex justify-between items-start">
               <div>
                 <div class="flex items-center gap-2 flex-wrap">
                   <h2 class="account-card-title font-bold text-base tracking-tight">${provTitle}</h2>
                   ${planBadgeHtml}
-                  <span class="account-card-badge text-xs font-semibold px-2.5 py-0.5 rounded-md">${cleanLabel}</span>
+                  <span class="account-card-badge text-xs font-semibold px-2.5 py-0.5 rounded-md">${escapeHtml(cleanLabel)}</span>
+                  ${staleBadgeHtml}
                 </div>
-                <span class="text-xs text-appTextMuted block mt-1.5" data-i18n="lastUpdate">Son Güncelleme: ${new Date(r.fetchedAt).toLocaleTimeString()}</span>
+                <span class="text-xs text-appTextMuted block mt-1.5" ${isStale ? 'data-i18n="lastSuccessfulUpdate"' : 'data-i18n="lastUpdate"'}>${updateText}</span>
               </div>
             </div>
+            ${statusNoticeHtml}
             <div class="space-y-2.5">${limitsHtml}</div>
           </div>
         `;
@@ -3499,6 +3575,12 @@ function renderDashboardHtml(initialReports: (UsageReport & { createdAt?: number
         permissionError: "Bu Servis İçin Yetkiniz Yok",
         rateLimitError: "İstek Hız Sınırı Aşıldı",
         networkError: "Bağlantı Hatası",
+        authError: "Yetkilendirme Hatası / Token Geçersiz",
+        statusStale: "Eski Veri",
+        staleBadge: "Eski Veri",
+        staleNotice: "Önbelleğe alınmış kotalar gösteriliyor",
+        lastSuccessfulUpdate: "Son başarılı güncelleme:",
+        initialUnavailable: "Kullanım verisi henüz alınamadı",
         logoutText: "Çıkış",
         logoutTitle: "Oturumu Kapat",
         adminLink: "Yönetim",
@@ -3591,6 +3673,12 @@ function renderDashboardHtml(initialReports: (UsageReport & { createdAt?: number
         permissionError: "Permission Denied for This Service",
         rateLimitError: "Rate Limit Exceeded",
         networkError: "Connection Error",
+        authError: "Authentication Error / Invalid Token",
+        statusStale: "Stale",
+        staleBadge: "Stale",
+        staleNotice: "Showing cached limits",
+        lastSuccessfulUpdate: "Last successful update:",
+        initialUnavailable: "Usage data not yet available",
         logoutText: "Sign Out",
         logoutTitle: "Sign out",
         adminLink: "Admin",
@@ -4799,13 +4887,53 @@ function renderDashboardHtml(initialReports: (UsageReport & { createdAt?: number
         ? ' is-edit-mode cursor-grab active:cursor-grabbing'
         : ' hover:border-zinc-700';
 
-      const errorMsg = getLocalizedReportError(r);
-      const errorHtml = errorMsg ? (
-        '<div class="bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs px-3 py-2 rounded-xl flex items-center gap-2">' +
-        '  <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
-        '  <span class="truncate">' + escapeHtml(errorMsg) + '</span>' +
-        '</div>'
+      const hasLimits = Array.isArray(r.limits) && r.limits.length > 0;
+      const isStale = Boolean(
+        r.stale ||
+        r.health === 'stale' ||
+        r.source === 'stale' ||
+        (Boolean(r.error) && hasLimits)
+      );
+      const isFirstError = Boolean(
+        (r.health === 'error' || r.error) && !isStale && !hasLimits
+      );
+      const cardStatus = isStale ? 'stale' : (isFirstError ? 'error' : 'healthy');
+
+      const successTimestamp = (isStale && r.lastGoodFetchedAt) ? r.lastGoodFetchedAt : r.fetchedAt;
+      const timeStr = successTimestamp ? new Date(successTimestamp).toLocaleTimeString() : '';
+      const updateLabel = isStale ? t('lastSuccessfulUpdate') : (t('lastUpdate') + ':');
+
+      const staleBadgeHtml = isStale ? (
+        '<span data-status="stale" class="account-card-stale-badge bg-amber-500/10 text-amber-400 border border-amber-500/20 text-[10px] font-medium px-1.5 py-0.5 rounded flex items-center gap-1 shrink-0" title="' + escapeHtml(t('staleNotice')) + '">' +
+        '  <span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>' +
+        '  <span data-i18n="staleBadge">' + escapeHtml(t('staleBadge')) + '</span>' +
+        '</span>'
       ) : '';
+
+      const rawError = getLocalizedReportError(r);
+      let statusNoticeHtml = '';
+
+      if (isStale) {
+        const errorDesc = rawError ? ('<span class="text-[11px] text-amber-400/90 block truncate">' + escapeHtml(rawError) + '</span>') : '';
+        statusNoticeHtml =
+          '<div data-stale-notice="true" role="status" aria-live="polite" class="account-card-stale-notice bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs px-3 py-2 rounded-xl flex items-start gap-2.5">' +
+          '  <svg class="w-4 h-4 shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
+          '  <div class="flex-1 space-y-0.5 min-w-0">' +
+          '    <div class="font-medium flex items-center justify-between gap-2 flex-wrap">' +
+          '      <span data-i18n="staleNotice">' + escapeHtml(t('staleNotice')) + '</span>' +
+          '      <span class="text-[11px] text-amber-400/80 font-normal">' + escapeHtml(t('lastSuccessfulUpdate')) + ' ' + escapeHtml(timeStr) + '</span>' +
+          '    </div>' +
+          '    ' + errorDesc +
+          '  </div>' +
+          '</div>';
+      } else if (isFirstError) {
+        const displayErr = rawError || t('initialUnavailable');
+        statusNoticeHtml =
+          '<div data-status="error" class="bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs px-3 py-2 rounded-xl flex items-center gap-2">' +
+          '  <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>' +
+          '  <span class="truncate">' + escapeHtml(displayErr) + '</span>' +
+          '</div>';
+      }
 
       const limitsHtml = (r.limits || []).map(l => {
         let valueHtml = '';
@@ -4901,18 +5029,19 @@ function renderDashboardHtml(initialReports: (UsageReport & { createdAt?: number
           '</div>';
       }
 
-      return '<div data-card-id="' + cardKey + '" data-accent="' + cardAccent + '" class="account-card border ' + editBorderClass + ' rounded-2xl p-5 space-y-4 transition-all shadow-sm relative"' + dragAttrs + '>' +
+      return '<div data-card-id="' + cardKey + '" data-status="' + cardStatus + '" data-accent="' + cardAccent + '" class="account-card border ' + editBorderClass + ' rounded-2xl p-5 space-y-4 transition-all shadow-sm relative"' + dragAttrs + '>' +
              '  <div class="flex justify-between items-start">' +
              '    <div>' +
              '      <div class="flex items-center gap-2 flex-wrap">' +
              '        <h2 class="account-card-title font-bold text-base tracking-tight">' + providerTitle + '</h2>' +
              planBadgeHtml +
              labelDisplayHtml +
+             staleBadgeHtml +
              '      </div>' +
-             '      <span class="text-xs text-appTextMuted block mt-1.5">' + t('lastUpdate') + ': ' + new Date(r.fetchedAt).toLocaleTimeString() + '</span>' +
+             '      <span class="text-xs text-appTextMuted block mt-1.5">' + escapeHtml(updateLabel) + ' ' + escapeHtml(timeStr) + '</span>' +
              '    </div>' +
              '  </div>' +
-             errorHtml +
+             statusNoticeHtml +
              '  <div class="space-y-2.5">' + limitsHtml + '</div>' +
              editAccentHtml +
              '</div>';
