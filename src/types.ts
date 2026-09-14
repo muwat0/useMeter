@@ -1,3 +1,89 @@
+export type UserRole = "admin" | "user";
+
+export interface User {
+  id: string;
+  email: string;
+  role: UserRole;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AdminUserView extends User {
+  credentialCount: number;
+  activeSessionCount: number;
+}
+
+export interface AdminSystemStats {
+  totalUsers: number;
+  totalCredentials: number;
+  totalSnapshots: number;
+  activeSessions: number;
+  pollerRunning: boolean;
+  allowRegistration: boolean;
+  databaseSizeBytes: number;
+  integrity: boolean;
+  providerCounts: Record<string, number>;
+}
+
+export interface Session {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: number;
+  createdAt: number;
+}
+
+export type AuthErrorCode =
+  | "INVALID_CREDENTIALS"
+  | "EMAIL_EXISTS"
+  | "WEAK_PASSWORD"
+  | "INVALID_EMAIL"
+  | "UNAUTHENTICATED"
+  | "FORBIDDEN"
+  | "INVALID_INVITATION"
+  | "INVITATION_EXPIRED"
+  | "INVITATION_REVOKED"
+  | "INVITATION_USED"
+  | "INTERNAL_ERROR";
+
+export type InvitationStatus = "pending" | "accepted" | "revoked" | "expired";
+
+export interface Invitation {
+  id: string;
+  email: string;
+  tokenHash: string;
+  createdBy: string;
+  expiresAt: number;
+  acceptedAt: number | null;
+  revokedAt: number | null;
+  createdAt: number;
+}
+
+export interface InvitationView {
+  id: string;
+  email: string;
+  createdBy: string;
+  status: InvitationStatus;
+  expiresAt: number;
+  acceptedAt: number | null;
+  revokedAt: number | null;
+  createdAt: number;
+}
+
+export interface CreateInvitationResult {
+  invitation: InvitationView;
+  token: string;
+}
+export type AuthResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: AuthErrorCode; message: string };
+
+export interface AuthSuccess {
+  user: User;
+  token: string;
+  session: Session;
+}
+
 export type UsageUnit = "percent" | "tokens" | "requests" | "credits" | "usd";
 
 export type UsageStatus = "ok" | "warning" | "exhausted" | "unknown";
@@ -30,11 +116,13 @@ export interface UsageLimit {
 }
 
 export interface UsageReport {
+  ownerId?: string;
   provider: string;
   credentialId?: string;
   accountLabel?: string;
   fetchedAt: number;
   limits: UsageLimit[];
+  error?: string;
   raw?: unknown;
 }
 
@@ -42,6 +130,7 @@ export type CardAccent = "default" | "amber" | "emerald" | "cyan" | "violet" | "
 
 export interface StoredCredential {
   id: string;
+  ownerId: string;
   provider: string;
   accountLabel: string;
   accent?: CardAccent;
@@ -53,6 +142,7 @@ export interface StoredCredential {
 }
 
 export interface InputCredential {
+  ownerId?: string;
   provider: string;
   accountLabel: string;
   accent?: CardAccent;

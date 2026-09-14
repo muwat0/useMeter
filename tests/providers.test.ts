@@ -10,6 +10,7 @@ import type { StoredCredential } from "../src/types";
 
 const mockCred: StoredCredential = {
   id: "test-cred-1",
+  ownerId: "test-owner",
   provider: "deepseek",
   accountLabel: "Test Account",
   credentialType: "api_key",
@@ -191,11 +192,11 @@ describe("CodexAdapter", () => {
     expect(headerReport?.limits[0]?.status).toBe("exhausted");
   });
 });
-
 describe("PollerEngine", () => {
   it("polls registered credentials and notifies listeners", async () => {
     const vault = new StorageVault(":memory:");
-    const saved = vault.saveCredential({
+    const owner = vault.createUser("poller@example.com", "hash");
+    const saved = vault.saveCredential(owner.id, {
       provider: "deepseek",
       accountLabel: "Poller Test",
       credentialType: "api_key",
@@ -205,40 +206,27 @@ describe("PollerEngine", () => {
     const registry = new ProviderRegistry();
     const adapter = new DeepSeekAdapter();
     registry.register(adapter);
-
     const poller = new PollerEngine(vault, registry);
     let notified = false;
-
     poller.onReport(r => {
-      if (r.credentialId === saved.id) notified = true;
+      if (r.credentialId === saved.id && r.ownerId === owner.id) notified = true;
+    });
+    adapter.fetchUsage = async cred => ({
+      ownerId: cred.ownerId,
+      provider: cred.provider,
+      credentialId: cred.id,
+      accountLabel: cred.accountLabel,
+      fetchedAt: Date.now(),
+      limits: [{ id: "balance", label: "Test Balance", amount: { remaining: 50, unit: "usd" }, status: "ok" }],
     });
 
-    // Mock fetch inside adapter
-    adapter.fetchUsage = async cred => {
-      return {
-        provider: cred.provider,
-        credentialId: cred.id,
-        accountLabel: cred.accountLabel,
-        fetchedAt: Date.now(),
-        limits: [
-          {
-            id: "balance",
-            label: "Test Balance",
-            amount: { remaining: 50, unit: "usd" },
-            status: "ok",
-          },
-        ],
-      };
-    };
-
-    const reports = await poller.pollAll();
+    const reports = await poller.pollUser(owner.id);
     expect(reports.length).toBe(1);
     expect(notified).toBe(true);
-
-    const latest = vault.getLatestUsage();
+    const latest = vault.getLatestUsage(owner.id);
     expect(latest.length).toBe(1);
     expect(latest[0]?.limits[0]?.amount.remaining).toBe(50);
-
+    expect(await poller.pollCredential("foreign-owner", saved.id)).toBeNull();
     vault.close();
   });
 });

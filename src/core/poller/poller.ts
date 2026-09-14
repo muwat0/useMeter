@@ -45,30 +45,64 @@ export class PollerEngine {
     }
   }
 
-  async pollCredential(cred: StoredCredential): Promise<UsageReport | null> {
+  async pollCredential(ownerId: string, credentialId: string): Promise<UsageReport | null> {
+    const credential = this.#vault.getCredential(ownerId, credentialId);
+    if (!credential || credential.ownerId !== ownerId) return null;
+    return this.#pollCredentialInternal(credential, false);
+  }
+
+  async pollUser(ownerId: string): Promise<UsageReport[]> {
+    const credentials = this.#vault.listCredentials(ownerId);
+    const reports: UsageReport[] = [];
+    for (const credential of credentials) {
+      const report = await this.#pollCredentialInternal(credential, false);
+      if (report) reports.push(report);
+    }
+    return reports;
+  }
+
+  async #pollCredentialInternal(cred: StoredCredential, daemon: boolean): Promise<UsageReport | null> {
     const adapter = this.#registry.find(cred.provider);
     if (!adapter) return null;
 
-    // Single-flight deduplication
     const existing = this.#inFlight.get(cred.id);
     if (existing) return existing;
 
     const promise = (async () => {
       try {
-        const report = await adapter.fetchUsage(cred);
-        this.#vault.saveUsageSnapshot(report);
+        const ctx = {
+          onTokenRefresh: (newSecret: string, metadataUpdates?: Record<string, unknown>, newAccountLabel?: string) => {
+            this.#vault.updateCredentialTokens(cred.ownerId!, cred.id, newSecret, metadataUpdates);
+            if (newAccountLabel && newAccountLabel !== cred.accountLabel) {
+              this.#vault.updateCredentialLabel(cred.ownerId!, cred.id, newAccountLabel);
+              cred.accountLabel = newAccountLabel;
+            }
+          },
+        };
+        const fetched = await adapter.fetchUsage(cred, ctx);
+        const report: UsageReport = { ...fetched, ownerId: cred.ownerId, credentialId: cred.id };
+        if (daemon) this.#vault.saveUsageSnapshotInternal(report);
+        else this.#vault.saveUsageSnapshot(cred.ownerId!, report);
 
-        // Notify listeners (SSE, Alert Engine)
         for (const listener of this.#listeners) {
           try {
             listener(report);
           } catch {}
         }
-
         return report;
       } catch (error) {
-        console.error(`[Poller] ${cred.provider} (${cred.accountLabel}) sorgulama hatası:`, error);
-        return null;
+        const errorReport: UsageReport = {
+          ownerId: cred.ownerId,
+          provider: cred.provider,
+          credentialId: cred.id,
+          accountLabel: cred.accountLabel,
+          fetchedAt: Date.now(),
+          limits: [],
+          error: error instanceof Error ? error.message : String(error),
+        };
+        if (daemon) this.#vault.saveUsageSnapshotInternal(errorReport);
+        else this.#vault.saveUsageSnapshot(cred.ownerId!, errorReport);
+        return errorReport;
       } finally {
         this.#inFlight.delete(cred.id);
       }
@@ -79,20 +113,16 @@ export class PollerEngine {
   }
 
   async pollAll(): Promise<UsageReport[]> {
-    const credentials = this.#vault.listCredentials();
+    const credentials = this.#vault.listAllCredentialsInternal();
     const reports: UsageReport[] = [];
-
-    // Jittered stagger: spread executions across 0..5000ms to avoid burst
     for (const cred of credentials) {
       const staggerMs = 400 + Math.floor(Math.random() * 600);
       const { promise, resolve } = Promise.withResolvers<void>();
       setTimeout(resolve, staggerMs);
       await promise;
-
-      const report = await this.pollCredential(cred);
+      const report = await this.#pollCredentialInternal(cred, true);
       if (report) reports.push(report);
     }
-
     return reports;
   }
 
