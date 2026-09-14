@@ -1,4 +1,4 @@
-# CONTEXT.md — AI Kota, Bakiye ve Kullanım Takip Sistemi (Ubiquitous Language)
+# CONTEXT.md — useMeter: AI Kota, Bakiye ve Kullanım Takip Sistemi (Ubiquitous Language)
 
 Bu belge, sistem genelinde kullanılan temel etki alanı (domain) kavramlarının ve iş kurallarının kanonik sözlüğüdür. Tüm modüller, dokümanlar, API uç noktaları ve veritabanı şemaları buradaki terminolojiye uymak zorundadır.
 
@@ -6,18 +6,51 @@ Bu belge, sistem genelinde kullanılan temel etki alanı (domain) kavramlarını
 
 ## 1. Temel Etki Alanı Varlıkları (Core Entities)
 
+### Kullanıcı (User)
+Uygulamanın web arayüzüne ve API'lerine erişmek için kimlik doğrulayan bağımsız hesap sahibi (login identity).
+- **Kimlik Belirteci:** Sistem genelinde benzersiz, canonical (küçük harfe dönüştürülmüş ve kırpılmış / `trim().toLowerCase()`) e-posta adresi.
+- **Parola:** Bun yerel Argon2id algoritması ile hash'lenmiş şifre özeti.
+- **Rol ve Sınır:** Sistemdeki kiracı (tenant) sınırını belirler. İki rol vardır: `admin` ve `user`.
+
+### Yönetici Kullanıcı (Admin User)
+Sistem genelinde kullanıcıları ve sistem telemetrisini yönetme yetkisine sahip kullanıcı (`role: "admin"`).
+- **İlk Kullanıcı Kuralı:** Sisteme ilk kaydolan kullanıcı (aynı zamanda eski verileri sahiplenen kişi) otomatik olarak `admin` rolü alır. Sonraki kullanıcılar `user` rolüyle kaydolur.
+- **Yetki Alanı:** Kullanıcıları listeleme, rolleri değiştirme (yönetici atama/yetki alma), kullanıcı silme (ilişkili hesap ve kayıtların silinmesiyle birlikte) ve sistem genel telemetrisini (toplam kullanıcı, aktif oturum, DB boyutu, sağlayıcı dağılımı) izleme.
+- **Güvenlik Kısıtı:** Bir yönetici kendi hesabını silemez; sistemdeki son yönetici sıradan kullanıcıya düşürülemez veya silinemez. Normal kullanıcılar yönetici paneline (`/admin`) ve uç noktalarına (`/api/admin/*`) erişemez (HTTP 403 Forbidden).
+
+### Sağlayıcı Hesabı / Harici Hesap (Provider Account)
+Bir yapay zeka sağlayıcısı nezdinde (OpenAI, Anthropic, Google Cloud, Cursor vb.) tanımlı olan harici abonelik veya kimlik bilgisi kaydı.
+- **Kritik Ayrım:** Uygulama Kullanıcısı (`User`) ile Sağlayıcı Hesabı (`Provider Account`) kesinlikle aynı kavramlar DEĞİLDİR. Bir Uygulama Kullanıcısı sisteme kaydolup oturum açar; ardından kendi paneline birden fazla AI Sağlayıcı Hesabı (API anahtarı veya OAuth bağlantısı) ekler.
+- **Sahiplik:** Her Sağlayıcı Hesabı tam olarak bir Uygulama Kullanıcısına (`ownerId`) aittir.
+
+### Oturum (Session)
+Kimliği doğrulanmış bir kullanıcının web paneline ve korumalı API'lere erişimini sağlayan durum bilgisi.
+- **Oturum Belirteci (Session Token):** İstemciye HTTP çerezi (`auth_session`) içinde gönderilen 32 baytlık kriptografik olarak güvenli opak rastgele dize (opaque token).
+- **Kalıcılık ve Güvenlik:** Veritabanında oturum belirtecinin açık hali ASLA saklanmaz; yalnızca SHA-256 hash özeti (`token_hash`) saklanır.
+- **Geçerlilik Süresi (TTL):** 30 gündür (2.592.000 saniye). Süresi dolan veya sonlandırılan (logout) oturumlar anında yetkisiz hale gelir.
+
+### Kiracı Sınırı ve Mülkiyet İzolasyonu (Tenant Boundary & Ownership Isolation)
+Veritabanı satır düzeyinde uygulanan mülkiyet kuralı. Her kimlik bilgisi (`credential`) ve kullanım kaydı (`usage_snapshot`) bir `owner_id` yabancı anahtarına (foreign key) bağlanmak zorundadır. Kullanıcılar yalnızca kendi `ownerId` değerleriyle eşleşen kayıtları listeleyebilir, güncelleyebilir veya silebilir.
+
+### Eski Kayıt Sahiplenme (Legacy Account Claiming)
+Sistemin tek kullanıcılı self-hosted modundan çok kullanıcılı SaaS mimarisine geçişi sırasında mevcut olan sahipsiz (`owner_id IS NULL`) kimlik bilgilerinin ve geçmiş anlık görüntülerin veri kaybı olmadan korunması ve sisteme ilk kaydolan gerçek (non-system) kullanıcıya atomik bir işlemle atanması kuralıdır. Sonradan kaydolan kullanıcılar bu eski verileri asla göremez.
+
+
+### Davetiye (Invitation)
+Yalnızca yöneticiler (`admin`) tarafından üretilen, yeni bir kullanıcının sisteme kontrollü katılımını sağlayan tek kullanımlık yetkilendirme kaydı.
+- **Davetiye Belirteci (Invitation Token & Token Hash):** İstemciye ve davet bağlantısına (`/invite/:token`) verilen 32 baytlık kriptografik rastgele ham dize (`crypto.getRandomValues`). Veritabanında güvenlik gereği ham token ASLA saklanmaz; yalnızca tek yönlü SHA-256 hash özeti (`token_hash`) saklanır.
+- **Geçerlilik Süresi (TTL):** Üretildiği andan itibaren 24 saattir (86.400 saniye). Süresi dolmuş (`expired`), kullanılmış (`accepted`) veya iptal edilmiş (`revoked`) davetiyeler geçersizdir.
+- **Zorunlu E-posta Bağlayıcılığı (Strict Email Binding):** Davetiye oluşturulurken yönetici tarafından geçerli bir hedef e-posta adresi (`email`) verilmesi zorunludur; useMeter bünyesinde anonim veya e-postasız serbest davetiye bulunmaz. Davetiye kabul edildiğinde yeni kullanıcı hesabı doğrudan bu kanonik e-posta adresi ile oluşturulur (`COLLATE NOCASE`).
+- **Dış Kayıt Politikasını Aşma (Registration Bypass):** Sistem genelinde genel kayıtlar kapatılmış olsa dahi (`isRegistrationAllowed() === false`), geçerli bir davetiye belirteci taşıyan kullanıcılar sisteme başarıyla kaydolabilir.
+- **E-posta Gönderim Sınırı (No SMTP Boundary):** Sistemde otomatik e-posta gönderim (SMTP) katmanı bulunmaz. Yönetici oluşturulan davet bağlantısını (`/invite/:token`) panodan kopyalar ve kullanıcıya harici güvenli kanallardan kendisi iletir.
 ### Sağlayıcı (Provider)
 Yapay zeka modellerini veya API altyapısını sunan bağımsız servis kuruluşu (örn. `openai`, `anthropic`, `openrouter`, `deepseek`, `google`, `cursor`). Her sağlayıcının kendine özgü kimlik doğrulama, hız sınırı (rate limit) ve kota politikası vardır.
 
 ### Kimlik Bilgisi (Credential)
-Bir sağlayıcıya erişmek ve veri sorgulamak için kullanılan yetkilendirme anahtarı veya oturum verisi. Üç türü vardır:
+Bir sağlayıcıya erişmek ve veri sorgulamak için kullanılan yetkilendirme anahtarı veya oturum verisi. Her kimlik bilgisi bir `ownerId` sahibi taşır. Üç türü vardır:
 - **API Anahtarı (API Key):** Statik token (örn. `sk-...`).
 - **OAuth Belgesi (OAuth Token):** Belirli süre geçerli `access_token` ve onu yenileyen `refresh_token` çifti.
 - **Oturum Çerezi (Session Cookie):** Web arayüzünden elde edilen geçici oturum anahtarı (örn. `WorkosCursorSessionToken`).
-
-### Hesap (Account)
-Bir sağlayıcı nezdinde kullanıcının sahip olduğu tekil abonelik veya faturalandırma birimi. Bir sağlayıcı altında birden fazla hesap bulunabilir (örn. birden fazla ChatGPT Plus hesabı veya farklı Google Cloud projeleri).
-
 ### Bakiye (Balance)
 Ön ödemeli (prepaid) veya kredili hesaplarda harcanabilir net parasal tutar. Dolar (`USD`), Kredi (`Credits`) veya yerel para birimi cinsinden ifade edilir. Yalnızca bakiye usulü çalışan servislerde (örn. OpenRouter, DeepSeek) geçerlidir.
 
@@ -44,8 +77,10 @@ Bir hesabın belirli bir andaki tüm limitlerini, varsa bakiyesini ve metaverile
 
 ## 2. Takip ve Veri Toplama Mekanizmaları
 
-### Aktif Yoklayıcı (Poller)
-Arka planda belirli periyotlarla (örn. 5–15 dakikada bir) sağlayıcıların resmi veya dahili bakiye/kota uç noktalarını doğrudan çağıran zamanlanmış iş parçacığı (daemon).
+### Aktif Yoklayıcı (Poller Daemon)
+Arka planda belirli periyotlarla (örn. 5–15 dakikada bir) sağlayıcıların resmi veya dahili bakiye/kota uç noktalarını doğrudan çağıran zamanlanmış arka plan iş parçacığı.
+- **Dahili Yetki (Internal Poller):** Arka plan yoklayıcısı tüm sağlayıcı hesaplarının kotasını güncel tutabilmek için açıkça tanımlanmış dahili bir metot (`listAllCredentialsInternal`) ile tüm kimlikleri okur.
+- **Kullanıcı Tetiklemesi vs Daemon:** Kullanıcıların web panelinden veya API üzerinden başlattığı manuel yenileme istekleri (`POST /api/refresh`) zorunlu olarak yalnızca oturum açmış kullanıcının sahip olduğu (`ownerId`) kimlik bilgileriyle sınırlıdır.
 
 ### Pasif Geçit (Ingress Proxy)
 Kullanıcının yerel istemcilerinden (IDE, CLI, botlar) çıkan LLM isteklerinin arasına giren ve upstream sağlayıcıdan dönen HTTP yanıt başlıklarındaki (`x-ratelimit-*`, `anthropic-ratelimit-unified-*`) hız ve kota verilerini sıfır ek maliyetle yakalayan vekil sunucu.
@@ -65,3 +100,37 @@ Bir kullanım limiti kritik eşiği aştığında (örn. 5 saatlik pencere `%85`
 
 ### Sıfırlanma Bildirimi (Reset Notification)
 Kotası tükenmiş bir hesabın sıfırlanma zamanı (`resetsAt`) dolup yeniden kullanılabilir hale geldiğinde kullanıcıya gönderilen "Kota Açıldı" bildirimi.
+
+---
+
+## 4. Güvenlik Çevresi ve Trafik Denetimi (Security Perimeter)
+
+### Yanıt Güvenlik Başlıkları (Response Security Headers)
+Tarayıcı tarafındaki saldırıları (Clickjacking, MIME-sniffing, XSS, bilgi sızıntısı) önlemek amacıyla tüm HTTP yanıtlarına global olarak enjekte edilen güvenlik başlıkları kümesi:
+- `X-Frame-Options: DENY`
+- `X-Content-Type-Options: nosniff`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()`
+- `Strict-Transport-Security (HSTS)`: Yalnızca güvenli HTTPS veya `secure=true` ortamlarında (`max-age=31536000; includeSubDomains`).
+
+### İçerik Güvenlik Politikası (Content Security Policy - CSP)
+Sunucu taraflı HTML (SSR), gömülü tema scriptleri, inline stiller ve Tailwind CDN ile tam uyumlu çalışan pragmatik CSP politikasıdır.
+- **Kasıtlı Tercih:** Mevcut şablon motoru nonce üretmediğinden `script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com` ve `style-src 'self' 'unsafe-inline'` direktifleri kasıtlı olarak kullanılır; nonce seviyesinde katı CSP iddiasında bulunulmaz.
+- **Kısıtlamalar:** `frame-ancestors 'none'`, `base-uri 'self'`, `form-action 'self'`, `connect-src 'self'`.
+
+### Kökenler Arası Kaynak Paylaşımı İzin Listesi (CORS Allowlist)
+Ortam değişkenleri (`CORS_ALLOWED_ORIGINS` veya `USEMETER_ALLOWED_ORIGINS`) üzerinden virgülle ayrılmış güvenli origin listesi.
+- **Varsayılan:** Boş bırakıldığında yalnızca aynı kökene (same-origin) izin verilir; harici kökenlere CORS başlığı basılmaz.
+- **Kimlikli İstek Koruması (No Credentialed Wildcard):** `allowCredentials: true` (`auth_session` çerezleri) durumunda joker karakter `*` kesinlikle reddedilir (`false`).
+
+### Vekil Sunucu Güveni (Proxy Trust)
+İstemcinin gerçek IP adresinin tespitinde ters vekil sunucu (Nginx, Caddy, Cloudflare) başlıklarının (`X-Forwarded-For`, `X-Real-IP`) güvenilirliğini belirleyen ayar (`TRUST_PROXY=1` veya `true`).
+- **Kapalı (Varsayılan):** İstemcinin ilettiği forwarding başlıkları IP sahteciliğine (spoofing) karşı yok sayılır; doğrudan soket uzak adresi kullanılır.
+- **Açık:** `X-Forwarded-For` zincirindeki en soldaki (istemciye ait) geçerli IP adresi ayıklanır.
+
+### Sınırlandırılmış İstek Sıklığı Sınırı (Bounded Rate Limiting)
+Hizmet reddi (DoS) ve kaba kuvvet (brute-force) saldırılarını engellemek için kayan pencere (sliding window) esasıyla çalışan bellek içi hız sınırlayıcısı:
+- **Kimlik Doğrulama / Kayıt:** `5 istek / dakika / IP`
+- **Manuel Kota Yoklama:** `1 istek / 30 saniye / kullanıcı + kimlik bilgisi`
+- **OAuth Cihaz Akışı Yoklama:** `30 istek / dakika / kullanıcı + akış`
+- **Bellek Koruması:** `maxKeys: 10000` sınırı ve periyodik temizlik (sweep) ile bellek sızıntıları önlenir.
