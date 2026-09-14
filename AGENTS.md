@@ -8,7 +8,7 @@ useMeter is a self-hosted Bun/TypeScript dashboard for consolidating AI-provider
 
 - `src/index.ts` is the composition root: it reads runtime environment variables, creates `StorageVault`, `ProviderRegistry`, `PollerEngine`, and the Hono server, then starts background polling.
 - `ProviderAdapter` is the provider seam. Each adapter implements `supports()` and `fetchUsage()` and may implement `parseHeaders()` for passive rate-limit data. Provider wire formats stay inside `src/core/providers/`; consumers receive normalized `UsageReport` objects.
-- `PollerEngine` resolves an adapter by credential provider, fetches a report, persists a snapshot, and notifies listeners. It coalesces concurrent polls per credential and staggers sequential polling. Failed polls are persisted as `UsageReport.error` snapshots so the UI can display the failure.
+- `PollerEngine` resolves an adapter by credential provider, fetches a report, persists a snapshot, and notifies listeners. It coalesces concurrent polls per credential and staggers sequential polling. When a poll fails after a prior successful poll, it non-destructively retains the last successful limits and emits a degraded report (`health: "stale"`, `stale: true`, `source: "stale"`, with `lastGoodFetchedAt` and `error`). If a credential has never succeeded, it emits `health: "error"` (`source: "error"`, `stale: false`, empty limits). Real quota exhaustion reported by the provider (HTTP 200) remains `health: "healthy"` and is never treated as a transport/polling error.
 - `StorageVault` owns SQLite schema, credential CRUD, AES-256-GCM secret encryption/decryption, snapshot persistence, latest-report retrieval, and `quick_check` health validation. Credentials are upserted by provider plus account label.
 - `src/server/app.ts` receives injected vault/poller/registry dependencies and exposes health, usage, credential, polling, OAuth, and dashboard routes. New credentials are initially polled; failed initial validation is rejected and removed.
 - OAuth modules isolate PKCE/device-code/callback/token exchange mechanics from provider usage adapters. Local callback servers bind to loopback and validate state/timeouts.
@@ -44,7 +44,7 @@ bun x tsc --noEmit       # direct strict typecheck; no package script exists
 - Add a provider by implementing `ProviderAdapter`, isolating endpoint/auth/parsing logic in its adapter, and registering it explicitly in `src/core/providers/registry.ts`. `supports()` should accept only deliberate provider aliases.
 - Accept `FetchContext` in provider fetchers and use `ctx.fetch`/`ctx.signal` so network behavior is injectable and cancellable in tests.
 - Use `StorageVault` for all credential and snapshot persistence. Never log, commit, or expose plaintext API keys, OAuth refresh tokens, cookies, or raw provider payloads.
-- Preserve error context in `UsageReport.error`; convert provider failures into user-facing localized categories at the UI boundary. Avoid duplicate normal-operation logging when the same error is rendered in the dashboard.
+- Preserve error context in `UsageReport.error`; convert provider failures into user-facing localized categories at the UI boundary. For accounts with preserved prior data (`stale: true` / `health: "stale"`), the dashboard displays an amber cached warning notice alongside the preserved limits and the last successful poll timestamp (`lastGoodFetchedAt`). First-ever poll failures (`health: "error"`) display a red error notice with empty limits. Real exhausted quota (`usedFraction >= 1.0`) is healthy telemetry and must not trigger stale/error warning states.
 - Keep OAuth callback/state validation and token refresh inside `src/core/oauth/`; server routes should orchestrate saving credentials and triggering initial validation.
 - For browser UI changes in `src/server/app.ts`, remember that the dashboard client is embedded inside a server template literal. Avoid unescaped `</script>` sequences and fragile regex/template-literal escapes; validate the extracted client script syntax.
 - Keep language-dependent strings in the `I18N` dictionaries or translation helpers. Do not add hardcoded user-visible Turkish/English text to rendering paths when a translation key or helper is appropriate.
@@ -70,6 +70,9 @@ bun x tsc --noEmit       # direct strict typecheck; no package script exists
 - `docs/SPEC.md`: module seams, normalized contracts, API shape, and intended tracking model.
 - `docs/adr/0001-self-hosted-bff-architecture.md`: self-hosted BFF/SQLite decision.
 - `docs/adr/0002-dual-engine-tracking-model.md`: active polling/passive header strategy.
+- `docs/adr/0003-multi-tenant-session-authentication.md`: multi-tenant session authentication.
+- `docs/adr/0004-security-perimeter-and-invitation-onboarding.md`: security perimeter and invitation onboarding.
+- `docs/adr/0005-nondestructive-stale-usage-state.md`: non-destructive stale and degraded usage state.
 
 ## Runtime/Tooling Preferences
 

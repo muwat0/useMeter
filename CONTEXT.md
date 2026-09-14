@@ -71,7 +71,24 @@ Belirli bir hesap ve kota penceresi için anlık tüketim durumunu gösteren öl
 - **Durum (`Status`):** `ok` (güvenli), `warning` (örneğin %90 ve üzeri doluluk), `exhausted` (tükenmiş / blokeli).
 
 ### Kullanım Raporu (Usage Report)
-Bir hesabın belirli bir andaki tüm limitlerini, varsa bakiyesini ve metaverilerini içeren normalize edilmiş anlık durum özeti.
+Bir hesabın belirli bir andaki tüm limitlerini, varsa bakiyesini, sağlık durumunu ve metaverilerini içeren normalize edilmiş durum özeti.
+
+### Kullanım Raporu Sağlık Durumu (Usage Report Health)
+Kullanım verisinin güncelliğini ve güvenilirliğini tanımlayan üç durumlu gösterge:
+- **Sağlıklı (`healthy`):** Sağlayıcı API'si başarıyla sorgulandı (`source: "live"`), limitler ve bakiyeler günceldir (`stale: false`).
+- **Bayat / Korumalı (`stale`):** Daha önce en az bir kez başarılı sorgulanmış bir hesabın güncel sorgusu ağ/sağlayıcı hatası (timeout, 5xx, DNS vb.) nedeniyle başarısız olduğunda devreye girer. Son başarılı limitler (`lastGood`) korunur, `stale: true` ve `source: "stale"` olarak işaretlenir; güncel hata mesajı ve son başarılı zaman damgası (`lastGoodFetchedAt`) raporda tutulur.
+- **Hatalı (`error`):** Hesap henüz ilk kez sorgulanırken veya geçmişte hiç başarılı sorgusu bulunmazken hata aldığında oluşur (`source: "error"`, `stale: false`). Limitler boştur (`limits: []`) ve hata detayı gösterilir.
+
+### Yıkıcı Olmayan Son Başarılı Durum Koruması (Non-destructive Last-Good Telemetry)
+Geçici ağ kesintilerinde veya sağlayıcı çökmelerinde önceden bilinen kota limitlerinin sıfırlanmasını veya panodan kaybolmasını engelleyen dayanıklılık mekanizması. Sistem, kiracı izolasyonu (`ownerId` + `credentialId`) sınırları dahilinde son başarılı anlık görüntüyü korur; arayüzde kehribar (amber) renkli uyarı rozeti ve "Son başarılı güncelleme" zamanıyla birlikte limitleri göstermeye devam eder.
+
+### Sağlayıcı Kota Tükenmesi vs İletişim / Yoklama Hatası (Provider Exhaustion vs Polling Failure)
+Sistem bu iki durumu kesin çizgilerle birbirinden ayırır:
+1. **Sağlayıcı Kota Tükenmesi (Provider Quota Exhaustion):** Sağlayıcı API'si geçerli ve başarılı bir HTTP yanıtı (HTTP 200) dönmüş, ancak kullanıcının kotasının dolduğunu (`usedFraction >= 1.0` veya `status: "exhausted"`) bildirmiştir. Bu durum bir hata DEĞİLDİR; telemetri açısından **Sağlıklı (`healthy`)** ve canlı (`live`) bir veridir.
+2. **Yoklama / Ağ Hatası (Polling / Transport Failure):** Sağlayıcı uç noktasına erişilememesi (DNS hatası, HTTP 500/502/503/504, bağlantı zaman aşımı, geçersiz yanıt formatı) durumudur. Sistem bunu telemetri arızası kabul eder; geçmiş veri varsa **Bayat (`stale`)**, yoksa **Hatalı (`error`)** durumuna geçer.
+
+### Ham Veri Gizliliği (No Raw Payload Exposure)
+Kullanım anlık görüntüleri ve API yanıtları, upstream sağlayıcıdan dönen ham istek/yanıt gövdelerini, hassas başlıkları, gizli anahtarları veya yetkilendirme belirteçlerini ASLA veritabanı anlık görüntülerinde veya istemci yanıtlarında açık olarak saklamaz veya yayınlamaz.
 
 ---
 

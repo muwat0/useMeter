@@ -2,9 +2,8 @@
 
 - **Versiyon:** 1.0.0
 - **Tarih:** 2026-09-13
-- **Referanslar:** [CONTEXT.md](../CONTEXT.md), [ADR-0001](adr/0001-self-hosted-bff-architecture.md), [ADR-0002](adr/0002-dual-engine-tracking-model.md), [ADR-0003](adr/0003-multi-tenant-session-authentication.md)
-- **Kabul Edilen ADR'ler:** [ADR-0001](adr/0001-self-hosted-bff-architecture.md), [ADR-0002](adr/0002-dual-engine-tracking-model.md), [ADR-0003](adr/0003-multi-tenant-session-authentication.md), [ADR-0004](adr/0004-security-perimeter-and-invitation-onboarding.md)
-
+- **Referanslar:** [CONTEXT.md](../CONTEXT.md), [ADR-0001](adr/0001-self-hosted-bff-architecture.md), [ADR-0002](adr/0002-dual-engine-tracking-model.md), [ADR-0003](adr/0003-multi-tenant-session-authentication.md), [ADR-0004](adr/0004-security-perimeter-and-invitation-onboarding.md), [ADR-0005](adr/0005-nondestructive-stale-usage-state.md)
+- **Kabul Edilen ADR'ler:** [ADR-0001](adr/0001-self-hosted-bff-architecture.md), [ADR-0002](adr/0002-dual-engine-tracking-model.md), [ADR-0003](adr/0003-multi-tenant-session-authentication.md), [ADR-0004](adr/0004-security-perimeter-and-invitation-onboarding.md), [ADR-0005](adr/0005-nondestructive-stale-usage-state.md)
 ---
 
 ## 1. Sisteme Genel Bakış
@@ -112,13 +111,23 @@ export interface UsageLimit {
   notes?: string[];
 }
 
+export type UsageReportHealth = "healthy" | "stale" | "error";
+export type UsageReportSource = "live" | "stale" | "error";
+
 export interface UsageReport {
+  ownerId?: string;
   provider: string;
+  credentialId?: string;
   accountId?: string;
   accountLabel?: string;
   fetchedAt: number;
   limits: UsageLimit[];
+  error?: string;
   raw?: unknown;
+  health?: UsageReportHealth;
+  stale?: boolean;
+  lastGoodFetchedAt?: number;
+  source?: UsageReportSource;
 }
 
 export interface ProviderAdapter {
@@ -273,8 +282,15 @@ export interface PollerEngine {
   1. Base interval: `5 dakika`.
   2. Her sağlayıcı/hesap için ±%25 rastgele gecikme (jitter) eklenir.
   3. `SingleFlight` haritası ile aynı kimlik için eşzamanlı mükerrer istekler birleştirilir.
-  4. 429 veya geçici hata alındığında exponential backoff (15s, 30s, 60s) devreye girer; son geçerli veri (`lastGood`) korunur.
-
+  4. **Yıkıcı Olmayan Hata Yönetimi ve Durum Makinesi (Non-destructive Stale State Machine):**
+     Yoklama başarısız olduğunda sistem telemetriyi silmez; son başarılı durumu (`lastGood`) korur:
+     - **İlk Başarılı Yoklama:** `health: "healthy"`, `stale: false`, `source: "live"`, `lastGoodFetchedAt: fetchedAt`, `limits: [...]`.
+     - **Sonraki Ağ / Sağlayıcı Hatası:** Son başarılı limitler (`lastGood.limits`) korunur; rapor `health: "stale"`, `stale: true`, `source: "stale"`, `lastGoodFetchedAt: lastGood.fetchedAt`, `error: message` olarak güncellenir.
+     - **İlk Seferde Hata (Geçmiş Veri Yok):** `health: "error"`, `stale: false`, `source: "error"`, `limits: []`, `lastGoodFetchedAt: undefined`, `error: message`.
+     - **Yeniden Başarılı Yoklama:** Sistem otomatik olarak `health: "healthy"`, `stale: false`, `source: "live"` durumuna döner, `error` temizlenir.
+     - **Sağlayıcı Kota Tükenmesi Ayrımı:** Sağlayıcının `%100` kota doluluğu dönmesi (HTTP 200) bir yoklama arızası değil, normal bir telemetri verisidir (`health: "healthy"` kalır).
+     - **Güvenlik Sınırı:** Ham upstream hata gövdeleri veya hassas istek verileri anlık görüntülerde veya rapor nesnelerinde ASLA saklanmaz.
+  5. 429 veya geçici hata alındığında exponential backoff (15s, 30s, 60s) devreye girer.
 ---
 
 ### Modül 4: Pasif Vekil Geçit (`src/core/proxy/`)
