@@ -14,7 +14,7 @@ Ensure the host system provides:
 - A reverse proxy route from that domain to `127.0.0.1:3100`
 - A production `USAGE_MASTER_KEY` stored outside the repository
 
-The current `murat` SSH account on `production-server` has neither Docker socket access nor Bun/Node/npm, and cannot run system administration commands without sudo.
+The deployment on `production-server` is active: Docker Engine 29.8.0 runs the container through ReverseProxy's `reverseproxy` app at `usemeter.example.com`. The site uses a Let's Encrypt certificate and the deployment directory is `/opt/usemeter`; the Compose named volume is `usemeter-data`. The service binds only to `127.0.0.1:3100`.
 
 ## Install
 
@@ -60,6 +60,6 @@ docker compose up -d
 
 The named volume must remain untouched during image updates. Before destructive database operations, make a SQLite backup from the running volume. Roll back by checking out the previous known-good commit and rebuilding the image.
 
-## Current blocker
+## Operational notes
 
-Deployment cannot be executed by the repository SSH account until an administrator grants Docker access or performs the reverse-proxy setup. No server files, secrets, or reverse proxy configuration should be changed without that authorization.
+The deployment is live on `production-server`. Keep the production `.env` file and the named Docker volume outside Git. Do not replace the `my_webapp` application; it is unrelated static/PHP hosting. Updates should be performed by fetching a reviewed release, rebuilding the image, and restarting the Compose service while preserving the named volume.
