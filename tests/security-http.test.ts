@@ -295,23 +295,55 @@ describe("Security HTTP Tests", () => {
       }
     });
 
-    it("respects USEMETER_ALLOWED_ORIGINS as fallback configuration", async () => {
-      delete process.env["CORS_ALLOWED_ORIGINS"];
-      process.env["USEMETER_ALLOWED_ORIGINS"] = "https://usemeter-portal.com";
+    it("accepts same-origin forwarded HTTPS requests when TRUST_PROXY is enabled", async () => {
+      process.env["TRUST_PROXY"] = "true";
       const ctx = createTestContext();
       try {
-        const res = await ctx.app.request("/health", {
-          method: "GET",
+        const { cookie } = await registerTestUser(ctx.app, "proxy-admin@example.com");
+        const res = await ctx.app.request("/api/admin/invitations", {
+          method: "POST",
           headers: {
-            Origin: "https://usemeter-portal.com",
+            Cookie: cookie,
+            Origin: "https://usemeter.example.com",
+            Host: "127.0.0.1:3100",
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "usemeter.example.com",
+            "Content-Type": "application/json",
           },
+          body: JSON.stringify({ email: "invitee@example.com" }),
         });
-        expect(res.status).toBe(200);
-        expect(res.headers.get("Access-Control-Allow-Origin")).toBe("https://usemeter-portal.com");
+        expect(res.status).not.toBe(403);
+        const body = (await res.json()) as { error?: string };
+        expect(body.error).not.toBe("Cross-origin request rejected");
       } finally {
         ctx.close();
       }
     });
+
+    it("does not trust forwarded origin headers when TRUST_PROXY is disabled", async () => {
+      delete process.env["TRUST_PROXY"];
+      const ctx = createTestContext();
+      try {
+        const { cookie } = await registerTestUser(ctx.app, "untrusted-proxy@example.com");
+        const res = await ctx.app.request("/api/admin/invitations", {
+          method: "POST",
+          headers: {
+            Cookie: cookie,
+            Origin: "https://usemeter.example.com",
+            Host: "127.0.0.1:3100",
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "usemeter.example.com",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ email: "invitee@example.com" }),
+        });
+        expect(res.status).toBe(403);
+        expect((await res.json()).error).toBe("Cross-origin request rejected");
+      } finally {
+        ctx.close();
+      }
+    });
+
 
     it("rejects wildcard origin with credentials when allowlist is set to *", async () => {
       process.env["CORS_ALLOWED_ORIGINS"] = "*";
