@@ -196,6 +196,21 @@ export const MINIMAL_SSR_CSP = [
   "form-action 'self'",
 ].join("; ");
 
+/**
+ * Dashboard CSP for locally-built React client — no external CDN needed.
+ */
+export const DASHBOARD_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: https:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join("; ");
+
 export interface SecurityHeadersOptions {
   /** Custom CSP policy string, or null to omit */
   contentSecurityPolicy?: string | null;
