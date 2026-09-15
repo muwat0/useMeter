@@ -2,7 +2,7 @@ import { generatePKCE } from "./pkce";
 import { listenForOAuthCallback } from "./callback-server";
 const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const CLIENT_SECRET = "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";
-const REDIRECT_URI = "http://127.0.0.1:51121/oauth-callback";
+const REDIRECT_URI = process.env["GOOGLE_OAUTH_REDIRECT_URI"] ?? "http://127.0.0.1:51121/oauth-callback";
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const SCOPES = [
@@ -15,6 +15,10 @@ export interface GoogleAuthInitiateResult {
   authUrl: string;
   verifier: string;
   state: string;
+}
+
+export function getGoogleRedirectUri(): string {
+  return REDIRECT_URI;
 }
 
 export interface GoogleTokenResult {

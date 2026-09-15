@@ -24,7 +24,7 @@ import {
   exchangeCodexToken,
   initiateGoogleAuth,
   exchangeGoogleCode,
-  listenForGoogleCallback,
+  getGoogleRedirectUri,
   initiateClaudeAuth,
   exchangeClaudeCode,
   listenForClaudeCallback,
@@ -57,8 +57,8 @@ interface PendingOAuthSession {
   status: "pending" | "complete" | "error";
   error?: string;
   accountLabel?: string;
+  googleVerifier?: string;
 }
-
 interface AppVariables {
   user: User;
   sessionToken: string;
@@ -190,6 +190,7 @@ export function createServer(
     const publicRoute =
       path === "/health" ||
       path.startsWith("/assets/") ||
+      path === "/api/oauth/google/callback" ||
       (path === "/login" && c.req.method === "GET") ||
       (path === "/register" && c.req.method === "GET") ||
       ((path === "/invite" || path.startsWith("/invite/")) && c.req.method === "GET") ||
@@ -792,41 +793,53 @@ export function createServer(
       const user = c.get("user");
       const { authUrl, verifier, state } = initiateGoogleAuth();
       const sessionId = state;
-
-      pendingOAuth.set(sessionId, { provider: "antigravity", ownerId: user.id, status: "pending" });
-
-      listenForGoogleCallback(state)
-        .then(async code => {
-          const tokens = await exchangeGoogleCode(code, verifier);
-          const label = tokens.email || "Antigravity";
-
-          const saved = vault.saveCredential(user.id, {
-            ownerId: user.id,
-            provider: "antigravity",
-            accountLabel: label,
-            credentialType: "oauth",
-            secret: tokens.accessToken,
-            metadata: {
-              refreshToken: tokens.refreshToken,
-              email: tokens.email,
-            },
-          });
-
-          const initialReport = await poller.pollCredential(user.id, saved.id);
-          if (initialReport?.error) {
-            vault.deleteCredential(user.id, saved.id);
-            pendingOAuth.set(sessionId, { provider: "antigravity", ownerId: user.id, status: "error", error: initialReport.error });
-            return;
-          }
-          pendingOAuth.set(sessionId, { provider: "antigravity", ownerId: user.id, status: "complete", accountLabel: label });
-        })
-        .catch(() => {
-          pendingOAuth.set(sessionId, { provider: "antigravity", ownerId: user.id, status: "error", error: "Authorization failed" });
-        });
-
-      return c.json({ success: true, data: { authUrl, sessionId } });
+      pendingOAuth.set(sessionId, { provider: "antigravity", ownerId: user.id, status: "pending", googleVerifier: verifier });
+      return c.json({ success: true, data: { authUrl, sessionId, redirectUri: getGoogleRedirectUri() } });
     } catch {
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+    }
+  });
+
+  // OAuth: Google public callback (required when the app runs behind Docker/proxy)
+  app.get("/api/oauth/google/callback", async c => {
+    const state = c.req.query("state");
+    const code = c.req.query("code");
+    const oauthError = c.req.query("error");
+    const session = state ? pendingOAuth.get(state) : undefined;
+    const successPage = (title: string, message: string, color: string) =>
+      c.html(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:system-ui,sans-serif;background:#0a0a0b;color:${color};text-align:center;padding:50px"><h2>${title}</h2><p style="color:#a1a1aa">${message}</p><script>setTimeout(()=>window.close(),1500)</script></body></html>`);
+
+    if (!session || session.provider !== "antigravity" || !session.googleVerifier) {
+      return c.html("Invalid or expired authorization session.", 400);
+    }
+    if (oauthError) {
+      pendingOAuth.set(state!, { ...session, status: "error", error: "Authorization was denied" });
+      return successPage("Google Login Failed", "Authorization was denied. You can close this tab.", "#f43f5e");
+    }
+    if (!code) return c.html("Authorization code missing.", 400);
+
+    try {
+      const tokens = await exchangeGoogleCode(code, session.googleVerifier);
+      const label = tokens.email || "Antigravity";
+      const saved = vault.saveCredential(session.ownerId, {
+        ownerId: session.ownerId,
+        provider: "antigravity",
+        accountLabel: label,
+        credentialType: "oauth",
+        secret: tokens.accessToken,
+        metadata: { refreshToken: tokens.refreshToken, email: tokens.email },
+      });
+      const initialReport = await poller.pollCredential(session.ownerId, saved.id);
+      if (initialReport?.error) {
+        vault.deleteCredential(session.ownerId, saved.id);
+        pendingOAuth.set(state!, { ...session, status: "error", error: "Initial provider validation failed" });
+        return successPage("Google Login Failed", "Provider validation failed. You can close this tab.", "#f43f5e");
+      }
+      pendingOAuth.set(state!, { ...session, status: "complete", accountLabel: label, googleVerifier: undefined });
+      return successPage("Google Login Successful", "You can close this tab and return to useMeter.", "#10b981");
+    } catch {
+      pendingOAuth.set(state!, { ...session, status: "error", error: "Authorization failed", googleVerifier: undefined });
+      return successPage("Google Login Failed", "Authorization failed. You can close this tab.", "#f43f5e");
     }
   });
 

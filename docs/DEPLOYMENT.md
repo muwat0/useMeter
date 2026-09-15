@@ -63,3 +63,13 @@ The named volume must remain untouched during image updates. Before destructive 
 ## Operational notes
 
 The deployment is live on `production-server`. Keep the production `.env` file and the named Docker volume outside Git. Do not replace the `my_webapp` application; it is unrelated static/PHP hosting. Updates should be performed by fetching a reviewed release, rebuilding the image, and restarting the Compose service while preserving the named volume.
+
+## Google OAuth in Docker
+
+For a remote Docker deployment, Google must redirect to the public HTTPS callback rather than the user's local machine:
+
+```env
+GOOGLE_OAUTH_REDIRECT_URI=https://usemeter.example.com/api/oauth/google/callback
+```
+
+Add the exact URI to the Google OAuth client's **Authorized redirect URIs**. The server stores the PKCE verifier with the pending state and consumes the callback on the public route. Do not use the `127.0.0.1:51121` development callback for the remote deployment.
