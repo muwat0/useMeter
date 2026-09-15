@@ -84,7 +84,21 @@ function requestIsSecure(c: AppContext): boolean {
 function originAllowed(c: AppContext, allowedOrigins?: string[] | "*"): boolean {
   const origin = c.req.header("Origin");
   if (!origin) return true;
-  const reqOrigin = new URL(c.req.url).origin;
+  let reqOrigin: string;
+  try {
+    const requestUrl = new URL(c.req.url);
+    reqOrigin = requestUrl.origin;
+    const trustProxy = process.env["TRUST_PROXY"] === "true" || process.env["TRUST_PROXY"] === "1";
+    if (trustProxy) {
+      const forwardedProto = c.req.header("X-Forwarded-Proto")?.split(",")[0]?.trim();
+      const forwardedHost = c.req.header("X-Forwarded-Host")?.split(",")[0]?.trim() || c.req.header("Host")?.trim();
+      if ((forwardedProto === "http" || forwardedProto === "https") && forwardedHost) {
+        reqOrigin = `${forwardedProto}://${forwardedHost}`;
+      }
+    }
+  } catch {
+    return false;
+  }
   if (origin === reqOrigin) return true;
   if (allowedOrigins) {
     return isOriginAllowed(origin, {
