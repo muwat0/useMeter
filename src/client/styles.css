@@ -1,0 +1,244 @@
+@import "tailwindcss";
+
+@theme {
+  --color-appBg: var(--color-bg);
+  --color-appSurface: var(--color-surface);
+  --color-appBorder: var(--color-border);
+  --color-appMuted: var(--color-muted);
+  --color-appAccent: var(--color-accent);
+  --color-appAccentHover: var(--color-accent-hover);
+  --color-appAccentSoft: var(--color-accent-soft);
+  --color-appText: var(--color-text);
+  --color-appTextMuted: var(--color-text-muted);
+}
+
+/* ── Dark palette (default) ── */
+:root {
+  --color-bg: #090a0d;
+  --color-surface: #111318;
+  --color-border: #1f232b;
+  --color-muted: #171a21;
+  --color-text: #f4f4f6;
+  --color-text-muted: #8e95a5;
+  --color-accent: #ff9849;
+  --color-accent-hover: #ea7c2b;
+  --color-accent-soft: rgba(255, 152, 73, 0.12);
+}
+
+/* ── Light palette ── */
+html.light {
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-border: #e2e8f0;
+  --color-muted: #f1f5f9;
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+  --color-accent: #ea580c;
+  --color-accent-hover: #c2410c;
+  --color-accent-soft: rgba(234, 88, 12, 0.1);
+}
+
+/* ── Body ── */
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Drag state ── */
+.drag-over {
+  outline: 2px dashed var(--color-accent) !important;
+  outline-offset: 4px;
+}
+
+/* ── Base card variables ── */
+.account-card {
+  --card-bg: var(--color-surface);
+  --card-border: var(--color-border);
+  --card-border-hover: #3f3f46;
+  --card-title: var(--color-text);
+  --card-value: var(--color-text);
+  --card-accent-soft: rgba(255, 255, 255, 0.05);
+  --card-bar-fill: #10b981;
+  background: var(--card-bg) !important;
+  border-color: var(--card-border) !important;
+  transition: all 0.2s ease;
+}
+.account-card:hover {
+  border-color: var(--card-border-hover) !important;
+}
+.account-card[data-accent="default"],
+.account-card[data-accent=""] {
+  --card-bg: var(--color-surface);
+  --card-border: var(--color-border);
+  --card-border-hover: #3f3f46;
+  --card-title: var(--color-text);
+  --card-value: var(--color-text);
+  --card-accent-soft: rgba(255, 255, 255, 0.05);
+  --card-bar-fill: #10b981;
+}
+
+/* ── Dark mode accents (default) ── */
+.dark .account-card[data-accent="amber"],
+html:not(.light) .account-card[data-accent="amber"] {
+  --card-bg: linear-gradient(180deg, rgba(245, 158, 11, 0.08) 0%, rgba(22, 17, 12, 0.96) 100%);
+  --card-border: rgba(245, 158, 11, 0.35);
+  --card-border-hover: rgba(245, 158, 11, 0.7);
+  --card-title: #fbbf24;
+  --card-value: #f59e0b;
+  --card-accent-soft: rgba(245, 158, 11, 0.14);
+  --card-bar-fill: #f59e0b;
+}
+.dark .account-card[data-accent="emerald"],
+html:not(.light) .account-card[data-accent="emerald"] {
+  --card-bg: linear-gradient(180deg, rgba(16, 185, 129, 0.08) 0%, rgba(12, 24, 18, 0.96) 100%);
+  --card-border: rgba(16, 185, 129, 0.35);
+  --card-border-hover: rgba(16, 185, 129, 0.7);
+  --card-title: #34d399;
+  --card-value: #10b981;
+  --card-accent-soft: rgba(16, 185, 129, 0.14);
+  --card-bar-fill: #10b981;
+}
+.dark .account-card[data-accent="cyan"],
+html:not(.light) .account-card[data-accent="cyan"] {
+  --card-bg: linear-gradient(180deg, rgba(6, 182, 212, 0.08) 0%, rgba(12, 22, 26, 0.96) 100%);
+  --card-border: rgba(6, 182, 212, 0.35);
+  --card-border-hover: rgba(6, 182, 212, 0.7);
+  --card-title: #22d3ee;
+  --card-value: #06b6d4;
+  --card-accent-soft: rgba(6, 182, 212, 0.14);
+  --card-bar-fill: #06b6d4;
+}
+.dark .account-card[data-accent="violet"],
+html:not(.light) .account-card[data-accent="violet"] {
+  --card-bg: linear-gradient(180deg, rgba(168, 85, 247, 0.08) 0%, rgba(20, 14, 28, 0.96) 100%);
+  --card-border: rgba(168, 85, 247, 0.35);
+  --card-border-hover: rgba(168, 85, 247, 0.7);
+  --card-title: #c084fc;
+  --card-value: #a855f7;
+  --card-accent-soft: rgba(168, 85, 247, 0.14);
+  --card-bar-fill: #a855f7;
+}
+.dark .account-card[data-accent="slate"],
+html:not(.light) .account-card[data-accent="slate"] {
+  --card-bg: linear-gradient(180deg, rgba(56, 189, 248, 0.08) 0%, rgba(14, 20, 28, 0.96) 100%);
+  --card-border: rgba(56, 189, 248, 0.35);
+  --card-border-hover: rgba(56, 189, 248, 0.7);
+  --card-title: #7dd3fc;
+  --card-value: #38bdf8;
+  --card-accent-soft: rgba(56, 189, 248, 0.14);
+  --card-bar-fill: #38bdf8;
+}
+
+/* ── Light mode accents ── */
+.light .account-card[data-accent="amber"] {
+  --card-bg: linear-gradient(180deg, rgba(254, 243, 199, 0.5) 0%, #ffffff 100%);
+  --card-border: rgba(245, 158, 11, 0.45);
+  --card-border-hover: rgba(245, 158, 11, 0.8);
+  --card-title: #b45309;
+  --card-value: #d97706;
+  --card-accent-soft: rgba(245, 158, 11, 0.15);
+  --card-bar-fill: #d97706;
+}
+.light .account-card[data-accent="emerald"] {
+  --card-bg: linear-gradient(180deg, rgba(209, 250, 229, 0.5) 0%, #ffffff 100%);
+  --card-border: rgba(16, 185, 129, 0.45);
+  --card-border-hover: rgba(16, 185, 129, 0.8);
+  --card-title: #047857;
+  --card-value: #059669;
+  --card-accent-soft: rgba(16, 185, 129, 0.15);
+  --card-bar-fill: #059669;
+}
+.light .account-card[data-accent="cyan"] {
+  --card-bg: linear-gradient(180deg, rgba(207, 250, 254, 0.5) 0%, #ffffff 100%);
+  --card-border: rgba(6, 182, 212, 0.45);
+  --card-border-hover: rgba(6, 182, 212, 0.8);
+  --card-title: #0e7490;
+  --card-value: #0891b2;
+  --card-accent-soft: rgba(6, 182, 212, 0.15);
+  --card-bar-fill: #0891b2;
+}
+.light .account-card[data-accent="violet"] {
+  --card-bg: linear-gradient(180deg, rgba(243, 232, 255, 0.5) 0%, #ffffff 100%);
+  --card-border: rgba(168, 85, 247, 0.45);
+  --card-border-hover: rgba(168, 85, 247, 0.8);
+  --card-title: #7e22ce;
+  --card-value: #9333ea;
+  --card-accent-soft: rgba(168, 85, 247, 0.15);
+  --card-bar-fill: #9333ea;
+}
+.light .account-card[data-accent="slate"] {
+  --card-bg: linear-gradient(180deg, rgba(224, 242, 254, 0.5) 0%, #ffffff 100%);
+  --card-border: rgba(56, 189, 248, 0.45);
+  --card-border-hover: rgba(56, 189, 248, 0.8);
+  --card-title: #0369a1;
+  --card-value: #0284c7;
+  --card-accent-soft: rgba(56, 189, 248, 0.15);
+  --card-bar-fill: #0284c7;
+}
+
+/* ── Card element styles ── */
+.account-card-title {
+  color: var(--card-title) !important;
+}
+.account-card-value {
+  color: var(--card-value) !important;
+}
+.account-card-badge {
+  background-color: var(--card-accent-soft) !important;
+  border: 1px solid var(--card-border) !important;
+  color: var(--card-title) !important;
+}
+.account-card-box {
+  background: rgba(255, 255, 255, 0.02) !important;
+  border-color: var(--color-border) !important;
+  transition: all 0.2s ease;
+}
+
+/* Accent-specific inner boxes */
+.account-card[data-accent="amber"] .account-card-box {
+  background: rgba(245, 158, 11, 0.05) !important;
+  border-color: rgba(245, 158, 11, 0.2) !important;
+}
+.account-card[data-accent="emerald"] .account-card-box {
+  background: rgba(16, 185, 129, 0.05) !important;
+  border-color: rgba(16, 185, 129, 0.2) !important;
+}
+.account-card[data-accent="cyan"] .account-card-box {
+  background: rgba(6, 182, 212, 0.05) !important;
+  border-color: rgba(6, 182, 212, 0.2) !important;
+}
+.account-card[data-accent="violet"] .account-card-box {
+  background: rgba(168, 85, 247, 0.05) !important;
+  border-color: rgba(168, 85, 247, 0.2) !important;
+}
+.account-card[data-accent="slate"] .account-card-box {
+  background: rgba(56, 189, 248, 0.05) !important;
+  border-color: rgba(56, 189, 248, 0.2) !important;
+}
+
+/* ── Meter ── */
+.account-card-bar-track {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+.light .account-card-bar-track {
+  background: rgba(0, 0, 0, 0.08) !important;
+}
+.account-card-bar-fill {
+  background-color: var(--card-bar-fill) !important;
+}
+
+/* ── Accent badge (alternate) ── */
+.account-card-accent-badge {
+  background-color: var(--card-accent-soft) !important;
+  border: 1px solid var(--card-border) !important;
+  color: var(--card-title) !important;
+}
+
+/* ── Edit mode ── */
+.account-card.is-edit-mode {
+  border-style: dashed !important;
+  border-color: var(--card-border-hover, var(--color-accent)) !important;
+}
