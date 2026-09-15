@@ -1,0 +1,17 @@
+.git
+.github
+.gitlab-ci.yml
+node_modules
+data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+.env.*
+Dockerfile
+compose*.yml
+compose*.yaml
+coverage
+tmp
+.DS_Store

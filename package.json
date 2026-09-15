@@ -9,7 +9,10 @@
     "dev": "bun --watch src/index.ts",
     "build": "vite build",
     "dev:client": "vite build --watch",
-    "test": "bun test"
+    "test": "bun test",
+    "docker:build": "docker build -t usemeter:local .",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down"
   },
   "dependencies": {
     "hono": "^4.7.0",
