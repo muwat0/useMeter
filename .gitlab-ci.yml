@@ -1,0 +1,13 @@
+image: oven/bun:1.4.0
+
+stages:
+  - quality
+
+quality:
+  stage: quality
+  timeout: 10 minutes
+  script:
+    - bun install --frozen-lockfile
+    - bun x tsc --noEmit
+    - bun run build
+    - bun test
