@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { unlinkSync } from "node:fs";
+import { mkdirSync, unlinkSync } from "node:fs";
 import { AuthService } from "../src/core/auth/auth";
 import { decryptSecret, encryptSecret, hashSessionToken } from "../src/core/crypto";
 import { StorageVault } from "../src/core/storage/vault";
@@ -13,6 +13,8 @@ beforeEach(() => {
   vault = new StorageVault(":memory:");
   auth = new AuthService(vault);
 });
+mkdirSync("data", { recursive: true });
+
 
 describe("StorageVault Single-Tenant Legacy Compatibility", () => {
   it("should update credential label without ownerId (legacy fallback)", () => {
