@@ -139,72 +139,27 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
     };
     vault.saveUsageSnapshot(ownerId, exhaustedReport);
 
-    // Fetch SSR Dashboard HTML
-    const htmlRes = await app.request("/", {
-      headers: { Cookie: cookie },
-    });
+    // React dashboard receives report telemetry through the sanitized bootstrap payload.
+    const htmlRes = await app.request("/", { headers: { Cookie: cookie } });
     expect(htmlRes.status).toBe(200);
     const html = await htmlRes.text();
-
-    // Verification: Card Header & Account Label Badge Placement Preserved
-    // Extract server-rendered card grid HTML to avoid collision with embedded client scripts
-    const cardsGridMatch = html.match(/<div id="cardsGrid"[^>]*>([\s\S]*?)<\/div>\s*<\/main>/);
-    expect(cardsGridMatch).not.toBeNull();
-    const ssrHtml = cardsGridMatch![1];
-    expect(ssrHtml.length).toBeGreaterThan(0);
-    // Verification: Card Header & Account Label Badge Placement Preserved
-    expect(ssrHtml).toContain("Prod-DeepSeek-Key");
-    expect(ssrHtml).toContain("Stale-OpenRouter-Key");
-    expect(ssrHtml).toContain("Broken-Claude-Key");
-    expect(ssrHtml).toContain("Exhausted-Codex-Plan");
-
-    // Verification: Stale Card
-    // 1) Contains a stale status and notice badge
-    expect(ssrHtml).toContain(`data-card-id="${credStale.id}"`);
-    expect(ssrHtml).toContain('data-status="stale"');
-    expect(ssrHtml).toContain("account-card-stale-badge");
-    expect(ssrHtml).toContain("account-card-stale-notice");
-    expect(ssrHtml).toContain("data-stale-notice=\"true\"");
-
-    // 2) Retains limit label and value in the card
-    expect(ssrHtml).toContain("Daily Request Quota");
-    expect(ssrHtml).toMatch(/75(\.0)?%/);
-    // 3) Displays current error message in stale card (localized or formatted)
-    const hasStaleError =
-      ssrHtml.includes("İstek Hız Sınırı Aşıldı") ||
-      ssrHtml.includes("Rate Limit Exceeded") ||
-      ssrHtml.includes("429 Rate limit exceeded");
-    expect(hasStaleError).toBe(true);
-
-    // Verification: First-Ever Error Card
-    // 1) Displays error status and message (localized or formatted)
-    expect(ssrHtml).toContain(`data-card-id="${credError.id}"`);
-    const hasFirstErrorText =
-      ssrHtml.includes("Yetkilendirme Hatası / Token Geçersiz") ||
-      ssrHtml.includes("Authentication Error") ||
-      ssrHtml.includes("401 Unauthorized");
-    expect(hasFirstErrorText).toBe(true);
-
-    // 2) Does NOT fabricate limit progress bars for first-ever error card
-    const brokenCardMatch = ssrHtml.match(new RegExp(`<div[^>]*data-card-id="${credError.id}"[\\s\\S]*?(?=<div[^>]*data-card-id=|$)[\\s\\S]*?`));
-    const brokenCardHtml = brokenCardMatch ? brokenCardMatch[0] : "";
-    expect(brokenCardHtml).toContain('data-status="error"');
-    expect(brokenCardHtml).not.toContain("account-card-bar-track");
-    expect(brokenCardHtml).not.toContain("account-card-bar-fill");
-
-    // Verification: Exhausted Quota Card
-    // 1) Contains valid limit telemetry and exhausted state
-    expect(ssrHtml).toContain(`data-card-id="${credExhausted.id}"`);
-    expect(ssrHtml).toContain("5-Hour Session Quota");
-    expect(ssrHtml).toMatch(/100(\.0)?%/);
-
-    // 2) Genuine exhaustion is NOT marked as stale or degraded
-    const exhaustedCardMatch = ssrHtml.match(new RegExp(`<div[^>]*data-card-id="${credExhausted.id}"[\\s\\S]*?(?=<div[^>]*data-card-id=|$)[\\s\\S]*?`));
-    const exhaustedCardHtml = exhaustedCardMatch ? exhaustedCardMatch[0] : "";
-    expect(exhaustedCardHtml).toContain('data-status="healthy"');
-    expect(exhaustedCardHtml).not.toContain('data-status="stale"');
-    expect(exhaustedCardHtml).not.toContain("account-card-stale-badge");
-    expect(exhaustedCardHtml).not.toContain("account-card-stale-notice");
+    expect(html).toContain('id="app"');
+    const bootstrapMatch = html.match(/<script id="usemeter-bootstrap"[^>]*>([\s\S]*?)<\/script>/);
+    expect(bootstrapMatch).not.toBeNull();
+    const bootstrap = JSON.parse(bootstrapMatch![1]!) as { reports: UsageReport[] };
+    expect(bootstrap.reports.length).toBe(4);
+    const stale = bootstrap.reports.find(r => r.credentialId === credStale.id)!;
+    const broken = bootstrap.reports.find(r => r.credentialId === credError.id)!;
+    const exhausted = bootstrap.reports.find(r => r.credentialId === credExhausted.id)!;
+    expect(stale.health).toBe("stale");
+    expect(stale.stale).toBe(true);
+    expect(stale.limits[0]?.amount.used).toBe(75);
+    expect(stale.error).toContain("429");
+    expect(broken.health).toBe("error");
+    expect(broken.limits).toHaveLength(0);
+    expect(exhausted.limits[0]?.status).toBe("exhausted");
+    expect(exhausted.limits[0]?.amount.used).toBe(100);
+    expect(exhausted.health).not.toBe("stale");
   });
 
   it("serves /api/data and /api/usage retaining stale metadata while strictly stripping raw payloads", async () => {
@@ -342,44 +297,19 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
 
-    // Check embedded script contains the I18N dictionary
-    expect(html).toContain("const I18N =");
+    expect(html).toContain('/assets/app.js');
+    const clientSource = await Bun.file('src/client/main.tsx').text();
+    expect(clientSource).toContain('const I18N');
+    expect(clientSource).toContain('Eski Veri');
+    expect(clientSource).toContain('Showing cached limits');
 
-    // Turkish dictionary definitions
-    const hasTrStale =
-      html.includes("Eski Veri") ||
-      html.includes("statusStale") ||
-      html.includes("staleBadge");
-    expect(hasTrStale).toBe(true);
-
-    const hasTrNotice =
-      html.includes("Önbelleğe alınmış") ||
-      html.includes("staleNotice");
-    expect(hasTrNotice).toBe(true);
-
-    // English dictionary definitions
-    const hasEnStale =
-      html.includes('"Stale"') ||
-      html.includes("'Stale'") ||
-      html.includes("staleBadge");
-    expect(hasEnStale).toBe(true);
-
-    const hasEnNotice =
-      html.includes("cached limits") ||
-      html.includes("cached") ||
-      html.includes("staleNotice");
-    expect(hasEnNotice).toBe(true);
-
-    // Script injection safety: ensure no unescaped closing script tags inside script bodies
-    expect(html).not.toContain("</script><script>");
+    expect(html).not.toContain('</script><script>');
     vault.close();
   });
 
   it("transitions a live credential to stale with retained limits via PollerEngine and reflects in dashboard", async () => {
     const vault = new StorageVault(":memory:");
     const registry = new ProviderRegistry();
-
-    // Create a mock adapter that can succeed and fail on demand
     let shouldFail = false;
     let pollCount = 0;
     const mockAdapter: ProviderAdapter = {
@@ -387,31 +317,20 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
       supports: (p: string) => p === "mockprovider",
       async fetchUsage(cred) {
         pollCount++;
-        if (shouldFail) {
-          throw new Error("Simulated connection timeout (504)");
-        }
+        if (shouldFail) throw new Error("Simulated connection timeout (504)");
         return {
           ownerId: cred.ownerId,
           provider: cred.provider,
           credentialId: cred.id,
           accountLabel: cred.accountLabel,
           fetchedAt: 1700000050000,
-          limits: [
-            {
-              id: "credits",
-              label: "Compute Credits",
-              amount: { remaining: 120, unit: "credits" },
-              status: "ok",
-            },
-          ],
+          limits: [{ id: "credits", label: "Compute Credits", amount: { remaining: 120, unit: "credits" }, status: "ok" }],
         };
       },
     };
     registry.register(mockAdapter);
-
     const poller = new PollerEngine(vault, registry);
     const app = createServer(vault, poller, registry);
-
     const regRes = await app.request("/api/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -419,15 +338,7 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
     });
     const cookie = regRes.headers.get("Set-Cookie")!.split(";")[0]!;
     const user = vault.getUserByEmail("transition@example.com")!;
-
-    const cred = vault.saveCredential(user.id, {
-      provider: "mockprovider",
-      accountLabel: "Dynamic Mock Key",
-      credentialType: "api_key",
-      secret: "sk-mock",
-    });
-
-    // 1. Initial Successful Poll
+    const cred = vault.saveCredential(user.id, { provider: "mockprovider", accountLabel: "Dynamic Mock Key", credentialType: "api_key", secret: "sk-mock" });
     shouldFail = false;
     const report1 = await poller.pollCredential(user.id, cred.id);
     expect(report1).not.toBeNull();
@@ -435,17 +346,11 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
     expect(report1?.stale).toBe(false);
     expect(report1?.source).toBe("live");
     expect(report1?.limits[0]?.amount.remaining).toBe(120);
-
-    // Initial check in /api/data
-    const dataRes1 = await app.request("/api/data", {
-      headers: { Cookie: cookie },
-    });
+    const dataRes1 = await app.request("/api/data", { headers: { Cookie: cookie } });
     const dataJson1 = (await dataRes1.json()) as { success: boolean; data: UsageReport[] };
     expect(dataJson1.data[0]?.health).toBe("healthy");
     expect(dataJson1.data[0]?.stale).toBe(false);
     expect(dataJson1.data[0]?.limits[0]?.amount.remaining).toBe(120);
-
-    // 2. Subsequent Failed Poll -> Must degrade to stale, retaining limits and lastGoodFetchedAt
     shouldFail = true;
     const report2 = await poller.pollCredential(user.id, cred.id);
     expect(report2).not.toBeNull();
@@ -457,31 +362,23 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
     expect(report2?.limits.length).toBe(1);
     expect(report2?.limits[0]?.label).toBe("Compute Credits");
     expect(report2?.limits[0]?.amount.remaining).toBe(120);
-
-    // Degraded check in /api/data
-    const dataRes2 = await app.request("/api/data", {
-      headers: { Cookie: cookie },
-    });
+    const dataRes2 = await app.request("/api/data", { headers: { Cookie: cookie } });
     const dataJson2 = (await dataRes2.json()) as { success: boolean; data: UsageReport[] };
     expect(dataJson2.data[0]?.health).toBe("stale");
     expect(dataJson2.data[0]?.stale).toBe(true);
     expect(dataJson2.data[0]?.limits[0]?.amount.remaining).toBe(120);
     expect(dataJson2.data[0]?.error).toContain("Simulated connection timeout");
-
-    // Degraded check in SSR HTML
-    const htmlRes2 = await app.request("/", {
-      headers: { Cookie: cookie },
-    });
+    const htmlRes2 = await app.request("/", { headers: { Cookie: cookie } });
     const html2 = await htmlRes2.text();
-    expect(html2).toContain("Dynamic Mock Key");
-    expect(html2).toContain("Compute Credits");
-    expect(html2).toContain("120 Hak Mevcut");
-    const hasDegradedError =
-      html2.includes("Bağlantı Hatası") ||
-      html2.includes("Connection Error") ||
-      html2.includes("Simulated connection timeout");
-    expect(hasDegradedError).toBe(true);
-
+    expect(html2).toContain('id="usemeter-bootstrap"');
+    const bootstrapMatch = html2.match(/<script id="usemeter-bootstrap"[^>]*>([\s\S]*?)<\/script>/);
+    const boot = JSON.parse(bootstrapMatch![1]!) as { reports: UsageReport[] };
+    expect(boot.reports[0]?.accountLabel).toBe("Dynamic Mock Key");
+    expect(boot.reports[0]?.limits[0]?.label).toBe("Compute Credits");
+    expect(boot.reports[0]?.limits[0]?.amount.remaining).toBe(120);
+    expect(boot.reports[0]?.health).toBe("stale");
+    expect(boot.reports[0]?.error).toContain("Simulated connection timeout");
+    expect(pollCount).toBe(2);
     vault.close();
   });
 });

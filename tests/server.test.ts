@@ -74,8 +74,9 @@ describe("Server API Endpoints", () => {
     });
     expect(htmlRes.status).toBe(200);
     const html = await htmlRes.text();
-    expect(html).toContain("useMeter");
-    expect(html).toContain("Multi-Provider Quota & Balance Hub");
+    expect(html).toContain('id="app"');
+    expect(html).toContain('/assets/app.js');
+    expect(html).toContain('/assets/app.css');
 
     // 6. Poll all credentials for user
     const pollRes = await app.request("/api/poll", {

@@ -171,22 +171,23 @@ describe("Admin Panel & Role-Based Access Control", () => {
     expect(statsJson.data.integrity).toBe(true);
     expect(typeof statsJson.data.databaseSizeBytes).toBe("number");
 
-    // Main dashboard shows Admin navigation button for Admin user
+    // Admin navigation is rendered by the React client from the sanitized bootstrap user role.
     const adminMainDash = await app.request("/", {
       headers: { Cookie: adminCookie },
     });
     expect(adminMainDash.status).toBe(200);
     const adminMainDashHtml = await adminMainDash.text();
-    expect(adminMainDashHtml).toContain('href="/admin"');
-    expect(adminMainDashHtml).toContain("adminPanelBtn");
+    expect(adminMainDashHtml).toContain('id="usemeter-bootstrap"');
+    expect(adminMainDashHtml).toContain('"role":"admin"');
 
-    // Main dashboard does NOT show Admin navigation button for Regular user
+    // Regular users receive a non-admin bootstrap role.
     const userMainDash = await app.request("/", {
       headers: { Cookie: userCookie },
     });
     expect(userMainDash.status).toBe(200);
     const userMainDashHtml = await userMainDash.text();
-    expect(userMainDashHtml).not.toContain('id="adminPanelBtn"');
+    expect(userMainDashHtml).toContain('id="usemeter-bootstrap"');
+    expect(userMainDashHtml).toContain('"role":"user"');
 
     vault.close();
   });
