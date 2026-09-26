@@ -323,7 +323,7 @@ export interface Notifier {
 }
 ```
 - **Desteklenen Kanallar:**
-  1. **ntfy:** `POST https://ntfy.muwat.org/<topic>` (Sıfır bağımlılık, anında bildirim).
+  1. **ntfy:** `POST https://ntfy.example.com/<topic>` (Sıfır bağımlılık, anında bildirim).
   2. **Telegram Bot:** `sendMessage` API'si üzerinden Markdown formatlı kart.
   3. **Discord Webhook:** Renkli embed mesajı.
 
