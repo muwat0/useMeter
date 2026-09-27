@@ -1,11 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { generatePKCE } from "./pkce";
 import { listenForOAuthCallback } from "./callback-server";
 
 const DEVIN_WEBAPP_URL = "https://app.devin.ai";
 const DEVIN_API_URL = "https://api.devin.ai";
-const CALLBACK_PORT = 59653;
-const CALLBACK_PATH = "/callback";
-const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}${CALLBACK_PATH}`;
+export const DEVIN_CALLBACK_PORT = 59653;
+export const DEVIN_CALLBACK_PATH = "/callback";
+export const DEVIN_LOCAL_REDIRECT_URI = `http://127.0.0.1:${DEVIN_CALLBACK_PORT}${DEVIN_CALLBACK_PATH}`;
 const TOKEN_PATH = "/auth/cli/token";
 
 export interface DevinAuthInitiateResult {
@@ -13,14 +14,82 @@ export interface DevinAuthInitiateResult {
   verifier: string;
   state: string;
   sessionId: string;
+  redirectUri: string;
+  isHosted: boolean;
 }
 
+export function isDevinHostedFlow(): boolean {
+  const envUri = process.env["DEVIN_OAUTH_REDIRECT_URI"]?.trim();
+  if (envUri) {
+    try {
+      const url = new URL(envUri);
+      const host = url.hostname.toLowerCase();
+      const isLoopback = host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+      return !isLoopback;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+export function getDevinRedirectUri(): string {
+  const envUri = process.env["DEVIN_OAUTH_REDIRECT_URI"]?.trim();
+  if (envUri) {
+    try {
+      const parsed = new URL(envUri);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("must use HTTPS, or HTTP for a local loopback address.");
+      }
+      if (parsed.username || parsed.password || /^https?:\/\/[^/?#]*@/i.test(envUri)) {
+        throw new Error("must not contain userinfo.");
+      }
+      if (parsed.hash || envUri.includes("#")) {
+        throw new Error("must not contain a hash or fragment.");
+      }
+      if (parsed.search || envUri.includes("?")) {
+        throw new Error("must not contain a query string.");
+      }
+
+      const host = parsed.hostname.toLowerCase();
+      const isLoopback = host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+      if (process.env["NODE_ENV"] === "production" && isLoopback) {
+        throw new Error("loopback redirect URIs are not allowed in production.");
+      }
+      if (isLoopback && envUri !== DEVIN_LOCAL_REDIRECT_URI) {
+        throw new Error("loopback redirect URI must exactly match the local callback listener.");
+      }
+      if (!isLoopback) {
+        if (parsed.protocol !== "https:") {
+          throw new Error("hosted redirect URIs must use HTTPS.");
+        }
+        if (parsed.pathname !== "/api/oauth/devin/callback") {
+          throw new Error("hosted redirect URI path must be exactly '/api/oauth/devin/callback'.");
+        }
+      }
+      return envUri;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : "invalid URI.";
+      throw new Error(`Invalid DEVIN_OAUTH_REDIRECT_URI: ${detail}`);
+    }
+  }
+
+  if (process.env["NODE_ENV"] === "production") {
+    throw new Error(
+      "DEVIN_OAUTH_REDIRECT_URI is not configured. In hosted environments, set it to https://<host>/api/oauth/devin/callback",
+    );
+  }
+
+  return DEVIN_LOCAL_REDIRECT_URI;
+}
 export function initiateDevinAuth(): DevinAuthInitiateResult {
   const { verifier, challenge } = generatePKCE();
-  const state = Math.random().toString(36).substring(2);
+  const state = randomUUID();
+  const redirectUri = getDevinRedirectUri();
+  const isHosted = isDevinHostedFlow();
 
   const params = new URLSearchParams({
-    redirect_uri: REDIRECT_URI,
+    redirect_uri: redirectUri,
     state,
     prompt: "select_account",
     code_challenge: challenge,
@@ -32,13 +101,15 @@ export function initiateDevinAuth(): DevinAuthInitiateResult {
     verifier,
     state,
     sessionId: state,
+    redirectUri,
+    isHosted,
   };
 }
 
 export async function listenForDevinCallback(expectedState: string, timeoutMs: number = 120_000): Promise<string> {
   return listenForOAuthCallback({
-    port: CALLBACK_PORT,
-    pathname: CALLBACK_PATH,
+    port: DEVIN_CALLBACK_PORT,
+    pathname: DEVIN_CALLBACK_PATH,
     expectedState,
     providerName: "Devin",
     timeoutMs,
