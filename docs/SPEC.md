@@ -347,7 +347,7 @@ Hono çerçevesi ile sunulan REST ve Server-Sent Events (SSE) rotaları. Tüm pa
 - `GET /api/usage` → Oturum açmış kullanıcının (`ownerId`) sağlayıcı bakiye ve kota listesi.
 - `GET /api/usage/:id/history` → Oturum açmış kullanıcının belirli bir hesabına ait trend verisi.
 - `POST /api/credentials` → Kullanıcıya ait yeni sağlayıcı kimliği kaydetme (`ownerId` oturumdan alınır).
-- `DELETE /api/credentials/:id` → Kullanıcıya ait kimliği silme (yalnızca sahibi silebilir).
+- `DELETE /api/credentials/:id` → Kullanıcıya ait kimliği silme (yalnızca sahibi silebilir); kimlik bilgisiyle ilişkili `usage_snapshots` satırları SQLite `ON DELETE CASCADE` nedeniyle kalıcı olarak silinir.
 - `POST /api/refresh` → Kullanıcının kendi hesaplarını anında manuel yenilemesi (Force refresh).
 - `GET /api/events` → SSE akışı (Dashboard açıkken kullanıcının kendi kotalarına ait canlı güncellemeler).
 
@@ -410,6 +410,44 @@ Bellek sızıntılarını önlemek için en fazla 10.000 benzersiz anahtar tutan
 - **OAuth Cihaz Akışı Yoklama (`oauthDevicePoll`):** `30 istek / dakika / kullanıcı + flow`.
 - **Hata Yanıtı:** Limit aşıldığında HTTP `429 Too Many Requests` ve `Retry-After` başlığı döndürülür.
 
+
+### 4.5. Durağan Veri Şifreleme (At-Rest Metadata Encryption) ve İki Aşamalı Dağıtım Sözleşmesi
+
+Sağlayıcı kimlik bilgilerine ait `metadata` sütunu (OAuth `refreshToken`, kullanıcı adı, erişim kapsamları vb.) veritabanı düzeyinde şifrelenir.
+
+1. **Şifreli Zarf Formatı (Envelope Format):**
+   - Şifrelenmiş metadata, SQLite `credentials.metadata` metin sütununda şu sürüm etiketli JSON zarfı olarak saklanır:
+     ```json
+     {"$vault":1,"ciphertext":"<hex>","iv":"<24-hex>","tag":"<32-hex>"}
+     ```
+   - Algoritma: **AES-256-GCM** (ana anahtar `USAGE_MASTER_KEY` üzerinden scrypt ile türetilir).
+   - Her yazma işleminde 12 baytlık (24 hex karakter) kriptografik olarak bağımsız rastgele IV (`randomBytes`) üretilir; aynı metadata tekrar yazılsa bile şifreli metin ve IV her seferinde farklılaşır.
+
+2. **Bellek-İçi Arayüz Uyumu (In-Memory Contract):**
+   - `StorageVault` public metodları (`saveCredential`, `updateCredentialTokens`, `listCredentials`, `getCredential`) bellek içinde `StoredCredential.metadata` alanını şifresi çözülmüş nesne (`Record<string, unknown>`) olarak sunmaya devam eder; çağıran katmanlarda değişiklik gerekmez.
+
+3. **Çift Okuyucu (Dual-Reader) & Hata İzolasyonu (Fail-Closed):**
+   - Okuyucu hem eski düz metin JSON verilerini hem de `$vault: 1` zarfını şeffaf biçimde okur.
+   - Anahtar uyuşmazlığı, bozuk şifreli metin veya geçersiz zarf durumunda sistem sessizce `undefined` dönmez; işlemi anında durdurur (fail-closed) ve düz metin verileri günlüklere sızdırmaz.
+
+4. **Yazma Politikası:**
+   - `CREDENTIAL_METADATA_ENCRYPTION` ortam değişkeni tanımlı değilken ve şema `PRAGMA user_version = 1` iken (Aşama 1 uyumluluk sürümü) yeni yazmalar geriye dönük uyumlu düz metin JSON olarak kaydedilir.
+   - `CREDENTIAL_METADATA_ENCRYPTION=enabled` tanımlandığında VEYA veritabanı şeması zaten `user_version >= 2` olduğunda tüm yeni yazmalar (`saveCredential`, `saveCredentialInternal`, `updateCredentialTokens`) zorunlu olarak şifreli zarf yazar.
+
+5. **Atomik ve İdempotent Şema Göçü (v1 -> v2 Migration):**
+   - Ortam değişkeni `CREDENTIAL_METADATA_ENCRYPTION=enabled` iken ve veritabanı `user_version < 2` ise, `StorageVault` başlatılırken otomatik olarak göç tetiklenir (`migrateCredentialMetadata()`).
+   - Göç tek bir SQLite anlık işleminde (`transaction.immediate()`) çalışır; mevcut tüm şifresiz `metadata` satırları zarfa dönüştürülür ve `PRAGMA user_version = 2;` atanır.
+   - Göç sırasında kimlik kayıtlarının `created_at`, `updated_at`, `owner_id`, `secret`, `iv`, `tag` alanları ve ilişkili `usage_snapshots` kayıtları KESİNLİKLE değiştirilmez.
+   - Ayrıştırma veya şifreleme hatasında işlem tamamen geri alınır; kısmi satır güncellemesi veya veritabanı sürüm artışı engellenir.
+
+6. **İki Aşamalı Üretim Dağıtımı ve Geri Dönüş Güvencesi (Rollout & Rollback Contract):**
+   - **Aşama 1 (Reader-Only Staging):** `vault.ts` çift okuyucu yeteneğini içeren imaj dağıtılır; ortam değişkeni henüz eklenmez, Kimi boş kota veya arayüz değişiklikleri bu aşamada canlıya alınmaz. Veritabanı `user_version = 1` kalır. Uyumlu imaj etiketlenir ve taze yedek alınır.
+   - **Aşama 2 (Full Release & Migration):** `CREDENTIAL_METADATA_ENCRYPTION=enabled` tanımlanmış tam sürüm dağıtılır; veritabanı `user_version = 2` düzeyine göç eder ve tüm yeni OAuth token'ları (Kimi dahil) şifreli saklanır.
+   - **Geri Dönüş (Rollback):** Aşama 2'den Aşama 1 imajına geri dönülmesi gerekirse, Aşama 1 imajı içindeki çift okuyucu `user_version = 2` zarflarını doğrudan çözebilir; eski veritabanı yedeğinin geri yüklenmesine gerek kalmaz, veri kaybı veya kota kesintisi yaşanmaz.
+
+7. **SQLite WAL Plaintext Kalıntısı ve Checkpoint Planı (Infra Notice):**
+   - SQLite WAL modunda çalışan sistemlerde, göç öncesi düz metin satır sayfaları veritabanının `-wal` dosyasında bir süre daha kalabilir.
+   - Sistem yöneticisi Aşama 2 dağıtımından hemen sonra ve eski yedekleri emekliye ayırmadan önce `PRAGMA wal_checkpoint(TRUNCATE);` komutunu çalıştırmalı veya konteynerin kontrollü yeniden başlatılmasıyla WAL dosyasının sıfırlanmasını sağlamalıdır.
 ---
 
 ## 5. Yönetici Davetiye Sistemi ve Kullanıcı Kabulü (Admin Invitation Onboarding)
