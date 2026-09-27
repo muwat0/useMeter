@@ -1,7 +1,24 @@
+import { randomUUID } from "node:crypto";
 import type { StorageVault } from "../storage/vault";
 import type { ProviderRegistry } from "../providers/registry";
-import type { StoredCredential, UsageReport } from "../../types";
+import type { InputCredential, StoredCredential, UsageReport } from "../../types";
 
+
+function mergeDefinedMetadata(
+  base?: Record<string, unknown>,
+  updates?: Record<string, unknown> | null,
+): Record<string, unknown> | undefined {
+  if (!base && !updates) return undefined;
+  const merged: Record<string, unknown> = base ? { ...base } : {};
+  if (updates && typeof updates === "object") {
+    for (const [key, value] of Object.entries(updates)) {
+      if (value !== undefined) {
+        merged[key] = value;
+      }
+    }
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
 export type ReportListener = (report: UsageReport) => void;
 
 export class PollerEngine {
@@ -9,6 +26,7 @@ export class PollerEngine {
   readonly #registry: ProviderRegistry;
   readonly #intervalMs: number;
   readonly #inFlight: Map<string, Promise<UsageReport | null>> = new Map();
+  readonly #credentialEpochs: Map<string, number> = new Map();
   readonly #listeners: Set<ReportListener> = new Set();
   #timer?: Timer;
   #running = false;
@@ -18,6 +36,17 @@ export class PollerEngine {
     this.#registry = registry;
     this.#intervalMs = intervalMs;
   }
+  #getEpoch(credentialId: string): number {
+    return this.#credentialEpochs.get(credentialId) ?? 0;
+  }
+
+  #bumpEpoch(credentialId: string): number {
+    const next = this.#getEpoch(credentialId) + 1;
+    this.#credentialEpochs.set(credentialId, next);
+    this.#inFlight.delete(credentialId);
+    return next;
+  }
+
 
   onReport(listener: ReportListener): () => void {
     this.#listeners.add(listener);
@@ -51,6 +80,71 @@ export class PollerEngine {
     return this.#pollCredentialInternal(credential, false);
   }
 
+  async validateAndSaveCredential(ownerId: string, input: InputCredential): Promise<StoredCredential> {
+    const adapter = this.#registry.find(input.provider);
+    if (!adapter) throw new Error(`No provider adapter for "${input.provider}"`);
+
+    const existing = this.#vault.listCredentials(ownerId, input.provider)
+      .find(credential => credential.accountLabel === input.accountLabel);
+    const now = Date.now();
+    // Candidate metadata must only include defined new metadata (strip undefined).
+    // Previous metadata (such as existing refresh token) MUST NOT be merged before validation,
+    // so that an invalid candidate cannot use the prior valid refresh token to authenticate.
+    const candidateMetadata = mergeDefinedMetadata(undefined, input.metadata);
+    const candidate: StoredCredential = {
+      id: existing?.id ?? randomUUID(),
+      ownerId,
+      provider: input.provider.toLowerCase(),
+      accountLabel: input.accountLabel,
+      accent: input.accent ?? existing?.accent,
+      credentialType: input.credentialType,
+      secret: input.secret,
+      metadata: candidateMetadata,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: existing?.updatedAt ?? now,
+    };
+    const fetched = await adapter.fetchUsage(candidate, {
+      onTokenRefresh: (newSecret, metadataUpdates) => {
+        candidate.secret = newSecret;
+        if (metadataUpdates) {
+          candidate.metadata = mergeDefinedMetadata(candidate.metadata, metadataUpdates);
+        }
+      },
+    });
+    if (fetched.error) throw new Error(fetched.error);
+
+    // Re-read the selected owner-bound row after validation; an old snapshot here could
+    // overwrite refresh-token rotations performed by a concurrent poll.
+    const currentExisting = existing
+      ? this.#vault.getCredential(ownerId, existing.id)
+      : undefined;
+    if (existing && (
+      !currentExisting ||
+      currentExisting.ownerId !== ownerId ||
+      currentExisting.provider !== input.provider.toLowerCase() ||
+      currentExisting.accountLabel !== input.accountLabel
+    )) {
+      throw new Error("Credential changed while validation was in progress");
+    }
+    if (!existing && this.#vault.listCredentials(ownerId, input.provider).some(c => c.accountLabel === input.accountLabel)) {
+      throw new Error("Credential changed while validation was in progress");
+    }
+
+    // Merge only after successful validation, using current metadata and the new candidate.
+    const finalMetadata = mergeDefinedMetadata(currentExisting?.metadata, candidate.metadata);
+    const saved = this.#vault.saveCredential(ownerId, {
+      ...input,
+      ownerId,
+      accountLabel: input.accountLabel,
+      accent: input.accent ?? currentExisting?.accent,
+      secret: candidate.secret,
+      metadata: finalMetadata,
+    });
+    this.#bumpEpoch(saved.id);
+    this.#saveSuccessfulReport(saved, fetched, false);
+    return saved;
+  }
+
   async pollUser(ownerId: string): Promise<UsageReport[]> {
     const credentials = this.#vault.listCredentials(ownerId);
     const reports: UsageReport[] = [];
@@ -67,11 +161,16 @@ export class PollerEngine {
 
     const existing = this.#inFlight.get(cred.id);
     if (existing) return existing;
+    const epoch = this.#getEpoch(cred.id);
 
-    const promise = (async () => {
+    let promise!: Promise<UsageReport | null>;
+    promise = (async () => {
       try {
         const ctx = {
           onTokenRefresh: (newSecret: string, metadataUpdates?: Record<string, unknown>, newAccountLabel?: string) => {
+            if (this.#getEpoch(cred.id) !== epoch) {
+              return;
+            }
             this.#vault.updateCredentialTokens(cred.ownerId!, cred.id, newSecret, metadataUpdates);
             if (newAccountLabel && newAccountLabel !== cred.accountLabel) {
               this.#vault.updateCredentialLabel(cred.ownerId!, cred.id, newAccountLabel);
@@ -80,31 +179,17 @@ export class PollerEngine {
           },
         };
         const fetched = await adapter.fetchUsage(cred, ctx);
+        if (this.#getEpoch(cred.id) !== epoch) {
+          return null;
+        }
         if (fetched.error) {
           throw new Error(fetched.error);
         }
-        const now = Date.now();
-        const fetchedAt = fetched.fetchedAt ?? now;
-        const report: UsageReport = {
-          ...fetched,
-          ownerId: cred.ownerId,
-          credentialId: cred.id,
-          fetchedAt,
-          health: "healthy",
-          stale: false,
-          source: "live",
-          lastGoodFetchedAt: fetchedAt,
-        };
-        if (daemon) this.#vault.saveUsageSnapshotInternal(report);
-        else this.#vault.saveUsageSnapshot(cred.ownerId!, report);
-
-        for (const listener of this.#listeners) {
-          try {
-            listener(report);
-          } catch {}
-        }
-        return report;
+        return this.#saveSuccessfulReport(cred, fetched, daemon);
       } catch (error) {
+        if (this.#getEpoch(cred.id) !== epoch) {
+          return null;
+        }
         const errorMessage = error instanceof Error ? error.message : String(error);
         const lastGood = (cred.ownerId && !daemon)
           ? this.#vault.getLastSuccessfulUsage(cred.ownerId, cred.id)
@@ -141,12 +226,38 @@ export class PollerEngine {
         else this.#vault.saveUsageSnapshot(cred.ownerId!, fallbackReport);
         return fallbackReport;
       } finally {
-        this.#inFlight.delete(cred.id);
+        if (this.#inFlight.get(cred.id) === promise) {
+          this.#inFlight.delete(cred.id);
+        }
       }
     })();
 
     this.#inFlight.set(cred.id, promise);
     return promise;
+  }
+
+  #saveSuccessfulReport(credential: StoredCredential, fetched: UsageReport, daemon: boolean): UsageReport {
+    const fetchedAt = fetched.fetchedAt ?? Date.now();
+    const report: UsageReport = {
+      ...fetched,
+      ownerId: credential.ownerId,
+      credentialId: credential.id,
+      accountLabel: credential.accountLabel,
+      fetchedAt,
+      health: "healthy",
+      stale: false,
+      source: "live",
+      lastGoodFetchedAt: fetchedAt,
+    };
+    if (daemon) this.#vault.saveUsageSnapshotInternal(report);
+    else this.#vault.saveUsageSnapshot(credential.ownerId, report);
+
+    for (const listener of this.#listeners) {
+      try {
+        listener(report);
+      } catch {}
+    }
+    return report;
   }
 
   async pollAll(): Promise<UsageReport[]> {
