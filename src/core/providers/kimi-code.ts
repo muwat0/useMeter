@@ -1,5 +1,3 @@
-import * as crypto from "node:crypto";
-import * as os from "node:os";
 import type { FetchContext, ProviderAdapter } from "./adapter";
 import type { StoredCredential, UsageLimit, UsageReport, UsageStatus, UsageWindow } from "../../types";
 import { refreshKimiToken } from "../oauth/kimi";
@@ -8,6 +6,30 @@ const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 const WEEK_MS = 7 * DAY_MS;
+const MANAGED_USAGE_WINDOWS = [
+  {
+    key: "limit_5h",
+    id: "5h",
+    label: "5 Saatlik Kayan Kota",
+    windowLabel: "5 Saatlik Kayan Pencere",
+    durationMs: 5 * HOUR_MS,
+  },
+  {
+    key: "limit_7d",
+    id: "7d",
+    label: "Haftalık Kota",
+    windowLabel: "Haftalık Pencere",
+    durationMs: WEEK_MS,
+  },
+  {
+    key: "limit_month_total",
+    id: "monthly",
+    label: "Aylık Kota",
+    windowLabel: "Aylık Pencere",
+    durationMs: undefined,
+  },
+] as const;
+
 
 interface KimiTokenJson {
   access_token?: unknown;
@@ -64,10 +86,12 @@ interface KimiLimitItem {
 interface KimiUsagePayload {
   usage?: KimiUsageDetail;
   limits?: unknown;
+  usages?: unknown;
   error?: {
     message?: unknown;
   };
 }
+
 
 interface ParsedUsageRow {
   label: string;
@@ -76,7 +100,150 @@ interface ParsedUsageRow {
   remaining?: number;
   resetsAt?: number;
   window?: UsageWindow;
+  notes?: string[];
 }
+
+
+const SCHEMA_CLUE_MAX_DEPTH = 5;
+const SCHEMA_CLUE_MAX_KEYS = 32;
+const SCHEMA_CLUE_MAX_ENTRIES = 32;
+const SCHEMA_CLUE_MAX_LENGTH = 640;
+const SAFE_SCHEMA_CLUE_KEYS: Record<string, true> = {
+  usage: true,
+  usages: true,
+  used_ratio: true,
+  limit_5h: true,
+  limit_7d: true,
+  limit_month_total: true,
+  limit_month_code: true,
+  boosterwallet: true,
+
+  limits: true,
+  data: true,
+  result: true,
+  error: true,
+  message: true,
+  detail: true,
+  window: true,
+  quota: true,
+  quotas: true,
+  remaining: true,
+  used: true,
+  limit: true,
+  reset_time: true,
+  resettime: true,
+  reset_at: true,
+  resetat: true,
+  reset_in: true,
+  resetin: true,
+  ttl: true,
+  duration: true,
+  timeunit: true,
+  unit: true,
+  name: true,
+  title: true,
+  scope: true,
+  items: true,
+  values: true,
+  status: true,
+  type: true,
+  code: true,
+  balance: true,
+  credits: true,
+  plan: true,
+  model: true,
+  models: true,
+  hourly: true,
+  daily: true,
+  weekly: true,
+  monthly: true,
+  premium: true,
+  standard: true,
+};
+
+function isSensitiveSchemaKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return /token|secret|password|credential|authorization|cookie|email|account|user|profile|phone|address|session|device|identity|personal|apikey|clientid|auth/.test(
+    normalized,
+  );
+}
+
+function describeKimiUsageSchema(payload: unknown): string {
+
+  const paths: string[] = [];
+  let inspectedKeys = 0;
+  let truncated = false;
+
+  const visit = (value: unknown, path: string, depth: number): void => {
+    if (paths.length >= SCHEMA_CLUE_MAX_ENTRIES) {
+      truncated = true;
+      return;
+    }
+    const valType = value === null ? "null" : Array.isArray(value) ? "array" : typeof value === "object" ? "object" : typeof value;
+    paths.push(`${path}=${valType}`);
+
+    if (depth >= SCHEMA_CLUE_MAX_DEPTH) {
+      if (value !== null && typeof value === "object") truncated = true;
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      if (value.length > 0) visit(value[0], `${path}[]`, depth + 1);
+      if (value.length > 1) truncated = true;
+      return;
+    }
+    if (value === null || typeof value !== "object") return;
+
+    for (const key in value) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      if (inspectedKeys >= SCHEMA_CLUE_MAX_KEYS) {
+        truncated = true;
+        break;
+      }
+      inspectedKeys += 1;
+      if (isSensitiveSchemaKey(key)) continue;
+
+      const normalizedKey = key.toLowerCase();
+      const segment = Object.prototype.hasOwnProperty.call(SAFE_SCHEMA_CLUE_KEYS, normalizedKey)
+        ? normalizedKey
+        : "[redacted-key]";
+      visit((value as Record<string, unknown>)[key], `${path}.${segment}`, depth + 1);
+    }
+  };
+  const classifyFailure = (): string => {
+    if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+      try {
+        let hasEnumerableKey = false;
+        let allSensitive = true;
+        for (const key in payload) {
+          if (!Object.prototype.hasOwnProperty.call(payload, key)) continue;
+          hasEnumerableKey = true;
+          if (!isSensitiveSchemaKey(key)) {
+            allSensitive = false;
+            break;
+          }
+        }
+        if (!hasEnumerableKey) return "boş JSON nesnesi";
+        if (allSensitive) return "yalnızca hassas anahtarlar içeren nesne";
+      } catch {
+        return "unsupported schema";
+      }
+    }
+    return "unsupported schema";
+  };
+
+
+  try {
+    visit(payload, "$", 0);
+  } catch {
+    return classifyFailure();
+  }
+
+  if (paths.length < 2) return classifyFailure();
+  const clue = paths.join("; ") + (truncated ? "; …" : "");
+  return clue.length <= SCHEMA_CLUE_MAX_LENGTH ? clue : `${clue.slice(0, SCHEMA_CLUE_MAX_LENGTH - 3)}...`;
+}
+
 
 function toNumber(value: unknown): number | undefined {
   if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
@@ -190,6 +357,127 @@ function buildUsageRow(data: KimiUsageDetail, defaultLabel: string, nowMs: numbe
   };
 }
 
+function parseManagedRatio(value: unknown): number | undefined {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== "string") return undefined;
+
+  const trimmed = value.trim();
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) return undefined;
+  const ratio = Number(trimmed);
+  return Number.isFinite(ratio) ? ratio : undefined;
+}
+
+function parseManagedResetTime(value: unknown): number | undefined {
+  if (typeof value !== "string") return undefined;
+  const resetTime = value.trim();
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(
+      resetTime,
+    );
+  if (!match) return undefined;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = Number(match[8] ?? 0);
+  const offsetMinute = Number(match[9] ?? 0);
+  const isLeapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, isLeapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > (daysInMonth ?? 0) ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    offsetHour > 23 ||
+    offsetMinute > 59
+  ) {
+    return undefined;
+  }
+
+  const timestamp = Date.parse(resetTime);
+  return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
+function buildManagedUsageLimits(usages: unknown): UsageLimit[] {
+  if (typeof usages !== "object" || usages === null || Array.isArray(usages)) return [];
+  const entries = usages as Record<string, unknown>;
+  const limits: UsageLimit[] = [];
+
+  for (const entryDefinition of MANAGED_USAGE_WINDOWS) {
+    const rawEntry = entries[entryDefinition.key];
+    if (typeof rawEntry !== "object" || rawEntry === null || Array.isArray(rawEntry)) continue;
+    const entry = rawEntry as Record<string, unknown>;
+    const ratio = parseManagedRatio(entry["used_ratio"]);
+    if (ratio === undefined) continue;
+
+    const usedFraction = Math.min(Math.max(ratio, 0), 1);
+    const resetsAt = parseManagedResetTime(entry["reset_time"]);
+    let notes: string[] | undefined;
+    if (entryDefinition.key === "limit_month_total") {
+      const rawCodeEntry = entries["limit_month_code"];
+      if (typeof rawCodeEntry === "object" && rawCodeEntry !== null && !Array.isArray(rawCodeEntry)) {
+        const codeRatio = parseManagedRatio((rawCodeEntry as Record<string, unknown>)["used_ratio"]);
+        if (codeRatio !== undefined) {
+          const clampedCode = Math.min(Math.max(codeRatio, 0), 1);
+          const codePercent = Number((clampedCode * 100).toFixed(1));
+          notes = [`Kod kullanımı: %${codePercent}`];
+        }
+      }
+    }
+
+    const row: ParsedUsageRow = {
+      label: entryDefinition.label,
+      used: usedFraction,
+      limit: 1,
+      remaining: 1 - usedFraction,
+      resetsAt,
+      window: {
+        id: entryDefinition.id,
+        label: entryDefinition.windowLabel,
+        durationMs: entryDefinition.durationMs,
+        resetsAt,
+        resetLabel: "Sıfırlanma",
+      },
+      notes,
+    };
+    const limit = toUsageLimit(row, limits.length);
+    if (limit) limits.push(limit);
+  }
+
+  // month_code is a breakdown of month_total, never a separate full quota.
+  return limits;
+}
+function isExplicitEmptyUsagePayload(payload: unknown): boolean {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return false;
+  const record = payload as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (keys.length === 0) return true;
+  if (!Object.prototype.hasOwnProperty.call(record, "usages")) return false;
+
+  const usages = record["usages"];
+  if (typeof usages !== "object" || usages === null || Array.isArray(usages) || Object.keys(usages).length !== 0) {
+    return false;
+  }
+
+  for (const key of keys) {
+    if (key === "usages") continue;
+    const value = record[key];
+    if (key === "boosterWallet" && value === null) continue;
+    if (key === "goods_version" && (value === 1 || value === 2)) continue;
+    return false;
+  }
+  return true;
+}
+
+
+
 function extractBearerToken(secret: string): string {
   const trimmed = secret.trim();
   if (!trimmed) return "";
@@ -210,46 +498,6 @@ function extractBearerToken(secret: string): string {
   return trimmed;
 }
 
-let cachedDeviceId: string | undefined;
-
-function getKimiHeaders(token: string, deviceId?: string): Record<string, string> {
-  const platform = os.platform();
-  const release = os.release();
-  const arch = os.arch();
-  const osLabel = platform === "darwin" ? "macOS" : platform === "win32" ? "Windows" : platform === "linux" ? "Linux" : platform;
-  const deviceModel = `${osLabel} ${release} ${arch}`.replace(/[^\x20-\x7E]/g, "").trim() || "unknown";
-  const deviceName = os.hostname().replace(/[^\x20-\x7E]/g, "").trim() || "unknown";
-  const osVersion = os.version().replace(/[^\x20-\x7E]/g, "").trim() || "unknown";
-
-  let effectiveDeviceId = deviceId;
-  if (!effectiveDeviceId) {
-    try {
-      const parts = token.split(".");
-      if (parts.length === 3) {
-        const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf-8"));
-        if (typeof payload.device_id === "string" && payload.device_id) {
-          effectiveDeviceId = payload.device_id;
-        }
-      }
-    } catch {}
-  }
-  if (!effectiveDeviceId) {
-    if (!cachedDeviceId) cachedDeviceId = crypto.randomUUID().replace(/-/g, "");
-    effectiveDeviceId = cachedDeviceId;
-  }
-
-  return {
-    Accept: "application/json",
-    Authorization: `Bearer ${token}`,
-    "User-Agent": "KimiCLI/1.0.0",
-    "X-Msh-Platform": "kimi_cli",
-    "X-Msh-Version": "1.0.0",
-    "X-Msh-Device-Name": deviceName,
-    "X-Msh-Device-Model": deviceModel,
-    "X-Msh-Os-Version": osVersion,
-    "X-Msh-Device-Id": effectiveDeviceId,
-  };
-}
 
 function toUsageLimit(row: ParsedUsageRow, index: number): UsageLimit | null {
   if (row.limit === undefined || row.limit <= 0 || row.used === undefined) {
@@ -283,6 +531,8 @@ function toUsageLimit(row: ParsedUsageRow, index: number): UsageLimit | null {
     label = "5 Saatlik Kayan Kota";
   } else if (windowId === "7d") {
     label = "Haftalık Kota";
+  } else if (windowId === "monthly") {
+    label = "Aylık Kota";
   }
 
   const status: UsageStatus = usedFraction >= 1 ? "exhausted" : usedFraction >= 0.8 ? "warning" : "ok";
@@ -299,6 +549,7 @@ function toUsageLimit(row: ParsedUsageRow, index: number): UsageLimit | null {
     },
     window,
     status,
+    notes: row.notes,
   };
 }
 
@@ -373,7 +624,10 @@ export class KimiCodeAdapter implements ProviderAdapter {
 
     let response = await fetchImpl(url, {
       method: "GET",
-      headers: getKimiHeaders(token, deviceId),
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
       signal: ctx?.signal,
     });
 
@@ -392,7 +646,10 @@ export class KimiCodeAdapter implements ProviderAdapter {
         }
         response = await fetchImpl(url, {
           method: "GET",
-          headers: getKimiHeaders(token, deviceId),
+          headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/json",
+          },
           signal: ctx?.signal,
         });
       } catch (err) {
@@ -424,54 +681,58 @@ export class KimiCodeAdapter implements ProviderAdapter {
     }
 
     const payload = rawPayload as KimiUsagePayload;
-    const limits: UsageLimit[] = [];
+    const managedLimits = buildManagedUsageLimits(payload.usages);
+    // Prefer first-party windows when present; legacy parsing remains for custom proxies.
+    const limits: UsageLimit[] = managedLimits.length > 0 ? managedLimits : [];
 
-    if (typeof payload.usage === "object" && payload.usage !== null && !Array.isArray(payload.usage)) {
-      const summary = buildUsageRow(payload.usage, "Haftalık Kota", nowMs);
-      if (summary) {
-        summary.window = {
-          id: "7d",
-          label: "Haftalık Pencere",
-          durationMs: WEEK_MS,
-          resetsAt: summary.resetsAt,
-          resetLabel: "Sıfırlanma",
-        };
-        const limit = toUsageLimit(summary, 0);
-        if (limit) {
-          limits.push(limit);
-        }
-      }
-    }
-
-    if (Array.isArray(payload.limits)) {
-      payload.limits.forEach((item: unknown, idx: number) => {
-        if (typeof item !== "object" || item === null || Array.isArray(item)) return;
-        const itemRecord = item as KimiLimitItem;
-        const detailRecord: KimiUsageDetail =
-          typeof itemRecord.detail === "object" && itemRecord.detail !== null && !Array.isArray(itemRecord.detail)
-            ? itemRecord.detail
-            : (itemRecord as KimiUsageDetail);
-        const windowRecord: KimiWindowData =
-          typeof itemRecord.window === "object" && itemRecord.window !== null && !Array.isArray(itemRecord.window)
-            ? itemRecord.window
-            : {};
-        const defaultLabel = `Limit #${idx + 1}`;
-        const row = buildUsageRow(detailRecord, defaultLabel, nowMs);
-        if (row) {
-          row.window = buildWindow(windowRecord, nowMs);
-          const limit = toUsageLimit(row, limits.length);
+    if (managedLimits.length === 0) {
+      if (typeof payload.usage === "object" && payload.usage !== null && !Array.isArray(payload.usage)) {
+        const summary = buildUsageRow(payload.usage, "Haftalık Kota", nowMs);
+        if (summary) {
+          summary.window = {
+            id: "7d",
+            label: "Haftalık Pencere",
+            durationMs: WEEK_MS,
+            resetsAt: summary.resetsAt,
+            resetLabel: "Sıfırlanma",
+          };
+          const limit = toUsageLimit(summary, 0);
           if (limit) {
-            if (limits.some(l => l.id === limit.id)) {
-              limit.id = `${limit.id}-${idx + 1}`;
-            }
             limits.push(limit);
           }
         }
-      });
+      }
+
+      if (Array.isArray(payload.limits)) {
+        payload.limits.forEach((item: unknown, idx: number) => {
+          if (typeof item !== "object" || item === null || Array.isArray(item)) return;
+          const itemRecord = item as KimiLimitItem;
+          const detailRecord: KimiUsageDetail =
+            typeof itemRecord.detail === "object" && itemRecord.detail !== null && !Array.isArray(itemRecord.detail)
+              ? itemRecord.detail
+              : (itemRecord as KimiUsageDetail);
+          const windowRecord: KimiWindowData =
+            typeof itemRecord.window === "object" && itemRecord.window !== null && !Array.isArray(itemRecord.window)
+              ? itemRecord.window
+              : {};
+          const defaultLabel = `Limit #${idx + 1}`;
+          const row = buildUsageRow(detailRecord, defaultLabel, nowMs);
+          if (row) {
+            row.window = buildWindow(windowRecord, nowMs);
+            const limit = toUsageLimit(row, limits.length);
+            if (limit) {
+              if (limits.some(l => l.id === limit.id)) {
+                limit.id = `${limit.id}-${idx + 1}`;
+              }
+              limits.push(limit);
+            }
+          }
+        });
+      }
     }
 
-    if (limits.length === 0) {
-      throw new Error("Kimi Code API geçerli bir kota veya limit verisi döndürmedi.");
+    if (limits.length === 0 && !isExplicitEmptyUsagePayload(rawPayload)) {
+      throw new Error(`Kimi Code API geçerli bir kota veya limit verisi döndürmedi. Şema ipucu: ${describeKimiUsageSchema(rawPayload)}`);
     }
 
     return {
