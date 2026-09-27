@@ -1,8 +1,7 @@
+import { validateGoogleOAuthConfig } from "../oauth/google";
 import type { FetchContext, ProviderAdapter } from "./adapter";
 import type { StoredCredential, UsageLimit, UsageReport } from "../../types";
 
-const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-const CLIENT_SECRET = "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";
 const ANTIGRAVITY_USER_AGENT = "antigravity/hub/2.8.0 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)";
 const DEFAULT_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -36,13 +35,14 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
     return p === "antigravity" || p === "google-antigravity" || p === "google" || p === "gemini";
   }
 
-  async refreshAccessToken(refreshToken: string): Promise<string> {
-    const res = await fetch("https://oauth2.googleapis.com/token", {
+  async refreshAccessToken(refreshToken: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+    const config = validateGoogleOAuthConfig();
+    const res = await fetchImpl("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
         refresh_token: refreshToken,
         grant_type: "refresh_token",
       }).toString(),
@@ -68,7 +68,7 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
     const refreshToken = credential.metadata?.["refreshToken"] as string | undefined;
     if (refreshToken) {
       try {
-        accessToken = await this.refreshAccessToken(refreshToken);
+        accessToken = await this.refreshAccessToken(refreshToken, fetchImpl);
         credential.secret = accessToken;
         if (ctx?.onTokenRefresh) {
           ctx.onTokenRefresh(accessToken);
