@@ -9,6 +9,7 @@ export interface CursorAuthInitiateResult {
   uuid: string;
   verifier: string;
   interval: number;
+  expiresIn?: number;
 }
 
 export type CursorPollResult =
@@ -32,6 +33,7 @@ export async function initiateCursorAuth(): Promise<CursorAuthInitiateResult> {
     uuid,
     verifier,
     interval: 2,
+    expiresIn: 600,
   };
 }
 

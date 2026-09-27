@@ -8,7 +8,7 @@ import { initiateOpenRouterAuth } from "../src/core/oauth/openrouter";
 import { initiateZaiAuth } from "../src/core/oauth/zai";
 import { initiateDevinAuth } from "../src/core/oauth/devin";
 import { initiateCursorAuth } from "../src/core/oauth/cursor";
-import { decodeJwtPayload } from "../src/core/oauth/codex-device";
+import { decodeJwtPayload, initiateCodexDeviceAuth } from "../src/core/oauth/codex-device";
 import { StorageVault } from "../src/core/storage/vault";
 import { createDefaultRegistry } from "../src/core/providers/registry";
 import { PollerEngine } from "../src/core/poller/poller";
@@ -173,6 +173,7 @@ describe("OAuth PKCE & URLs", () => {
     const cursor = await initiateCursorAuth();
     expect(cursor.uuid).toBeDefined();
     expect(cursor.verifier).toBeDefined();
+    expect(cursor.expiresIn).toBe(600);
   });
 
   it("decodes JWT payload correctly", () => {
@@ -184,6 +185,74 @@ describe("OAuth PKCE & URLs", () => {
     const decoded = decodeJwtPayload(fakeJwt);
     expect(decoded).not.toBeNull();
     expect(decoded?.["email"]).toBe("test@example.com");
+  });
+});
+
+describe("Codex Device Auth Initiation", () => {
+  it("defaults to 900s (15 min) expiresIn when upstream omits expires_in", async () => {
+    const origFetch = globalThis.fetch;
+    let fetchCalled = false;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      fetchCalled = true;
+      const url = input instanceof Request ? input.url : String(input);
+      expect(url).toBe("https://auth.openai.com/api/accounts/deviceauth/usercode");
+      expect(init?.method).toBe("POST");
+      expect((init?.headers as Record<string, string>)?.["Content-Type"]).toBe("application/json");
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body["client_id"]).toBe("app_EMoamEEZ73f0CkXaXp7hrann");
+
+      return new Response(
+        JSON.stringify({
+          device_auth_id: "test-device-auth-id",
+          user_code: "TEST-USER-CODE",
+          interval: 5,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as unknown as typeof fetch;
+
+    try {
+      const res = await initiateCodexDeviceAuth();
+      expect(fetchCalled).toBe(true);
+      expect(res.deviceAuthId).toBe("test-device-auth-id");
+      expect(res.userCode).toBe("TEST-USER-CODE");
+      expect(res.verificationUrl).toBe("https://auth.openai.com/codex/device");
+      expect(res.interval).toBe(5);
+      expect(res.expiresIn).toBe(900);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("respects upstream expires_in when a shorter lifetime is provided", async () => {
+    const origFetch = globalThis.fetch;
+    let fetchCalled = false;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      fetchCalled = true;
+      const url = input instanceof Request ? input.url : String(input);
+      expect(url).toBe("https://auth.openai.com/api/accounts/deviceauth/usercode");
+      return new Response(
+        JSON.stringify({
+          device_auth_id: "test-device-auth-id-2",
+          user_code: "TEST-USER-CODE-2",
+          interval: 10,
+          expires_in: 300,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as unknown as typeof fetch;
+
+    try {
+      const res = await initiateCodexDeviceAuth();
+      expect(fetchCalled).toBe(true);
+      expect(res.deviceAuthId).toBe("test-device-auth-id-2");
+      expect(res.userCode).toBe("TEST-USER-CODE-2");
+      expect(res.verificationUrl).toBe("https://auth.openai.com/codex/device");
+      expect(res.interval).toBe(10);
+      expect(res.expiresIn).toBe(300);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });
 describe("Server OAuth Routes", () => {
@@ -250,17 +319,49 @@ describe("Server OAuth Routes", () => {
       method: "POST",
       headers: { Cookie: cookie },
     });
-    const devinJson = (await devinRes.json()) as { success: boolean; data: { authUrl: string } };
+    const devinJson = (await devinRes.json()) as { success: boolean; data: { authUrl: string; expiresIn?: number } };
     expect(devinJson.success).toBe(true);
     expect(devinJson.data.authUrl).toContain("app.devin.ai");
+    expect(devinJson.data.expiresIn).toBe(600);
 
     const cursorRes = await app.request("/api/oauth/cursor/initiate", {
       method: "POST",
       headers: { Cookie: cookie },
     });
-    const cursorJson = (await cursorRes.json()) as { success: boolean; data: { authUrl: string } };
+    const cursorJson = (await cursorRes.json()) as { success: boolean; data: { authUrl: string; expiresIn?: number } };
     expect(cursorJson.success).toBe(true);
     expect(cursorJson.data.authUrl).toContain("cursor.com");
+    expect(cursorJson.data.expiresIn).toBe(600);
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      return new Response(
+        JSON.stringify({
+          device_auth_id: "test-codex-auth",
+          user_code: "CODEX-CODE",
+          interval: 5,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }) as unknown as typeof fetch;
+
+    try {
+      const codexRes = await app.request("/api/oauth/codex/initiate", {
+        method: "POST",
+        headers: { Cookie: cookie },
+      });
+      const codexJson = (await codexRes.json()) as {
+        success: boolean;
+        data: { deviceAuthId: string; userCode: string; verificationUrl: string; interval: number; expiresIn: number };
+      };
+      expect(codexRes.status).toBe(200);
+      expect(codexJson.success).toBe(true);
+      expect(codexJson.data.expiresIn).toBe(900);
+      expect(codexJson.data.verificationUrl).toBe("https://auth.openai.com/codex/device");
+      expect(codexJson.data.userCode).toBe("CODEX-CODE");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
 
     vault.close();
   });

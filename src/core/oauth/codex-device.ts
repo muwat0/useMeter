@@ -10,6 +10,7 @@ export interface CodexDeviceInitiateResult {
   userCode: string;
   verificationUrl: string;
   interval: number;
+  expiresIn: number;
 }
 
 export interface CodexTokenResult {
@@ -46,6 +47,7 @@ export async function initiateCodexDeviceAuth(): Promise<CodexDeviceInitiateResu
     device_auth_id?: string;
     user_code?: string;
     interval?: number | string;
+    expires_in?: number | string;
   };
 
   if (!data.device_auth_id || !data.user_code) {
@@ -54,11 +56,18 @@ export async function initiateCodexDeviceAuth(): Promise<CodexDeviceInitiateResu
 
   const interval = typeof data.interval === "number" ? data.interval : parseInt(String(data.interval ?? "5"), 10) || 5;
 
+  const parsedExpiresIn =
+    typeof data.expires_in === "number"
+      ? data.expires_in
+      : parseInt(String(data.expires_in ?? ""), 10);
+  const expiresIn = Number.isFinite(parsedExpiresIn) && parsedExpiresIn > 0 ? parsedExpiresIn : 900;
+
   return {
     deviceAuthId: data.device_auth_id,
     userCode: data.user_code,
     verificationUrl: VERIFICATION_URL,
     interval,
+    expiresIn,
   };
 }
 
