@@ -1,6 +1,9 @@
-import { validateGoogleOAuthConfig } from "../oauth/google";
+import { getGoogleOAuthClientCredentials } from "../oauth/google";
+import type { GoogleOAuthConfig } from "../oauth/google";
 import type { FetchContext, ProviderAdapter } from "./adapter";
 import type { StoredCredential, UsageLimit, UsageReport } from "../../types";
+
+type GoogleOAuthClientCredentials = Pick<GoogleOAuthConfig, "clientId" | "clientSecret">;
 
 const ANTIGRAVITY_USER_AGENT = "antigravity/hub/2.8.0 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)";
 const DEFAULT_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com";
@@ -36,13 +39,20 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
   }
 
   async refreshAccessToken(refreshToken: string, fetchImpl: typeof fetch = fetch): Promise<string> {
-    const config = validateGoogleOAuthConfig();
+    return this.#refreshAccessToken(refreshToken, getGoogleOAuthClientCredentials(), fetchImpl);
+  }
+
+  async #refreshAccessToken(
+    refreshToken: string,
+    client: GoogleOAuthClientCredentials,
+    fetchImpl: typeof fetch,
+  ): Promise<string> {
     const res = await fetchImpl("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
+        client_id: client.clientId,
+        client_secret: client.clientSecret,
         refresh_token: refreshToken,
         grant_type: "refresh_token",
       }).toString(),
@@ -63,12 +73,30 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
     const fetchImpl = ctx?.fetch ?? fetch;
     const now = Date.now();
     let accessToken = credential.secret;
-
-    // 1. Auto-refresh access token if refreshToken is present
+    // 1. Auto-refresh access token with the OAuth client that issued this refresh token.
     const refreshToken = credential.metadata?.["refreshToken"] as string | undefined;
     if (refreshToken) {
       try {
-        accessToken = await this.refreshAccessToken(refreshToken, fetchImpl);
+        const clientId = credential.metadata?.["googleOAuthClientId"];
+        const clientSecret = credential.metadata?.["googleOAuthClientSecret"];
+        const hasClientId = clientId !== undefined;
+        const hasClientSecret = clientSecret !== undefined;
+        if (hasClientId !== hasClientSecret) {
+          throw new Error("Stored Google OAuth client credentials are incomplete.");
+        }
+        let client: GoogleOAuthClientCredentials;
+        if (hasClientId && hasClientSecret) {
+          if (
+            typeof clientId !== "string" || !clientId.trim() ||
+            typeof clientSecret !== "string" || !clientSecret.trim()
+          ) {
+            throw new Error("Stored Google OAuth client credentials are invalid.");
+          }
+          client = getGoogleOAuthClientCredentials({ clientId, clientSecret });
+        } else {
+          client = getGoogleOAuthClientCredentials();
+        }
+        accessToken = await this.#refreshAccessToken(refreshToken, client, fetchImpl);
         credential.secret = accessToken;
         if (ctx?.onTokenRefresh) {
           ctx.onTokenRefresh(accessToken);

@@ -33,51 +33,88 @@ export function isLoopbackRedirectUri(uriString: string): boolean {
   }
 }
 
-export function getGoogleOAuthConfig(overrides?: Partial<GoogleOAuthConfig>): GoogleOAuthConfig {
+function getConfiguredGoogleOAuthClient(overrides?: Partial<GoogleOAuthConfig>) {
   const envClientId = process.env["GOOGLE_OAUTH_CLIENT_ID"]?.trim();
   const envClientSecret = process.env["GOOGLE_OAUTH_CLIENT_SECRET"]?.trim();
-  const envRedirectUri = process.env["GOOGLE_OAUTH_REDIRECT_URI"]?.trim();
-  const overrideClientId = overrides?.clientId?.trim();
-  const overrideClientSecret = overrides?.clientSecret?.trim();
-  const overrideRedirectUri = overrides?.redirectUri?.trim();
+  const clientId = overrides?.clientId?.trim() || envClientId;
+  const clientSecret = overrides?.clientSecret?.trim() || envClientSecret;
 
-  const redirectUri = overrideRedirectUri || envRedirectUri || DEFAULT_LOCAL_REDIRECT_URI;
-  const clientId = overrideClientId || envClientId || LEGACY_CLIENT_ID;
-  const clientSecret = overrideClientSecret || envClientSecret || LEGACY_CLIENT_SECRET;
-  const isCustomClient = Boolean(
-    clientId &&
-    clientSecret &&
-    clientId !== LEGACY_CLIENT_ID &&
-    clientSecret !== LEGACY_CLIENT_SECRET,
-  );
-
-  return {
-    clientId,
-    clientSecret,
-    redirectUri,
-    isCustomClient,
-  };
-}
-
-export function validateGoogleOAuthConfig(overrides?: Partial<GoogleOAuthConfig>): GoogleOAuthConfig {
-  const envClientId = overrides?.clientId?.trim() || process.env["GOOGLE_OAUTH_CLIENT_ID"]?.trim();
-  const envClientSecret = overrides?.clientSecret?.trim() || process.env["GOOGLE_OAUTH_CLIENT_SECRET"]?.trim();
-
-  if (Boolean(envClientId) !== Boolean(envClientSecret)) {
+  if (Boolean(clientId) !== Boolean(clientSecret)) {
     throw new Error(
       "GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET must both be provided together.",
     );
   }
 
+  const resolvedClientId = clientId || LEGACY_CLIENT_ID;
+  const resolvedClientSecret = clientSecret || LEGACY_CLIENT_SECRET;
+  return {
+    clientId: resolvedClientId,
+    clientSecret: resolvedClientSecret,
+    isCustomClient: Boolean(
+      clientId &&
+      clientSecret &&
+      clientId !== LEGACY_CLIENT_ID &&
+      clientSecret !== LEGACY_CLIENT_SECRET,
+    ),
+    hasConfiguredCredentials: Boolean(clientId || clientSecret),
+  };
+}
+
+export function getGoogleOAuthClientCredentials(
+  overrides?: Pick<GoogleOAuthConfig, "clientId" | "clientSecret">,
+): Pick<GoogleOAuthConfig, "clientId" | "clientSecret"> {
+  const { clientId, clientSecret } = getConfiguredGoogleOAuthClient(overrides);
+  return { clientId, clientSecret };
+}
+
+function isExactPublicCallbackUri(uri: string): boolean {
+  try {
+    const parsed = new URL(uri);
+    const authority = uri.slice(uri.indexOf("://") + 3).split(/[/?#]/, 1)[0] || "";
+    return (
+      parsed.protocol === "https:" &&
+      parsed.pathname === PUBLIC_CALLBACK_PATH &&
+      parsed.search === "" &&
+      parsed.hash === "" &&
+      !authority.includes("@") &&
+      !uri.includes("?") &&
+      !uri.includes("#")
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function getGoogleOAuthConfig(overrides?: Partial<GoogleOAuthConfig>): GoogleOAuthConfig {
+  const client = getConfiguredGoogleOAuthClient(overrides);
+  const overrideRedirectUri = overrides?.redirectUri?.trim();
+  const envRedirectUri = process.env["GOOGLE_OAUTH_REDIRECT_URI"]?.trim();
+  const productionEmbeddedFallback =
+    process.env["NODE_ENV"] === "production" &&
+    !client.hasConfiguredCredentials &&
+    !overrideRedirectUri &&
+    Boolean(envRedirectUri && isExactPublicCallbackUri(envRedirectUri));
+
+  return {
+    clientId: client.clientId,
+    clientSecret: client.clientSecret,
+    redirectUri: productionEmbeddedFallback
+      ? DEFAULT_LOCAL_REDIRECT_URI
+      : overrideRedirectUri || envRedirectUri || DEFAULT_LOCAL_REDIRECT_URI,
+    isCustomClient: client.isCustomClient,
+  };
+}
+
+export function validateGoogleOAuthConfig(overrides?: Partial<GoogleOAuthConfig>): GoogleOAuthConfig {
   const explicitRedirectUri = overrides?.redirectUri?.trim() || process.env["GOOGLE_OAUTH_REDIRECT_URI"]?.trim();
   const isProduction = process.env["NODE_ENV"] === "production";
-  if (isProduction && !explicitRedirectUri) {
+  const config = getGoogleOAuthConfig(overrides);
+
+  if (isProduction && config.isCustomClient && !explicitRedirectUri) {
     throw new Error(
       "Invalid Google OAuth redirect URI: GOOGLE_OAUTH_REDIRECT_URI must be explicitly configured as the public HTTPS callback in production.",
     );
   }
-
-  const config = getGoogleOAuthConfig(overrides);
 
   let redirectUrl: URL;
   try {
@@ -87,45 +124,50 @@ export function validateGoogleOAuthConfig(overrides?: Partial<GoogleOAuthConfig>
   }
 
   const isLoopback = isLoopbackRedirectUri(config.redirectUri);
-
-  if (isProduction && isLoopback) {
-    throw new Error(
-      "Invalid Google OAuth redirect URI: production requires an explicit public HTTPS callback.",
-    );
-  }
-
-  if (!isLoopback) {
-    const invalidPublicRedirect =
-      "Invalid Google OAuth redirect URI: public redirects must use HTTPS at /api/oauth/google/callback without query strings, fragments, or user information.";
-    if (redirectUrl.protocol !== "https:") {
-      throw new Error(invalidPublicRedirect);
-    }
-
-    const authorityAndPath = config.redirectUri.slice(config.redirectUri.indexOf("://") + 3);
-    const authorityEnd = authorityAndPath.search(/[/?#]/);
-    const authority = authorityEnd === -1 ? authorityAndPath : authorityAndPath.slice(0, authorityEnd);
-    const pathAndSuffix = authorityEnd === -1 ? "/" : authorityAndPath.slice(authorityEnd);
-    const rawPathname = pathAndSuffix.split(/[?#]/, 1)[0] || "/";
-    const hasUserInfo = authority.includes("@") || Boolean(redirectUrl.username || redirectUrl.password);
-
-    if (
-      redirectUrl.pathname !== PUBLIC_CALLBACK_PATH ||
-      rawPathname !== PUBLIC_CALLBACK_PATH ||
-      config.redirectUri.includes("?") ||
-      config.redirectUri.includes("#") ||
-      redirectUrl.search ||
-      redirectUrl.hash ||
-      hasUserInfo
-    ) {
-      throw new Error(invalidPublicRedirect);
-    }
-
-    if (!config.isCustomClient) {
+  if (isLoopback) {
+    if (isProduction && config.redirectUri !== DEFAULT_LOCAL_REDIRECT_URI) {
       throw new Error(
-        "Public Google OAuth redirect URI requires custom GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET. " +
-        "The default embedded client is third-party owned and cannot whitelist operator public domains, causing redirect_uri_mismatch.",
+        `Invalid Google OAuth redirect URI: hosted loopback redirects must use the exact callback ${DEFAULT_LOCAL_REDIRECT_URI}.`,
       );
     }
+    if (isProduction && config.isCustomClient) {
+      throw new Error(
+        "Invalid Google OAuth redirect URI: production requires an explicit public HTTPS callback.",
+      );
+    }
+    return config;
+  }
+
+  const invalidPublicRedirect =
+    "Invalid Google OAuth redirect URI: public redirects must use HTTPS at /api/oauth/google/callback without query strings, fragments, or user information.";
+  if (redirectUrl.protocol !== "https:") {
+    throw new Error(invalidPublicRedirect);
+  }
+
+  const authorityAndPath = config.redirectUri.slice(config.redirectUri.indexOf("://") + 3);
+  const authorityEnd = authorityAndPath.search(/[/?#]/);
+  const authority = authorityEnd === -1 ? authorityAndPath : authorityAndPath.slice(0, authorityEnd);
+  const pathAndSuffix = authorityEnd === -1 ? "/" : authorityAndPath.slice(authorityEnd);
+  const rawPathname = pathAndSuffix.split(/[?#]/, 1)[0] || "/";
+  const hasUserInfo = authority.includes("@") || Boolean(redirectUrl.username || redirectUrl.password);
+
+  if (
+    redirectUrl.pathname !== PUBLIC_CALLBACK_PATH ||
+    rawPathname !== PUBLIC_CALLBACK_PATH ||
+    config.redirectUri.includes("?") ||
+    config.redirectUri.includes("#") ||
+    redirectUrl.search ||
+    redirectUrl.hash ||
+    hasUserInfo
+  ) {
+    throw new Error(invalidPublicRedirect);
+  }
+
+  if (!config.isCustomClient) {
+    throw new Error(
+      "Public Google OAuth redirect URI requires custom GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET. " +
+      "The default embedded client cannot whitelist operator public domains; use the loopback manual-paste flow or configure an operator-owned Web client.",
+    );
   }
 
   return config;

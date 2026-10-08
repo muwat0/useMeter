@@ -164,11 +164,15 @@ The deployment is live on `production-server`. Keep the production `.env` file a
 
 ## Google OAuth in Docker
 
-For a remote Docker deployment, Google must redirect to the public HTTPS callback rather than the user's local machine. Production requires `GOOGLE_OAUTH_REDIRECT_URI` to be explicitly set; an empty Compose value does not enable the local loopback default.
+Hosted useMeter can authenticate with the embedded desktop-client credentials when no `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` pair is configured. This mode always requests Google's registered loopback URI:
 
-The embedded default Google client credentials in the codebase belong to an external/third-party desktop client whose authorized redirect URIs cannot be modified by third parties. Attempting to use a public redirect URI with the embedded client will cause Google to reject the authorization request with `redirect_uri_mismatch`; passing the embedded client credentials via environment variables as a "custom" client is explicitly rejected.
+```text
+http://127.0.0.1:51121/oauth-callback
+```
 
-To enable Google OAuth on a public deployment, the operator must create and manage their own OAuth 2.0 Web Client:
+Google redirects the browser to that address after authorization. In a hosted deployment, the browser's `127.0.0.1` is the user's device, not the useMeter server; a localhost connection failure is expected. Copy the **entire URL** from that tab's address bar and paste it into the Google callback field in useMeter. The dashboard submits it to the authenticated `POST /api/oauth/google/manual` endpoint. The server validates the exact loopback origin/path, state, session owner, and 10-minute expiry, then exchanges the code without fetching the pasted URL. A previously configured public `GOOGLE_OAUTH_REDIRECT_URI` with no client credentials does not block this embedded manual-paste mode in production.
+
+For an automatic public HTTPS callback instead, create and manage an OAuth 2.0 Web Client:
 
 1. Open **Google Cloud Console** and navigate to **APIs & Services > Credentials**.
 2. Configure the **OAuth consent screen** (external or internal as appropriate).
@@ -183,9 +187,9 @@ GOOGLE_OAUTH_CLIENT_SECRET=your-client-secret
 GOOGLE_OAUTH_REDIRECT_URI=https://usemeter.example.com/api/oauth/google/callback
 ```
 
-The public redirect must be HTTPS at exactly `/api/oauth/google/callback` and cannot include a query string, fragment, or user information. The server validates this configuration on OAuth initiation, failing early rather than sending users to Google's mismatch error page. The same configured client ID and secret are used during Antigravity refresh-token renewal.
+The public redirect must be HTTPS at exactly `/api/oauth/google/callback` and cannot include a query string, fragment, or user information. Client ID and secret must be supplied together; malformed or mismatched custom configuration fails rather than silently switching clients. The session freezes the selected client and redirect URI for code exchange, and refresh uses the same originating client. Google refresh tokens and OAuth client metadata follow the vault's encrypted-metadata path; Compose enables `CREDENTIAL_METADATA_ENCRYPTION=enabled` by default. The API metadata projection does not expose those client secrets.
 
-> **Provider Compatibility Notice:** Upstream Google quota and usage tracking (e.g. Antigravity / Gemini) behavior with custom web application credentials depends on project API enablement and scopes; provider-specific quota tracking compatibility remains unverified / experimental and is not guaranteed.
+> **Provider Compatibility Notice:** Upstream Google quota and usage tracking (e.g. Antigravity / Gemini) behavior depends on provider account/API compatibility and the configured scopes; successful authorization does not guarantee quota data, and tracking remains unverified / experimental.
 
 ## Kimi Code quota validation
 

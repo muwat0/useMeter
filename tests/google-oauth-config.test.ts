@@ -66,17 +66,27 @@ describe("Google OAuth configuration and validation", () => {
     }
   });
 
-  it("fails early when public redirect URI is configured without custom client credentials", () => {
+  it("preserves a custom loopback redirect for local development", () => {
     try {
+      process.env["NODE_ENV"] = "test";
+      delete process.env["GOOGLE_OAUTH_CLIENT_ID"];
+      delete process.env["GOOGLE_OAUTH_CLIENT_SECRET"];
+      process.env["GOOGLE_OAUTH_REDIRECT_URI"] = "http://localhost:51121/oauth-callback";
+
+      expect(validateGoogleOAuthConfig().redirectUri).toBe("http://localhost:51121/oauth-callback");
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("rejects a public redirect without custom credentials outside production", () => {
+    try {
+      process.env["NODE_ENV"] = "test";
       delete process.env["GOOGLE_OAUTH_CLIENT_ID"];
       delete process.env["GOOGLE_OAUTH_CLIENT_SECRET"];
       process.env["GOOGLE_OAUTH_REDIRECT_URI"] = "https://usemeter.example.com/api/oauth/google/callback";
 
       expect(() => validateGoogleOAuthConfig()).toThrow(
-        /Public Google OAuth redirect URI requires custom GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET/,
-      );
-
-      expect(() => initiateGoogleAuth()).toThrow(
         /Public Google OAuth redirect URI requires custom GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET/,
       );
     } finally {
@@ -157,34 +167,50 @@ describe("Google OAuth configuration and validation", () => {
     }
   });
 
-  it("requires explicit public OAuth config in production when Compose variables are blank", async () => {
+  it("uses embedded loopback/manual OAuth in production when only the legacy public redirect is configured", async () => {
     const originalFetch = globalThis.fetch;
-    let fetchCalled = false;
-    const mockFetch = (async () => {
-      fetchCalled = true;
-      throw new Error("Unexpected Google OAuth fetch");
+    let refreshBody = "";
+    const mockFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = url instanceof Request ? url.url : url.toString();
+      if (urlStr !== "https://oauth2.googleapis.com/token") {
+        throw new Error(`Unexpected synthetic Google OAuth URL: ${urlStr}`);
+      }
+      refreshBody = init?.body?.toString() ?? "";
+      return new Response(JSON.stringify({ access_token: "mock-renewed-token" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
     }) as unknown as typeof fetch;
 
     try {
       process.env["NODE_ENV"] = "production";
       process.env["GOOGLE_OAUTH_CLIENT_ID"] = "";
       process.env["GOOGLE_OAUTH_CLIENT_SECRET"] = "";
-      process.env["GOOGLE_OAUTH_REDIRECT_URI"] = "";
-
-      expect(() => validateGoogleOAuthConfig()).toThrow(
-        /Invalid Google OAuth redirect URI: GOOGLE_OAUTH_REDIRECT_URI must be explicitly configured/,
-      );
-      expect(() => initiateGoogleAuth()).toThrow(
-        /Invalid Google OAuth redirect URI: GOOGLE_OAUTH_REDIRECT_URI must be explicitly configured/,
-      );
-      await expect(new GoogleAntigravityAdapter().refreshAccessToken("mock-refresh-token", mockFetch)).rejects.toThrow(
-        /Invalid Google OAuth redirect URI: GOOGLE_OAUTH_REDIRECT_URI must be explicitly configured/,
-      );
-      expect(fetchCalled).toBe(false);
-
       process.env["GOOGLE_OAUTH_REDIRECT_URI"] = "https://usemeter.example.com/api/oauth/google/callback";
+
+      const config = validateGoogleOAuthConfig();
+      expect(config.redirectUri).toBe("http://127.0.0.1:51121/oauth-callback");
+      expect(config.isCustomClient).toBe(false);
+      expect(getGoogleRedirectUri()).toBe(config.redirectUri);
+
+      const init = initiateGoogleAuth();
+      expect(new URL(init.authUrl).searchParams.get("redirect_uri")).toBe(config.redirectUri);
+      await expect(
+        new GoogleAntigravityAdapter().refreshAccessToken("mock-refresh-token", mockFetch),
+      ).resolves.toBe("mock-renewed-token");
+
+      const refreshParams = new URLSearchParams(refreshBody);
+      expect(refreshParams.get("client_id")).toBe(config.clientId);
+      expect(refreshParams.get("client_secret")).toBe(config.clientSecret);
+      expect(refreshParams.get("refresh_token")).toBe("mock-refresh-token");
+      expect(refreshParams.get("grant_type")).toBe("refresh_token");
+      expect(refreshParams.has("redirect_uri")).toBe(false);
+
+      process.env["GOOGLE_OAUTH_CLIENT_ID"] = "custom-client-id.apps.googleusercontent.com";
+      process.env["GOOGLE_OAUTH_CLIENT_SECRET"] = "custom-client-secret";
+      delete process.env["GOOGLE_OAUTH_REDIRECT_URI"];
       expect(() => validateGoogleOAuthConfig()).toThrow(
-        /Public Google OAuth redirect URI requires custom GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET/,
+        /GOOGLE_OAUTH_REDIRECT_URI must be explicitly configured/,
       );
     } finally {
       globalThis.fetch = originalFetch;

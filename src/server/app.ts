@@ -25,7 +25,7 @@ import {
   exchangeCodexToken,
   initiateGoogleAuth,
   exchangeGoogleCode,
-  getGoogleRedirectUri,
+  validateGoogleOAuthConfig,
   initiateClaudeAuth,
   exchangeClaudeCode,
   listenForClaudeCallback,
@@ -53,6 +53,79 @@ import {
 } from "../core/oauth";
 
 
+const GOOGLE_LOOPBACK_CALLBACK_URI = "http://127.0.0.1:51121/oauth-callback";
+const GOOGLE_OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
+
+interface ParsedGoogleCallback {
+  state: string;
+  code?: string;
+  providerError?: string;
+}
+
+function parseGoogleCallbackParameters(params: URLSearchParams): ParsedGoogleCallback | null {
+  const seen = new Set<string>();
+  for (const [name] of params) {
+    if (seen.has(name)) return null;
+    seen.add(name);
+  }
+
+  const state = params.get("state");
+  const code = params.get("code");
+  const providerError = params.get("error");
+  if (!state?.trim() || (code !== null && !code.trim()) || (providerError !== null && !providerError.trim())) {
+    return null;
+  }
+  if (code !== null && providerError !== null) return null;
+  if (providerError !== null) return { state, providerError };
+  if (code === null) return null;
+  return { state, code };
+}
+
+function parseGoogleManualCallbackUrl(value: unknown): ParsedGoogleCallback | null {
+  if (typeof value !== "string") return null;
+  const input = value.trim();
+  if (!input.startsWith(`${GOOGLE_LOOPBACK_CALLBACK_URI}?`) || input.includes("#")) return null;
+  try {
+    const callback = new URL(input);
+    if (
+      callback.origin !== "http://127.0.0.1:51121" ||
+      callback.pathname !== "/oauth-callback" ||
+      callback.username ||
+      callback.password ||
+      callback.hash
+    ) {
+      return null;
+    }
+    return parseGoogleCallbackParameters(callback.searchParams);
+  } catch {
+    return null;
+  }
+}
+
+function clearGoogleOAuthSecrets(session: PendingOAuthSession): void {
+  session.googleVerifier = undefined;
+  session.googleClientId = undefined;
+  session.googleClientSecret = undefined;
+  session.googleRedirectUri = undefined;
+}
+
+function expireGoogleOAuthSession(session: PendingOAuthSession, now: number): boolean {
+  if (
+    session.provider !== "antigravity" ||
+    session.status !== "pending" ||
+    session.consumed ||
+    session.createdAt === undefined ||
+    now - session.createdAt < GOOGLE_OAUTH_SESSION_TTL_MS
+  ) {
+    return false;
+  }
+  session.status = "error";
+  session.error = "Authorization session expired";
+  session.consumed = true;
+  clearGoogleOAuthSecrets(session);
+  return true;
+}
+
 interface PendingOAuthSession {
   provider: string;
   ownerId: string;
@@ -60,6 +133,9 @@ interface PendingOAuthSession {
   error?: string;
   accountLabel?: string;
   googleVerifier?: string;
+  googleClientId?: string;
+  googleClientSecret?: string;
+  googleRedirectUri?: string;
   devinVerifier?: string;
   createdAt?: number;
   consumed?: boolean;
@@ -123,6 +199,8 @@ export interface ServerOptions {
   rateLimiter?: RateLimiter;
   assetRevision?: string;
   distDir?: string;
+  googleOAuthExchange?: typeof exchangeGoogleCode;
+  googleOAuthNow?: () => number;
 }
 
 const DEFAULT_DIST_CLIENT_DIR = join(import.meta.dir, "../../dist/client");
@@ -183,6 +261,37 @@ export function createServer(
       },
       429
     );
+  }
+  const googleOAuthExchange = options?.googleOAuthExchange ?? exchangeGoogleCode;
+  const googleOAuthNow = options?.googleOAuthNow ?? Date.now;
+
+  async function validateAndSaveGoogleCredential(
+    ownerId: string,
+    code: string,
+    verifier: string,
+    config: { clientId: string; clientSecret: string; redirectUri: string },
+  ) {
+    const tokens = await googleOAuthExchange(code, verifier, config);
+    const accountLabel = tokens.email?.trim() || "Antigravity";
+    const refreshToken = tokens.refreshToken?.trim() ? tokens.refreshToken : undefined;
+    const saved = await poller.validateAndSaveCredential(ownerId, {
+      ownerId,
+      provider: "antigravity",
+      accountLabel,
+      credentialType: "oauth",
+      secret: tokens.accessToken,
+      metadata: {
+        refreshToken,
+        email: tokens.email,
+        ...(refreshToken
+          ? {
+              googleOAuthClientId: config.clientId,
+              googleOAuthClientSecret: config.clientSecret,
+            }
+          : {}),
+      },
+    });
+    return { saved, accountLabel };
   }
 
   const allowedOriginsEnv = process.env["CORS_ALLOWED_ORIGINS"] || process.env["USEMETER_ALLOWED_ORIGINS"];
@@ -855,10 +964,30 @@ export function createServer(
   app.post("/api/oauth/google/initiate", c => {
     try {
       const user = c.get("user");
-      const { authUrl, verifier, state } = initiateGoogleAuth();
+      const config = validateGoogleOAuthConfig();
+      const { authUrl, verifier, state } = initiateGoogleAuth(config);
       const sessionId = state;
-      pendingOAuth.set(sessionId, { provider: "antigravity", ownerId: user.id, status: "pending", googleVerifier: verifier });
-      return c.json({ success: true, data: { authUrl, sessionId, redirectUri: getGoogleRedirectUri() } });
+      pendingOAuth.set(sessionId, {
+        provider: "antigravity",
+        ownerId: user.id,
+        status: "pending",
+        googleVerifier: verifier,
+        googleClientId: config.clientId,
+        googleClientSecret: config.clientSecret,
+        googleRedirectUri: config.redirectUri,
+        createdAt: googleOAuthNow(),
+        consumed: false,
+      });
+      return c.json({
+        success: true,
+        data: {
+          authUrl,
+          sessionId,
+          redirectUri: config.redirectUri,
+          manualCallback: config.redirectUri === GOOGLE_LOOPBACK_CALLBACK_URI,
+          expiresIn: GOOGLE_OAUTH_SESSION_TTL_MS / 1000,
+        },
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "";
       if (
@@ -872,45 +1001,153 @@ export function createServer(
     }
   });
 
-  // OAuth: Google public callback (required when the app runs behind Docker/proxy)
+  // OAuth: Google loopback callback pasted from the remote browser's address bar.
+  app.post("/api/oauth/google/manual", async c => {
+    const user = c.get("user");
+    const rl = rateLimiter.check(
+      `oauthDevicePoll:${user.id}:google-manual`,
+      RATE_LIMIT_POLICIES.oauthDevicePoll,
+    );
+    if (!rl.allowed) {
+      return rateLimitResponse(c, rl.retryAfterSec, "Too many authorization attempts. Please slow down.");
+    }
+
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return c.json({ success: false, error: "Invalid callback request" }, 400);
+    }
+    const request = body as Record<string, unknown>;
+    const sessionId = typeof request["sessionId"] === "string" ? request["sessionId"] : "";
+    if (!sessionId) return c.json({ success: false, error: "Invalid callback request" }, 400);
+
+    const session = pendingOAuth.get(sessionId);
+    if (!session || session.provider !== "antigravity" || session.ownerId !== user.id) {
+      return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
+    }
+    if (expireGoogleOAuthSession(session, googleOAuthNow()) || session.createdAt === undefined) {
+      return c.json({ success: false, error: "Authorization session expired" }, 400);
+    }
+    if (session.status !== "pending" || session.consumed) {
+      return c.json({ success: false, error: "Authorization response already used" }, 400);
+    }
+
+    const callback = parseGoogleManualCallbackUrl(request["callbackInput"]);
+    if (!callback || callback.state !== sessionId) {
+      return c.json({ success: false, error: "Invalid callback URL" }, 400);
+    }
+    if (
+      !session.googleVerifier ||
+      !session.googleClientId ||
+      !session.googleClientSecret ||
+      session.googleRedirectUri !== GOOGLE_LOOPBACK_CALLBACK_URI
+    ) {
+      session.status = "error";
+      session.error = "Authorization session invalid";
+      session.consumed = true;
+      clearGoogleOAuthSecrets(session);
+      return c.json({ success: false, error: "Invalid or expired authorization session" }, 400);
+    }
+
+    const verifier = session.googleVerifier;
+    const config = {
+      clientId: session.googleClientId,
+      clientSecret: session.googleClientSecret,
+      redirectUri: session.googleRedirectUri,
+    };
+    session.consumed = true;
+    session.googleVerifier = undefined;
+
+    if (callback.providerError) {
+      session.status = "error";
+      session.error = "Authorization was denied";
+      clearGoogleOAuthSecrets(session);
+      return c.json({ success: false, error: "Authorization was denied" }, 400);
+    }
+
+    try {
+      const { saved, accountLabel } = await validateAndSaveGoogleCredential(
+        user.id,
+        callback.code!,
+        verifier,
+        config,
+      );
+      session.status = "complete";
+      session.accountLabel = accountLabel;
+      clearGoogleOAuthSecrets(session);
+      return c.json({ success: true, data: { id: saved.id, accountLabel } });
+    } catch {
+      session.status = "error";
+      session.error = "Authorization failed";
+      clearGoogleOAuthSecrets(session);
+      return c.json({ success: false, error: "Authorization failed" }, 400);
+    }
+  });
+
+  // OAuth: Google Web-client callback.
   app.get("/api/oauth/google/callback", async c => {
-    const state = c.req.query("state");
-    const code = c.req.query("code");
-    const oauthError = c.req.query("error");
-    const session = state ? pendingOAuth.get(state) : undefined;
+    const params = parseGoogleCallbackParameters(new URL(c.req.url).searchParams);
+    const session = params ? pendingOAuth.get(params.state) : undefined;
     const successPage = (title: string, message: string, color: string) =>
       c.html(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:system-ui,sans-serif;background:#0a0a0b;color:${color};text-align:center;padding:50px"><h2>${title}</h2><p style="color:#a1a1aa">${message}</p><script>setTimeout(()=>window.close(),1500)</script></body></html>`);
 
-    if (!session || session.provider !== "antigravity" || !session.googleVerifier) {
+    if (!params) return c.html("Invalid authorization response.", 400);
+    if (
+      !session ||
+      session.provider !== "antigravity" ||
+      session.googleRedirectUri === GOOGLE_LOOPBACK_CALLBACK_URI
+    ) {
       return c.html("Invalid or expired authorization session.", 400);
     }
-    if (oauthError) {
-      pendingOAuth.set(state!, { ...session, status: "error", error: "Authorization was denied" });
+    if (expireGoogleOAuthSession(session, googleOAuthNow()) || session.createdAt === undefined) {
+      return successPage("Google Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
+    }
+    if (session.status !== "pending" || session.consumed) {
+      return c.html("Authorization response already used.", 400);
+    }
+    if (
+      !session.googleVerifier ||
+      !session.googleClientId ||
+      !session.googleClientSecret ||
+      !session.googleRedirectUri
+    ) {
+      session.status = "error";
+      session.error = "Authorization session invalid";
+      session.consumed = true;
+      clearGoogleOAuthSecrets(session);
+      return c.html("Invalid or expired authorization session.", 400);
+    }
+
+    const verifier = session.googleVerifier;
+    const config = {
+      clientId: session.googleClientId,
+      clientSecret: session.googleClientSecret,
+      redirectUri: session.googleRedirectUri,
+    };
+    session.consumed = true;
+    session.googleVerifier = undefined;
+
+    if (params.providerError) {
+      session.status = "error";
+      session.error = "Authorization was denied";
+      clearGoogleOAuthSecrets(session);
       return successPage("Google Login Failed", "Authorization was denied. You can close this tab.", "#f43f5e");
     }
-    if (!code) return c.html("Authorization code missing.", 400);
 
     try {
-      const tokens = await exchangeGoogleCode(code, session.googleVerifier);
-      const label = tokens.email || "Antigravity";
-      const saved = vault.saveCredential(session.ownerId, {
-        ownerId: session.ownerId,
-        provider: "antigravity",
-        accountLabel: label,
-        credentialType: "oauth",
-        secret: tokens.accessToken,
-        metadata: { refreshToken: tokens.refreshToken, email: tokens.email },
-      });
-      const initialReport = await poller.pollCredential(session.ownerId, saved.id);
-      if (initialReport?.error) {
-        vault.deleteCredential(session.ownerId, saved.id);
-        pendingOAuth.set(state!, { ...session, status: "error", error: "Initial provider validation failed" });
-        return successPage("Google Login Failed", "Provider validation failed. You can close this tab.", "#f43f5e");
-      }
-      pendingOAuth.set(state!, { ...session, status: "complete", accountLabel: label, googleVerifier: undefined });
+      const { accountLabel } = await validateAndSaveGoogleCredential(
+        session.ownerId,
+        params.code!,
+        verifier,
+        config,
+      );
+      session.status = "complete";
+      session.accountLabel = accountLabel;
+      clearGoogleOAuthSecrets(session);
       return successPage("Google Login Successful", "You can close this tab and return to useMeter.", "#10b981");
     } catch {
-      pendingOAuth.set(state!, { ...session, status: "error", error: "Authorization failed", googleVerifier: undefined });
+      session.status = "error";
+      session.error = "Authorization failed";
+      clearGoogleOAuthSecrets(session);
       return successPage("Google Login Failed", "Authorization failed. You can close this tab.", "#f43f5e");
     }
   });
@@ -1483,6 +1720,8 @@ export function createServer(
     }
     const session = pendingOAuth.get(sessionId);
     if (!session || session.ownerId !== user.id) return c.json({ status: "not_found" }, 404);
+
+    expireGoogleOAuthSession(session, googleOAuthNow());
 
     if (session.provider === "devin" && session.status === "pending" && session.createdAt) {
       const OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;

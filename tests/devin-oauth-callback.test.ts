@@ -592,14 +592,16 @@ describe("Devin public OAuth callback & initiate routes", () => {
   });
 });
 
-describe("Google safe config error exposure", () => {
-  it("exposes safe actionable configuration remediation on public URI without custom credentials", async () => {
+describe("Google hosted embedded OAuth fallback", () => {
+  it("uses the loopback manual-paste flow when only the public redirect is configured", async () => {
     const { vault, app } = context();
-    const origRedirect = process.env["GOOGLE_OAUTH_REDIRECT_URI"];
-    const origClientId = process.env["GOOGLE_OAUTH_CLIENT_ID"];
-    const origClientSecret = process.env["GOOGLE_OAUTH_CLIENT_SECRET"];
+    const originalNodeEnv = process.env["NODE_ENV"];
+    const originalRedirect = process.env["GOOGLE_OAUTH_REDIRECT_URI"];
+    const originalClientId = process.env["GOOGLE_OAUTH_CLIENT_ID"];
+    const originalClientSecret = process.env["GOOGLE_OAUTH_CLIENT_SECRET"];
 
     try {
+      process.env["NODE_ENV"] = "production";
       process.env["GOOGLE_OAUTH_REDIRECT_URI"] = "https://usemeter.example.com/api/oauth/google/callback";
       delete process.env["GOOGLE_OAUTH_CLIENT_ID"];
       delete process.env["GOOGLE_OAUTH_CLIENT_SECRET"];
@@ -609,16 +611,22 @@ describe("Google safe config error exposure", () => {
         method: "POST",
         headers: { Cookie: cookie },
       });
-      expect(res.status).toBe(400);
-      const json = (await res.json()) as { success: boolean; error: string };
-      expect(json.success).toBe(false);
-      expect(json.error).toContain("Public Google OAuth redirect URI requires custom GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET");
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as {
+        success: boolean;
+        data?: { redirectUri: string; manualCallback: boolean };
+      };
+      expect(json.success).toBe(true);
+      expect(json.data?.redirectUri).toBe("http://127.0.0.1:51121/oauth-callback");
+      expect(json.data?.manualCallback).toBe(true);
     } finally {
-      if (origRedirect !== undefined) process.env["GOOGLE_OAUTH_REDIRECT_URI"] = origRedirect;
+      if (originalNodeEnv !== undefined) process.env["NODE_ENV"] = originalNodeEnv;
+      else delete process.env["NODE_ENV"];
+      if (originalRedirect !== undefined) process.env["GOOGLE_OAUTH_REDIRECT_URI"] = originalRedirect;
       else delete process.env["GOOGLE_OAUTH_REDIRECT_URI"];
-      if (origClientId !== undefined) process.env["GOOGLE_OAUTH_CLIENT_ID"] = origClientId;
+      if (originalClientId !== undefined) process.env["GOOGLE_OAUTH_CLIENT_ID"] = originalClientId;
       else delete process.env["GOOGLE_OAUTH_CLIENT_ID"];
-      if (origClientSecret !== undefined) process.env["GOOGLE_OAUTH_CLIENT_SECRET"] = origClientSecret;
+      if (originalClientSecret !== undefined) process.env["GOOGLE_OAUTH_CLIENT_SECRET"] = originalClientSecret;
       else delete process.env["GOOGLE_OAUTH_CLIENT_SECRET"];
       vault.close();
     }
