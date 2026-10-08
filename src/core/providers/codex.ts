@@ -1,5 +1,6 @@
 import type { FetchContext, ProviderAdapter } from "./adapter";
 import type { StoredCredential, UsageLimit, UsageReport } from "../../types";
+import { refreshCodexToken, type CodexTokenResult } from "../oauth/codex-device";
 
 interface CodexUsageWindowPayload {
   used_percent?: number;
@@ -56,13 +57,30 @@ export class CodexAdapter implements ProviderAdapter {
       headers["chatgpt-account-id"] = accountId.trim();
     }
 
-    const response = await fetchImpl("https://chatgpt.com/backend-api/wham/usage", {
-      headers,
-      signal: ctx?.signal,
-    });
+    let response = await fetchImpl("https://chatgpt.com/backend-api/wham/usage", { headers, signal: ctx?.signal });
+    const refreshToken = credential.metadata?.["refreshToken"];
+    if (response.status === 401 && typeof refreshToken === "string" && refreshToken.trim()) {
+      let refreshed: CodexTokenResult;
+      try {
+        refreshed = await refreshCodexToken(refreshToken, { fetch: fetchImpl, signal: ctx?.signal });
+      } catch (error) {
+        if (ctx?.signal?.aborted) throw error;
+        throw new Error("Codex usage returned HTTP 401; OAuth token refresh failed.");
+      }
+
+      const nextRefreshToken =
+        typeof refreshed.refreshToken === "string" && refreshed.refreshToken.trim()
+          ? refreshed.refreshToken
+          : refreshToken;
+      credential.secret = refreshed.accessToken;
+      credential.metadata = { ...(credential.metadata ?? {}), refreshToken: nextRefreshToken };
+      ctx?.onTokenRefresh?.(refreshed.accessToken, { refreshToken: nextRefreshToken });
+      headers["Authorization"] = `Bearer ${refreshed.accessToken}`;
+      response = await fetchImpl("https://chatgpt.com/backend-api/wham/usage", { headers, signal: ctx?.signal });
+    }
 
     if (!response.ok) {
-      throw new Error(`Codex kullanım sorgusu başarısız: HTTP ${response.status} ${response.statusText}`);
+      throw new Error(`Codex kullanım sorgusu başarısız: HTTP ${response.status}`);
     }
 
     const data = (await response.json()) as CodexUsageResponse;

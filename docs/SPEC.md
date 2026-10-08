@@ -290,6 +290,8 @@ export interface PollerEngine {
      - **Yeniden Başarılı Yoklama:** Sistem otomatik olarak `health: "healthy"`, `stale: false`, `source: "live"` durumuna döner, `error` temizlenir.
      - **Sağlayıcı Kota Tükenmesi Ayrımı:** Sağlayıcının `%100` kota doluluğu dönmesi (HTTP 200) bir yoklama arızası değil, normal bir telemetri verisidir (`health: "healthy"` kalır).
      - **Güvenlik Sınırı:** Ham upstream hata gövdeleri veya hassas istek verileri anlık görüntülerde veya rapor nesnelerinde ASLA saklanmaz.
+     - **Codex / xAI OAuth Oturum Yenileme:** Kullanım uç noktası HTTP `401` döndürürse ve kayıtlı bir refresh token varsa adaptör bir kez token yeniler, erişim token'ını ve varsa dönen yeni refresh token'ı kasa geri çağrısıyla kaydeder, ardından kullanım sorgusunu bir kez tekrarlar. Yeni refresh token dönmezse mevcut token korunur. HTTP `403`, diğer hatalar veya refresh token bulunmaması yenileme başlatmaz; yenileme ya da tekrar sorgusu başarısız olduğunda yukarıdaki stale/error kuralları uygulanır. Yenileme istekleri de enjekte edilen `fetch` ve `AbortSignal` kullanır.
+     - **Codex / xAI Güvenli Yeniden Bağlama:** OAuth aday kimliği `validateAndSaveCredential` ile bellekte doğrulanır; başarılı doğrulamadan önce mevcut kayıt değiştirilmez. Başarısız ilk bağlantı kayıt oluşturmaz; başarısız yeniden bağlantı mevcut token'ları, kart rengini ve kullanım geçmişini korur. Başarılı bağlantı aynı sahip, sağlayıcı ve hesap etiketi için mevcut kimliği günceller ve doğrulama raporunu kaydeder; ikinci bir ilk kullanım sorgusu yapılmaz.
   5. 429 veya geçici hata alındığında exponential backoff (15s, 30s, 60s) devreye girer.
 ---
 

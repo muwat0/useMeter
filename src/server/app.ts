@@ -931,24 +931,24 @@ export function createServer(
       const tokenResult = await exchangeCodexToken(pollRes.authorizationCode, pollRes.codeVerifier);
       const accountLabel = tokenResult.email || body.label || "ChatGPT Codex";
 
-      const saved = vault.saveCredential(user.id, {
-        ownerId: user.id,
-        provider: "openai-codex",
-        accountLabel,
-        credentialType: "oauth",
-        secret: tokenResult.accessToken,
-        metadata: {
-          refreshToken: tokenResult.refreshToken,
-          accountId: tokenResult.accountId,
-          email: tokenResult.email,
-          planType: tokenResult.planType,
-        },
-      });
-
-      const initialReport = await poller.pollCredential(user.id, saved.id);
-      if (initialReport?.error) {
-        vault.deleteCredential(user.id, saved.id);
-        return c.json({ status: "error", error: initialReport.error });
+      let saved;
+      try {
+        saved = await poller.validateAndSaveCredential(user.id, {
+          ownerId: user.id,
+          provider: "openai-codex",
+          accountLabel,
+          credentialType: "oauth",
+          secret: tokenResult.accessToken,
+          metadata: {
+            refreshToken: tokenResult.refreshToken,
+            accountId: tokenResult.accountId,
+            email: tokenResult.email,
+            planType: tokenResult.planType,
+          },
+        });
+      } catch (validationError) {
+        const message = validationError instanceof Error ? validationError.message : String(validationError);
+        return c.json({ status: "error", error: message });
       }
 
       return c.json({
@@ -1358,21 +1358,22 @@ export function createServer(
       }
       pendingDeviceOwners.delete(body.deviceCode);
       const label = (body.label && body.label !== "xAI Grok" ? body.label : pollRes.email) || pollRes.email || "xAI Grok";
-      const saved = vault.saveCredential(user.id, {
-        ownerId: user.id,
-        provider: "xai-oauth",
-        accountLabel: label,
-        credentialType: "oauth",
-        secret: pollRes.accessToken,
-        metadata: {
-          refreshToken: pollRes.refreshToken,
-          email: pollRes.email,
-        },
-      });
-      const initialReport = await poller.pollCredential(user.id, saved.id);
-      if (initialReport?.error) {
-        vault.deleteCredential(user.id, saved.id);
-        return c.json({ status: "error", error: initialReport.error });
+      let saved;
+      try {
+        saved = await poller.validateAndSaveCredential(user.id, {
+          ownerId: user.id,
+          provider: "xai-oauth",
+          accountLabel: label,
+          credentialType: "oauth",
+          secret: pollRes.accessToken,
+          metadata: {
+            refreshToken: pollRes.refreshToken,
+            email: pollRes.email,
+          },
+        });
+      } catch (validationError) {
+        const message = validationError instanceof Error ? validationError.message : String(validationError);
+        return c.json({ status: "error", error: message });
       }
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
     } catch {

@@ -1,6 +1,7 @@
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEVICE_USERCODE_URL = "https://auth.openai.com/api/accounts/deviceauth/usercode";
 const DEVICE_TOKEN_URL = "https://auth.openai.com/api/accounts/deviceauth/token";
+
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
 const DEVICE_REDIRECT_URI = "https://auth.openai.com/deviceauth/callback";
 const VERIFICATION_URL = "https://auth.openai.com/codex/device";
@@ -160,5 +161,39 @@ export async function exchangeCodexToken(
     email,
     accountId,
     planType,
+  };
+}
+
+export async function refreshCodexToken(
+  refreshToken: string,
+  context?: { fetch?: typeof fetch; signal?: AbortSignal },
+): Promise<CodexTokenResult> {
+  const fetchImpl = context?.fetch ?? fetch;
+  const res = await fetchImpl(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: CLIENT_ID,
+    }),
+    signal: context?.signal,
+  });
+
+  if (!res.ok) {
+    throw new Error(`Codex token refresh failed: HTTP ${res.status}`);
+  }
+
+  const data = (await res.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+  };
+  if (!data.access_token) {
+    throw new Error("Codex refreshed access token missing.");
+  }
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
   };
 }
