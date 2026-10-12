@@ -33,12 +33,13 @@ export type KimiPollResult =
   | { status: "complete"; accessToken: string; refreshToken?: string; accountId?: string }
   | { status: "error"; message: string };
 
-export async function initiateKimiDeviceAuth(): Promise<KimiDeviceInitiateResult> {
+export async function initiateKimiDeviceAuth(signal?: AbortSignal): Promise<KimiDeviceInitiateResult> {
   const deviceId = crypto.randomUUID().replace(/-/g, "");
   const res = await fetch(`${DEFAULT_OAUTH_HOST}/api/oauth/device_authorization`, {
     method: "POST",
     headers: getKimiHeaders(deviceId),
     body: new URLSearchParams({ client_id: CLIENT_ID }).toString(),
+    signal,
   });
 
   if (!res.ok) {
@@ -68,7 +69,7 @@ export async function initiateKimiDeviceAuth(): Promise<KimiDeviceInitiateResult
   };
 }
 
-export async function pollKimiDeviceAuth(deviceCode: string, deviceId: string): Promise<KimiPollResult> {
+export async function pollKimiDeviceAuth(deviceCode: string, deviceId: string, signal?: AbortSignal): Promise<KimiPollResult> {
   const res = await fetch(`${DEFAULT_OAUTH_HOST}/api/oauth/token`, {
     method: "POST",
     headers: getKimiHeaders(deviceId || crypto.randomUUID().replace(/-/g, "")),
@@ -77,6 +78,7 @@ export async function pollKimiDeviceAuth(deviceCode: string, deviceId: string): 
       device_code: deviceCode,
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     }).toString(),
+    signal,
   });
 
   const data = (await res.json().catch(() => ({}))) as {

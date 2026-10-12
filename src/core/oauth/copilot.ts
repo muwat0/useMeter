@@ -22,7 +22,7 @@ export type CopilotPollResult =
   | { status: "complete"; token: CopilotTokenResult }
   | { status: "error"; message: string };
 
-export async function initiateCopilotDeviceAuth(): Promise<CopilotDeviceInitiateResult> {
+export async function initiateCopilotDeviceAuth(signal?: AbortSignal): Promise<CopilotDeviceInitiateResult> {
   const res = await fetch(DEVICE_CODE_URL, {
     method: "POST",
     headers: {
@@ -34,6 +34,7 @@ export async function initiateCopilotDeviceAuth(): Promise<CopilotDeviceInitiate
       client_id: CLIENT_ID,
       scope: "read:user",
     }),
+    signal,
   });
 
   if (!res.ok) {
@@ -61,7 +62,7 @@ export async function initiateCopilotDeviceAuth(): Promise<CopilotDeviceInitiate
   };
 }
 
-export async function pollCopilotDeviceAuth(deviceCode: string): Promise<CopilotPollResult> {
+export async function pollCopilotDeviceAuth(deviceCode: string, signal?: AbortSignal): Promise<CopilotPollResult> {
   const res = await fetch(ACCESS_TOKEN_URL, {
     method: "POST",
     headers: {
@@ -74,6 +75,7 @@ export async function pollCopilotDeviceAuth(deviceCode: string): Promise<Copilot
       device_code: deviceCode,
       grant_type: "urn:ietf:params:oauth:grant-type:device_code",
     }),
+    signal,
   });
 
   if (!res.ok) {
@@ -112,6 +114,7 @@ export async function pollCopilotDeviceAuth(deviceCode: string): Promise<Copilot
         "User-Agent": "GitHubCopilotChat/0.26.7",
         Accept: "application/json",
       },
+      signal,
     });
     if (userRes.ok) {
       const u = (await userRes.json()) as { login?: string; email?: string };

@@ -21,6 +21,12 @@ function mergeDefinedMetadata(
 }
 export type ReportListener = (report: UsageReport) => void;
 
+export interface CredentialValidationContext {
+  signal?: AbortSignal;
+  beforeCommit?: () => boolean;
+  accountLabelMode?: "input" | "provider";
+}
+
 export class PollerEngine {
   readonly #vault: StorageVault;
   readonly #registry: ProviderRegistry;
@@ -84,16 +90,15 @@ export class PollerEngine {
     ownerId: string,
     input: InputCredential,
     metadataMode: "replace" | "preserve",
+    context: CredentialValidationContext = {},
   ): Promise<StoredCredential> {
+    context.signal?.throwIfAborted();
     const adapter = this.#registry.find(input.provider);
     if (!adapter) throw new Error(`No provider adapter for "${input.provider}"`);
 
-    const existing = this.#vault.listCredentials(ownerId, input.provider)
-      .find(credential => credential.accountLabel === input.accountLabel);
+    const existingCredentials = this.#vault.listCredentials(ownerId, input.provider);
+    const existing = existingCredentials.find(credential => credential.accountLabel === input.accountLabel);
     const now = Date.now();
-    // Candidate metadata must only include defined new metadata (strip undefined).
-    // Previous metadata (such as existing refresh token) MUST NOT be merged before validation,
-    // so that an invalid candidate cannot use the prior valid refresh token to authenticate.
     const candidateMetadata = mergeDefinedMetadata(undefined, input.metadata);
     const candidate: StoredCredential = {
       id: existing?.id ?? randomUUID(),
@@ -107,41 +112,62 @@ export class PollerEngine {
       createdAt: existing?.createdAt ?? now,
       updatedAt: existing?.updatedAt ?? now,
     };
+    const useProviderAccountLabel =
+      metadataMode === "preserve" && context.accountLabelMode === "provider";
+    let discoveredAccountLabel: string | undefined;
     const fetched = await adapter.fetchUsage(candidate, {
-      onTokenRefresh: (newSecret, metadataUpdates) => {
+      signal: context.signal,
+      onTokenRefresh: (newSecret, metadataUpdates, newAccountLabel) => {
         candidate.secret = newSecret;
         if (metadataUpdates) {
           candidate.metadata = mergeDefinedMetadata(candidate.metadata, metadataUpdates);
         }
+        if (useProviderAccountLabel && newAccountLabel?.trim()) {
+          discoveredAccountLabel = newAccountLabel.trim();
+          candidate.accountLabel = discoveredAccountLabel;
+        }
       },
     });
+    context.signal?.throwIfAborted();
     if (fetched.error) throw new Error(fetched.error);
 
-    // Re-read the selected owner-bound row after validation; an old snapshot here could
-    // overwrite refresh-token rotations performed by a concurrent poll.
-    const currentExisting = existing
-      ? this.#vault.getCredential(ownerId, existing.id)
+    const fetchedAccountLabel = typeof fetched.accountLabel === "string"
+      ? fetched.accountLabel.trim()
+      : "";
+    const accountLabel = useProviderAccountLabel
+      ? discoveredAccountLabel ?? (fetchedAccountLabel || candidate.accountLabel)
+      : input.accountLabel;
+    const existingForAccountLabel = existingCredentials.find(
+      credential => credential.accountLabel === accountLabel,
+    );
+    const currentExisting = existingForAccountLabel
+      ? this.#vault.getCredential(ownerId, existingForAccountLabel.id)
       : undefined;
-    if (existing && (
+    if (existingForAccountLabel && (
       !currentExisting ||
       currentExisting.ownerId !== ownerId ||
       currentExisting.provider !== input.provider.toLowerCase() ||
-      currentExisting.accountLabel !== input.accountLabel
+      currentExisting.accountLabel !== accountLabel
     )) {
       throw new Error("Credential changed while validation was in progress");
     }
-    if (!existing && this.#vault.listCredentials(ownerId, input.provider).some(c => c.accountLabel === input.accountLabel)) {
+    if (!existingForAccountLabel &&
+      this.#vault.listCredentials(ownerId, input.provider).some(credential => credential.accountLabel === accountLabel)
+    ) {
       throw new Error("Credential changed while validation was in progress");
     }
 
-    // Callers choose whether reauthorization replaces account metadata or keeps existing metadata.
     const finalMetadata = metadataMode === "replace"
       ? candidate.metadata
       : mergeDefinedMetadata(currentExisting?.metadata, candidate.metadata);
+    if (context.beforeCommit && !context.beforeCommit()) {
+      throw new Error("Credential validation was canceled or expired");
+    }
+    context.signal?.throwIfAborted();
     const saved = this.#vault.saveCredential(ownerId, {
       ...input,
       ownerId,
-      accountLabel: input.accountLabel,
+      accountLabel,
       accent: input.accent ?? currentExisting?.accent,
       secret: candidate.secret,
       metadata: finalMetadata,

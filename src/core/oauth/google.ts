@@ -223,6 +223,7 @@ export async function exchangeGoogleCode(
   code: string,
   verifier: string,
   overrides?: Partial<GoogleOAuthConfig>,
+  signal?: AbortSignal,
 ): Promise<GoogleTokenResult> {
   const config = validateGoogleOAuthConfig(overrides);
   const res = await fetch(TOKEN_URL, {
@@ -236,6 +237,7 @@ export async function exchangeGoogleCode(
       grant_type: "authorization_code",
       redirect_uri: config.redirectUri,
     }).toString(),
+    signal,
   });
 
   if (!res.ok) {
@@ -256,6 +258,7 @@ export async function exchangeGoogleCode(
   try {
     const userRes = await fetch("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", {
       headers: { Authorization: `Bearer ${data.access_token}` },
+      signal,
     });
     if (userRes.ok) {
       const u = (await userRes.json()) as { email?: string };
@@ -273,6 +276,7 @@ export async function exchangeGoogleCode(
 export async function listenForGoogleCallback(
   expectedState: string,
   timeoutMs: number = 120_000,
+  signal?: AbortSignal,
 ): Promise<string> {
   return listenForOAuthCallback({
     port: 51121,
@@ -280,5 +284,6 @@ export async function listenForGoogleCallback(
     expectedState,
     providerName: "Google",
     timeoutMs,
+    signal,
   });
 }

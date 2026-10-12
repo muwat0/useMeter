@@ -305,7 +305,7 @@ describe("Google OAuth callback handling", () => {
     let now = 1_800_000_000_000;
     let exchangeCalls = 0;
     const { vault, app, auth } = context(successfulValidationAdapter, {
-      googleOAuthNow: () => now,
+      oauthNow: () => now,
       googleOAuthExchange: async () => {
         exchangeCalls++;
         return { accessToken: "synthetic-access" };
@@ -322,7 +322,75 @@ describe("Google OAuth callback handling", () => {
       expect((await (await status(app, user.cookie, data.sessionId)).json() as { status: string }).status)
         .toBe("error");
       expect(exchangeCalls).toBe(0);
+      now += 60 * 1000;
+      expect((await status(app, user.cookie, data.sessionId)).status).toBe(404);
     } finally {
+      vault.close();
+      restoreGoogleEnv(env);
+    }
+  });
+
+  it("checks the OAuth deadline at the credential commit boundary without an interim request", async () => {
+    const env = snapshotGoogleEnv();
+    useHostedEmbeddedGoogleClient();
+    let now = 1_800_000_000_000;
+    const validation = Promise.withResolvers<UsageReport>();
+    const validationStarted = Promise.withResolvers<void>();
+    const delayedAdapter: ProviderAdapter = {
+      id: "antigravity",
+      supports: provider => provider === "antigravity",
+      async fetchUsage(): Promise<UsageReport> {
+        validationStarted.resolve();
+        return validation.promise;
+      },
+    };
+    const { vault, app, auth } = context(delayedAdapter, {
+      oauthNow: () => now,
+      googleOAuthExchange: async () => ({
+        accessToken: "synthetic-late-google-candidate",
+        email: "late-google@example.test",
+      }),
+    });
+    let cookie = "";
+    let sessionId = "";
+    let callback: Promise<Response> | undefined;
+    let validationResolved = false;
+    const report = (ownerId: string): UsageReport => ({
+      ownerId,
+      provider: "antigravity",
+      accountLabel: "late-google@example.test",
+      fetchedAt: now,
+      limits: [],
+      health: "healthy",
+      stale: false,
+      source: "live",
+    });
+    try {
+      const user = await register(auth, "google-late-commit@example.com");
+      cookie = user.cookie;
+      const data = await initiate(app, cookie);
+      sessionId = data.sessionId;
+      callback = postManualCallback(app, cookie, sessionId, callbackUrl(sessionId));
+      await validationStarted.promise;
+
+      now += 10 * 60 * 1000 + 1_000;
+      validation.resolve(report(user.id));
+      validationResolved = true;
+
+      expect((await callback).status).toBe(404);
+      expect(vault.listCredentials(user.id, "antigravity")).toHaveLength(0);
+      expect(vault.getSnapshotHistory(user.id, "antigravity", 24)).toHaveLength(0);
+    } finally {
+      if (!validationResolved) {
+        if (cookie && sessionId) {
+          await app.request(`/api/oauth/sessions/${encodeURIComponent(sessionId)}`, {
+            method: "DELETE",
+            headers: { Cookie: cookie },
+          });
+        }
+        validation.resolve(report(""));
+        await callback?.catch(() => {});
+      }
       vault.close();
       restoreGoogleEnv(env);
     }
@@ -640,6 +708,131 @@ describe("Google OAuth callback handling", () => {
       expect(retained?.metadata?.["refreshToken"]).toBe("previous-valid-refresh-token");
       expect(vault.listCredentials(user.id)).toHaveLength(1);
     } finally {
+      vault.close();
+      restoreGoogleEnv(env);
+    }
+  });
+
+  it("applies per-owner capacity, reports retry guidance, and releases failed and canceled slots", async () => {
+    const env = snapshotGoogleEnv();
+    useHostedEmbeddedGoogleClient();
+    const { vault, app, auth } = context(successfulValidationAdapter, { oauthNow: () => 1_800_000_000_000 });
+    const sessions: Array<{ sessionId: string }> = [];
+    let ownerCookie = "";
+    try {
+      const owner = await register(auth, "google-capacity-owner@example.com");
+      const foreign = await register(auth, "google-capacity-foreign@example.com");
+      ownerCookie = owner.cookie;
+
+      process.env["GOOGLE_OAUTH_CLIENT_ID"] = "synthetic-partial-client-id";
+      process.env["GOOGLE_OAUTH_CLIENT_SECRET"] = "";
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const failedInitiation = await app.request("/api/oauth/google/initiate", {
+          method: "POST",
+          headers: { Cookie: owner.cookie },
+        });
+        expect(failedInitiation.status).toBe(400);
+      }
+      useHostedEmbeddedGoogleClient();
+
+      for (let index = 0; index < 5; index++) {
+        sessions.push(await initiate(app, owner.cookie));
+      }
+      const rejected = await app.request("/api/oauth/google/initiate", {
+        method: "POST",
+        headers: { Cookie: owner.cookie },
+      });
+      expect(rejected.status).toBe(429);
+      expect(rejected.headers.get("Retry-After")).toBe("60");
+      expect(await rejected.json()).toMatchObject({ errorCode: "OAUTH_CAPACITY" });
+
+      const first = sessions[0]!;
+      const foreignCancel = await app.request(`/api/oauth/sessions/${encodeURIComponent(first.sessionId)}`, {
+        method: "DELETE",
+        headers: { Cookie: foreign.cookie },
+      });
+      expect(foreignCancel.status).toBe(404);
+      expect((await status(app, owner.cookie, first.sessionId)).status).toBe(200);
+
+      const canceled = await app.request(`/api/oauth/sessions/${encodeURIComponent(first.sessionId)}`, {
+        method: "DELETE",
+        headers: { Cookie: owner.cookie },
+      });
+      expect(canceled.status).toBe(200);
+      expect((await status(app, owner.cookie, first.sessionId)).status).toBe(404);
+      sessions.push(await initiate(app, owner.cookie));
+      expect(sessions[5]?.sessionId).toBeTruthy();
+    } finally {
+      if (ownerCookie) {
+        for (const session of sessions) {
+          await app.request(`/api/oauth/sessions/${encodeURIComponent(session.sessionId)}`, {
+            method: "DELETE",
+            headers: { Cookie: ownerCookie },
+          });
+        }
+      }
+      vault.close();
+      restoreGoogleEnv(env);
+    }
+  });
+
+  it("claims manual callbacks exclusively and blocks credential commits after cancellation", async () => {
+    const env = snapshotGoogleEnv();
+    useHostedEmbeddedGoogleClient();
+    const exchange = Promise.withResolvers<GoogleTokenResult>();
+    const exchangeStarted = Promise.withResolvers<void>();
+    let exchangeCalls = 0;
+    const { vault, app, auth } = context(successfulValidationAdapter, {
+      oauthNow: () => 1_800_000_000_000,
+      googleOAuthExchange: async () => {
+        exchangeCalls++;
+        exchangeStarted.resolve();
+        return exchange.promise;
+      },
+    });
+    let sessionId = "";
+    let ownerCookie = "";
+    let callbackPromise: Promise<Response> | undefined;
+    let exchangeResolved = false;
+    try {
+      const owner = await register(auth, "google-cancel-owner@example.com");
+      const foreign = await register(auth, "google-cancel-foreign@example.com");
+      const data = await initiate(app, owner.cookie);
+      sessionId = data.sessionId;
+      ownerCookie = owner.cookie;
+      callbackPromise = postManualCallback(app, owner.cookie, data.sessionId, callbackUrl(data.sessionId));
+      await exchangeStarted.promise;
+
+      const replay = await postManualCallback(app, owner.cookie, data.sessionId, callbackUrl(data.sessionId));
+      expect(replay.status).toBe(400);
+      expect(exchangeCalls).toBe(1);
+      const foreignCancel = await app.request(`/api/oauth/sessions/${encodeURIComponent(data.sessionId)}`, {
+        method: "DELETE",
+        headers: { Cookie: foreign.cookie },
+      });
+      expect(foreignCancel.status).toBe(404);
+      const canceled = await app.request(`/api/oauth/sessions/${encodeURIComponent(data.sessionId)}`, {
+        method: "DELETE",
+        headers: { Cookie: owner.cookie },
+      });
+      expect(canceled.status).toBe(200);
+
+      exchange.resolve({ accessToken: "synthetic-canceled-access", email: "cancelled@example.com" });
+      exchangeResolved = true;
+      expect((await callbackPromise).status).toBe(404);
+      expect(vault.listCredentials(owner.id)).toHaveLength(0);
+      expect((await status(app, owner.cookie, data.sessionId)).status).toBe(404);
+    } finally {
+      if (!exchangeResolved) {
+        if (sessionId && ownerCookie) {
+          await app.request(`/api/oauth/sessions/${encodeURIComponent(sessionId)}`, {
+            method: "DELETE",
+            headers: { Cookie: ownerCookie },
+          });
+        }
+        exchange.resolve({ accessToken: "synthetic-canceled-access", email: "cancelled@example.com" });
+        await callbackPromise?.catch(() => {});
+      }
       vault.close();
       restoreGoogleEnv(env);
     }

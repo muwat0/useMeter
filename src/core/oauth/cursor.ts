@@ -37,10 +37,11 @@ export async function initiateCursorAuth(): Promise<CursorAuthInitiateResult> {
   };
 }
 
-export async function pollCursorAuth(uuid: string, verifier: string): Promise<CursorPollResult> {
+export async function pollCursorAuth(uuid: string, verifier: string, signal?: AbortSignal): Promise<CursorPollResult> {
   try {
     const res = await fetch(`${CURSOR_POLL_URL}?uuid=${uuid}&verifier=${verifier}`, {
       headers: { Accept: "application/json" },
+      signal,
     });
 
     if (res.status === 404) {
@@ -76,6 +77,7 @@ export async function pollCursorAuth(uuid: string, verifier: string): Promise<Cu
               Cookie: `WorkosCursorSessionToken=${encodeURIComponent(`${userId}::${data.accessToken}`)}`,
               "User-Agent": "Cursor/0.46.1",
             },
+            signal,
           });
           if (meRes.ok) {
             const meJson = (await meRes.json()) as { email?: string };

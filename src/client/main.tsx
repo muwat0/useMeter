@@ -113,6 +113,7 @@ const I18N: Record<string, Record<string, string>> = {
     oauthSessionNotFound: "Yetkilendirme oturumu bulunamadı veya süresi doldu",
     oauthExpired: "Yetkilendirme süresi doldu. Yeniden başlayın.",
     oauthRetrying: "İstek hız sınırına ulaştı; {seconds} saniye sonra yeniden denenecek.",
+    oauthCapacity: "OAuth oturum sınırına ulaşıldı. Lütfen etkin bir oturum kapanana kadar bekleyip yeniden deneyin.",
     provider: "Sağlayıcı", accountLabel: "Hesap Adı / Etiket",
     accountLabelPlaceholder: "Örn: Kişisel Pro, İş Hesabı",
     accountAccent: "Kart Vurgu Rengi", cardAccent: "Kart Vurgusu",
@@ -172,8 +173,7 @@ const I18N: Record<string, Record<string, string>> = {
     deviceDescGeneric: "Enter this code on the verification page. The dashboard will update automatically.",
     oauthWaiting: "Waiting for {provider} authorization...",
     oauthFailed: "Authorization failed",
-    oauthRequestFailure: "Authorization request failed",
-    oauthPollFailure: "Could not check authorization status",
+    oauthCapacity: "OAuth session capacity has been reached. Wait for an active session to close, then try again.",
     oauthNetworkFailure: "Network connection failed",
     oauthTimeout: "Authorization request timed out",
     googleManualInstructions: "After Google authorization, the localhost page may fail to load on a hosted server; this is expected. Copy the entire URL from that tab's address bar and paste it below.",
@@ -183,6 +183,8 @@ const I18N: Record<string, Record<string, string>> = {
     googleManualSubmitting: "Completing...",
     googleManualFailure: "The full callback URL could not be verified or authorization failed. Copy the entire URL and try again.",
     googleManualNetworkFailure: "The callback could not be submitted. Check your connection and try again.",
+    oauthRequestFailure: "Authorization request failed",
+    oauthPollFailure: "Could not check authorization status",
     oauthSessionNotFound: "Authorization session was not found or has expired",
     oauthExpired: "Authorization expired. Start again.",
     oauthRetrying: "Polling is rate limited; retrying in {seconds} seconds.",
@@ -717,6 +719,8 @@ function Dashboard() {
   const [googleCallbackSubmitting, setGoogleCallbackSubmitting] = useState(false);
   const [googleCallbackError, setGoogleCallbackError] = useState('');
   const [copyBtnText, setCopyBtnText] = useState(() => t('copyCode', detectInitialLang()));
+  const oauthSessionRef = useRef<string | null>(null);
+  const oauthInitiateAbortRef = useRef<AbortController | null>(null);
   const oauthTimerRef = useRef<number | null>(null);
   const oauthAbortRef = useRef<AbortController | null>(null);
   const oauthRunIdRef = useRef(0);
@@ -743,7 +747,9 @@ function Dashboard() {
   // ── OAuth unmount cleanup ──
   useEffect(() => {
     return () => {
+      oauthRunIdRef.current += 1;
       clearOAuthTimer();
+      cancelTrackedOAuthSession();
       if (oauthAbortRef.current) {
         oauthAbortRef.current.abort();
         oauthAbortRef.current = null;
@@ -1005,8 +1011,22 @@ function Dashboard() {
     }
   }
 
+  function cancelOAuthSession(sessionId: string) {
+    void fetch(`/api/oauth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      keepalive: true,
+    }).catch(() => {});
+  }
+
+  function cancelTrackedOAuthSession() {
+    const sessionId = oauthSessionRef.current;
+    oauthSessionRef.current = null;
+    if (sessionId) cancelOAuthSession(sessionId);
+  }
+
   function cancelOAuth() {
     oauthRunIdRef.current += 1;
+    cancelTrackedOAuthSession();
     clearOAuthTimer();
     if (oauthAbortRef.current) {
       oauthAbortRef.current.abort();
@@ -1030,6 +1050,7 @@ function Dashboard() {
   function failOAuth(message: string, runId: number) {
     if (runId !== oauthRunIdRef.current) return;
     oauthRunIdRef.current += 1;
+    cancelTrackedOAuthSession();
     clearOAuthTimer();
     if (oauthAbortRef.current) {
       oauthAbortRef.current.abort();
@@ -1042,6 +1063,7 @@ function Dashboard() {
   function finishOAuth(runId: number) {
     if (runId !== oauthRunIdRef.current) return;
     oauthRunIdRef.current += 1;
+    oauthSessionRef.current = null;
     clearOAuthTimer();
     if (oauthAbortRef.current) {
       oauthAbortRef.current.abort();
@@ -1064,6 +1086,7 @@ function Dashboard() {
   }
 
   function oauthResponseMessage(key: string, body: Record<string, unknown> | null) {
+    if (body?.['errorCode'] === 'OAUTH_CAPACITY') return t('oauthCapacity', lang);
     const detail = typeof body?.['error'] === 'string' ? body['error'].trim() : '';
     return oauthMessage(key, detail || undefined);
   }
@@ -1140,7 +1163,7 @@ function Dashboard() {
     setGoogleCallbackError('');
 
     const initiateController = new AbortController();
-    oauthAbortRef.current = initiateController;
+    oauthInitiateAbortRef.current = initiateController;
     let initiateTimedOut = false;
     const initiateTimer = window.setTimeout(() => {
       initiateTimedOut = true;
@@ -1153,20 +1176,25 @@ function Dashboard() {
         signal: initiateController.signal,
       });
       const json = await readOAuthJson(res);
-      if (runId !== oauthRunIdRef.current) return;
+      const data = json?.['data'] && typeof json['data'] === 'object' && !Array.isArray(json['data'])
+        ? json['data'] as Record<string, unknown>
+        : null;
+      const sessionId = typeof data?.['sessionId'] === 'string' ? data['sessionId'] : '';
+      if (runId !== oauthRunIdRef.current) {
+        if (sessionId) cancelOAuthSession(sessionId);
+        return;
+      }
       if (!res.ok || !json || json['success'] !== true) {
+        if (sessionId) oauthSessionRef.current = sessionId;
         failOAuth(oauthResponseMessage('oauthRequestFailure', json), runId);
         return;
       }
-      const data = json['data'] && typeof json['data'] === 'object' && !Array.isArray(json['data'])
-        ? json['data'] as Record<string, unknown>
-        : null;
       if (!data) {
         failOAuth(t('oauthRequestFailure', lang), runId);
         return;
       }
+      if (sessionId) oauthSessionRef.current = sessionId;
       const authUrl = typeof data['authUrl'] === 'string' ? data['authUrl'] : '';
-      const sessionId = typeof data['sessionId'] === 'string' ? data['sessionId'] : '';
       if (!authUrl || !sessionId) {
         failOAuth(t('oauthRequestFailure', lang), runId);
         return;
@@ -1256,8 +1284,8 @@ function Dashboard() {
       failOAuth(oauthMessage('oauthNetworkFailure', err instanceof Error ? err.message : String(err)), runId);
     } finally {
       window.clearTimeout(initiateTimer);
-      if (oauthAbortRef.current === initiateController) {
-        oauthAbortRef.current = null;
+      if (oauthInitiateAbortRef.current === initiateController) {
+        oauthInitiateAbortRef.current = null;
       }
     }
   }
@@ -1330,7 +1358,7 @@ function Dashboard() {
     }
 
     const initiateController = new AbortController();
-    oauthAbortRef.current = initiateController;
+    oauthInitiateAbortRef.current = initiateController;
     let initiateTimedOut = false;
     const initiateTimer = window.setTimeout(() => {
       initiateTimedOut = true;
@@ -1343,18 +1371,24 @@ function Dashboard() {
         signal: initiateController.signal,
       });
       const json = await readOAuthJson(res);
-      if (runId !== oauthRunIdRef.current) return;
+      const data = json?.['data'] && typeof json['data'] === 'object' && !Array.isArray(json['data'])
+        ? json['data'] as Record<string, unknown>
+        : null;
+      const sessionId = typeof data?.['sessionId'] === 'string' ? data['sessionId'] : '';
+      if (runId !== oauthRunIdRef.current) {
+        if (sessionId) cancelOAuthSession(sessionId);
+        return;
+      }
       if (!res.ok || !json || json['success'] !== true) {
+        if (sessionId) oauthSessionRef.current = sessionId;
         failOAuth(oauthResponseMessage('oauthRequestFailure', json), runId);
         return;
       }
-      const data = json['data'] && typeof json['data'] === 'object' && !Array.isArray(json['data'])
-        ? json['data'] as Record<string, unknown>
-        : null;
       if (!data) {
         failOAuth(t('oauthRequestFailure', lang), runId);
         return;
       }
+      if (sessionId) oauthSessionRef.current = sessionId;
       const missingBodyKey = bodyKeys.find(key => {
         const value = data[key];
         return value === undefined || value === null || (typeof value === 'string' && !value.trim());
@@ -1363,7 +1397,7 @@ function Dashboard() {
         ? data['authUrl']
         : data['verificationUrl'] || data['verificationUri'];
       const authUrl = typeof authUrlValue === 'string' ? authUrlValue : '';
-      if (missingBodyKey || !authUrl || (panel === 'device' && typeof data['userCode'] !== 'string')) {
+      if (!sessionId || missingBodyKey || !authUrl || (panel === 'device' && typeof data['userCode'] !== 'string')) {
         failOAuth(t('oauthRequestFailure', lang), runId);
         return;
       }
@@ -1474,8 +1508,8 @@ function Dashboard() {
       failOAuth(oauthMessage('oauthNetworkFailure', err instanceof Error ? err.message : String(err)), runId);
     } finally {
       window.clearTimeout(initiateTimer);
-      if (oauthAbortRef.current === initiateController) {
-        oauthAbortRef.current = null;
+      if (oauthInitiateAbortRef.current === initiateController) {
+        oauthInitiateAbortRef.current = null;
       }
     }
   }

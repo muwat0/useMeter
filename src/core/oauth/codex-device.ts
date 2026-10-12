@@ -33,11 +33,12 @@ export function decodeJwtPayload(token: string): Record<string, unknown> | null 
   }
 }
 
-export async function initiateCodexDeviceAuth(): Promise<CodexDeviceInitiateResult> {
+export async function initiateCodexDeviceAuth(signal?: AbortSignal): Promise<CodexDeviceInitiateResult> {
   const res = await fetch(DEVICE_USERCODE_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ client_id: CLIENT_ID }),
+    signal,
   });
 
   if (!res.ok) {
@@ -77,7 +78,7 @@ export type PollResult =
   | { status: "complete"; authorizationCode: string; codeVerifier: string }
   | { status: "error"; message: string };
 
-export async function pollCodexDeviceAuth(deviceAuthId: string, userCode: string): Promise<PollResult> {
+export async function pollCodexDeviceAuth(deviceAuthId: string, userCode: string, signal?: AbortSignal): Promise<PollResult> {
   const res = await fetch(DEVICE_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -85,6 +86,7 @@ export async function pollCodexDeviceAuth(deviceAuthId: string, userCode: string
       device_auth_id: deviceAuthId,
       user_code: userCode,
     }),
+    signal,
   });
 
   // 403 / 404 = user hasn't approved yet
@@ -115,6 +117,7 @@ export async function pollCodexDeviceAuth(deviceAuthId: string, userCode: string
 export async function exchangeCodexToken(
   authorizationCode: string,
   codeVerifier: string,
+  signal?: AbortSignal,
 ): Promise<CodexTokenResult> {
   const res = await fetch(TOKEN_URL, {
     method: "POST",
@@ -126,6 +129,7 @@ export async function exchangeCodexToken(
       code_verifier: codeVerifier,
       redirect_uri: DEVICE_REDIRECT_URI,
     }),
+    signal,
   });
 
   if (!res.ok) {

@@ -4,7 +4,7 @@ import { PollerEngine } from "../src/core/poller/poller";
 import { ProviderRegistry } from "../src/core/providers/registry";
 import type { ProviderAdapter } from "../src/core/providers/adapter";
 import type { UsageReport } from "../src/types";
-import { createServer, type AppInstance } from "../src/server/app";
+import { createServer, type AppInstance, type ServerOptions } from "../src/server/app";
 import { getDevinRedirectUri, isDevinHostedFlow, initiateDevinAuth } from "../src/core/oauth/devin";
 
 const mockSuccessDevinAdapter: ProviderAdapter = {
@@ -30,19 +30,22 @@ const mockFailDevinAdapter: ProviderAdapter = {
   async fetchUsage(): Promise<UsageReport> {
     return {
       provider: "devin",
-      error: "Devin quota check failed: account suspended",
+      error: "Devin quota check failed: <script>alert(1)</script>",
       limits: [],
       fetchedAt: Date.now(),
     };
   },
 };
 
-function context(customAdapter: ProviderAdapter = mockSuccessDevinAdapter) {
+function context(
+  customAdapter: ProviderAdapter = mockSuccessDevinAdapter,
+  options?: ServerOptions,
+) {
   const vault = new StorageVault(":memory:");
   const registry = new ProviderRegistry();
   registry.register(customAdapter);
   const poller = new PollerEngine(vault, registry);
-  const app = createServer(vault, poller, registry);
+  const app = createServer(vault, poller, registry, undefined, options);
   return { vault, app, poller, registry };
 }
 
@@ -479,6 +482,86 @@ describe("Devin public OAuth callback & initiate routes", () => {
     }
   });
 
+  it("keeps two provider-discovered Devin identities distinct when token responses have no identity", async () => {
+    const originalFetch = globalThis.fetch;
+    const origRedirect = process.env["DEVIN_OAUTH_REDIRECT_URI"];
+    process.env["DEVIN_OAUTH_REDIRECT_URI"] = "https://usemeter.example.com/api/oauth/devin/callback";
+    const discoveredIdentityAdapter: ProviderAdapter = {
+      id: "devin",
+      supports: provider => provider === "devin",
+      async fetchUsage(credential): Promise<UsageReport> {
+        return {
+          provider: "devin",
+          accountLabel: credential.secret === "synthetic-account-a-token" ? "provider-account-a" : "provider-account-b",
+          fetchedAt: Date.now(),
+          limits: [],
+          health: "healthy",
+          stale: false,
+          source: "live",
+        };
+      },
+    };
+    const { vault, app } = context(discoveredIdentityAdapter);
+    const sessionIds: string[] = [];
+    let cookie = "";
+    try {
+      cookie = await register(app, "devin-discovered-identities@example.com");
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.includes("/auth/cli/token")) {
+          const request = JSON.parse(String(init?.body)) as { code: string };
+          const token = request.code === "code-a" ? "synthetic-account-a-token" : "synthetic-account-b-token";
+          return new Response(JSON.stringify({ token }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        throw new Error(`Unexpected synthetic Devin endpoint: ${url}`);
+      }) as typeof fetch;
+
+      const login = async (code: string) => {
+        const initiation = await app.request("/api/oauth/devin/initiate", {
+          method: "POST",
+          headers: { Cookie: cookie },
+        });
+        expect(initiation.status).toBe(200);
+        const initBody = await initiation.json() as { data: { sessionId: string } };
+        sessionIds.push(initBody.data.sessionId);
+        const callback = await app.request(`/api/oauth/devin/callback?state=${initBody.data.sessionId}&code=${code}`);
+        expect(callback.status).toBe(200);
+        expect(await callback.text()).toContain("Devin Login Successful");
+        const statusResponse = await app.request(`/api/oauth/status/${initBody.data.sessionId}`, {
+          headers: { Cookie: cookie },
+        });
+        return await statusResponse.json() as { status: string; accountLabel?: string };
+      };
+
+      expect(await login("code-a")).toMatchObject({ status: "complete", accountLabel: "provider-account-a" });
+      expect(await login("code-b")).toMatchObject({ status: "complete", accountLabel: "provider-account-b" });
+      const credentials = vault.listCredentials((await vault.getUserByEmail("devin-discovered-identities@example.com"))!.id, "devin");
+      expect(credentials.map(credential => credential.accountLabel).sort()).toEqual([
+        "provider-account-a",
+        "provider-account-b",
+      ]);
+      expect(new Set(credentials.map(credential => credential.id)).size).toBe(2);
+      const accountIds = new Set(credentials.map(credential => credential.ownerId));
+      expect(accountIds.size).toBe(1);
+    } finally {
+      if (cookie) {
+        for (const sessionId of sessionIds) {
+          await app.request(`/api/oauth/sessions/${encodeURIComponent(sessionId)}`, {
+            method: "DELETE",
+            headers: { Cookie: cookie },
+          });
+        }
+      }
+      globalThis.fetch = originalFetch;
+      if (origRedirect !== undefined) process.env["DEVIN_OAUTH_REDIRECT_URI"] = origRedirect;
+      else delete process.env["DEVIN_OAUTH_REDIRECT_URI"];
+      vault.close();
+    }
+  });
+
   it("uses static generic HTML and sets error in status JSON on initial validation failure", async () => {
     const { vault, app } = context(mockFailDevinAdapter);
     const origRedirect = process.env["DEVIN_OAUTH_REDIRECT_URI"];
@@ -511,7 +594,8 @@ describe("Devin public OAuth callback & initiate routes", () => {
       const html = await callbackRes.text();
 
       // Verify static generic HTML message: NO raw error unescaped in HTML
-      expect(html).toContain("Provider validation failed. Please check your dashboard");
+      expect(html).toContain("Devin Login Failed");
+      expect(html).not.toContain("<script>alert(1)</script>");
       expect(html).not.toContain("Devin quota check failed");
 
       // Verify precise error is in authenticated status JSON
@@ -520,7 +604,9 @@ describe("Devin public OAuth callback & initiate routes", () => {
       });
       const statusJson = (await statusRes.json()) as { status: string; error?: string };
       expect(statusJson.status).toBe("error");
-      expect(statusJson.error).toBe("Devin quota check failed: account suspended");
+      expect(statusJson.error).toBeTruthy();
+      expect(statusJson.error).toMatch(/quota check failed/i);
+      expect(statusJson.error).toContain("<script>alert(1)</script>");
     } finally {
       globalThis.fetch = originalFetch;
       if (origRedirect !== undefined) process.env["DEVIN_OAUTH_REDIRECT_URI"] = origRedirect;
@@ -530,9 +616,9 @@ describe("Devin public OAuth callback & initiate routes", () => {
   });
 
   it("transitions expired Devin pending session to error on status poll without callback, while preserving 404 tenant isolation", async () => {
-    const { vault, app } = context();
+    let now = Date.now();
+    const { vault, app } = context(mockSuccessDevinAdapter, { oauthNow: () => now });
     const origRedirect = process.env["DEVIN_OAUTH_REDIRECT_URI"];
-    const originalNow = Date.now;
 
     try {
       process.env["DEVIN_OAUTH_REDIRECT_URI"] = "https://usemeter.example.com/api/oauth/devin/callback";
@@ -559,8 +645,7 @@ describe("Devin public OAuth callback & initiate routes", () => {
       expect(initialStatusJson.status).toBe("pending");
 
       // Advance clock past 10-minute session TTL (600 seconds) deterministically
-      const startTime = originalNow();
-      Date.now = () => startTime + 10 * 60 * 1000 + 1_000;
+      now += 10 * 60 * 1000 + 1_000;
 
       // Other user (User 2) polling User 1's expired session still gets 404 (tenant isolation preserved)
       const foreignStatusRes = await app.request(`/api/oauth/status/${sessionId}`, {
@@ -584,7 +669,6 @@ describe("Devin public OAuth callback & initiate routes", () => {
       expect(lateCallbackRes.status).toBe(400);
       expect(await lateCallbackRes.text()).toContain("already used");
     } finally {
-      Date.now = originalNow;
       if (origRedirect !== undefined) process.env["DEVIN_OAUTH_REDIRECT_URI"] = origRedirect;
       else delete process.env["DEVIN_OAUTH_REDIRECT_URI"];
       vault.close();

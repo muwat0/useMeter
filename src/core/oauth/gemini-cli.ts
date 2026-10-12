@@ -54,7 +54,8 @@ export function initiateGeminiCliAuth(): GeminiCliAuthInitiateResult {
 
 export async function listenForGeminiCliCallback(
   expectedState: string,
-  timeoutMs: number = 120_000
+  timeoutMs: number = 120_000,
+  signal?: AbortSignal,
 ): Promise<string> {
   return listenForOAuthCallback({
     port: CALLBACK_PORT,
@@ -62,10 +63,11 @@ export async function listenForGeminiCliCallback(
     expectedState,
     providerName: "Gemini CLI",
     timeoutMs,
+    signal,
   });
 }
 
-export async function exchangeGeminiCliCode(code: string): Promise<GeminiCliTokenResult> {
+export async function exchangeGeminiCliCode(code: string, signal?: AbortSignal): Promise<GeminiCliTokenResult> {
   const res = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -76,6 +78,7 @@ export async function exchangeGeminiCliCode(code: string): Promise<GeminiCliToke
       grant_type: "authorization_code",
       redirect_uri: REDIRECT_URI,
     }).toString(),
+    signal,
   });
 
   if (!res.ok) {
@@ -95,6 +98,7 @@ export async function exchangeGeminiCliCode(code: string): Promise<GeminiCliToke
   try {
     const userRes = await fetch("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", {
       headers: { Authorization: `Bearer ${data.access_token}` },
+      signal,
     });
     if (userRes.ok) {
       const u = (await userRes.json()) as { email?: string };
@@ -119,6 +123,7 @@ export async function exchangeGeminiCliCode(code: string): Promise<GeminiCliToke
           pluginType: "GEMINI",
         },
       }),
+      signal,
     });
     if (loadRes.ok) {
       const pData = (await loadRes.json()) as { cloudaicompanionProject?: string | { id?: string } };

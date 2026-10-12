@@ -4,7 +4,7 @@ import { getCookie } from "hono/cookie";
 import type { StorageVault } from "../core/storage/vault";
 import type { PollerEngine } from "../core/poller/poller";
 import type { ProviderRegistry } from "../core/providers/registry";
-import type { AdminSystemStats, AdminUserView, InputCredential, InvitationView, UsageReport, User, UserRole } from "../types";
+import type { AdminSystemStats, AdminUserView, InputCredential, InvitationView, StoredCredential, UsageReport, User, UserRole } from "../types";
 import { AuthService } from "../core/auth/auth";
 import {
   createCorsOriginResolver,
@@ -18,7 +18,7 @@ import {
 } from "./security";
 import { join } from "path";
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import {
   initiateCodexDeviceAuth,
   pollCodexDeviceAuth,
@@ -51,10 +51,20 @@ import {
   listenForDevinCallback,
   getDevinRedirectUri,
 } from "../core/oauth";
+import { OAuthCapacityError, OAuthSessionStore, type OAuthSession } from "../core/oauth/session-store";
 
 
 const GOOGLE_LOOPBACK_CALLBACK_URI = "http://127.0.0.1:51121/oauth-callback";
-const GOOGLE_OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
+const OAUTH_MAX_SESSION_TTL_MS = 10 * 60 * 1000;
+const OAUTH_MAX_SESSION_TTL_SECONDS = OAUTH_MAX_SESSION_TTL_MS / 1_000;
+const NO_OP: () => void = () => {};
+
+function oauthExpiresInSeconds(providerExpiresIn?: number): number {
+  if (typeof providerExpiresIn !== "number" || !Number.isFinite(providerExpiresIn)) {
+    return OAUTH_MAX_SESSION_TTL_SECONDS;
+  }
+  return Math.min(Math.max(providerExpiresIn, 0), OAUTH_MAX_SESSION_TTL_SECONDS);
+}
 
 interface ParsedGoogleCallback {
   state: string;
@@ -102,44 +112,26 @@ function parseGoogleManualCallbackUrl(value: unknown): ParsedGoogleCallback | nu
   }
 }
 
-function clearGoogleOAuthSecrets(session: PendingOAuthSession): void {
-  session.googleVerifier = undefined;
-  session.googleClientId = undefined;
-  session.googleClientSecret = undefined;
-  session.googleRedirectUri = undefined;
-}
 
-function expireGoogleOAuthSession(session: PendingOAuthSession, now: number): boolean {
-  if (
-    session.provider !== "antigravity" ||
-    session.status !== "pending" ||
-    session.consumed ||
-    session.createdAt === undefined ||
-    now - session.createdAt < GOOGLE_OAUTH_SESSION_TTL_MS
-  ) {
-    return false;
-  }
-  session.status = "error";
-  session.error = "Authorization session expired";
-  session.consumed = true;
-  clearGoogleOAuthSecrets(session);
-  return true;
-}
-
-interface PendingOAuthSession {
-  provider: string;
-  ownerId: string;
-  status: "pending" | "complete" | "error";
-  error?: string;
-  accountLabel?: string;
+interface PendingOAuthData {
   googleVerifier?: string;
   googleClientId?: string;
   googleClientSecret?: string;
   googleRedirectUri?: string;
   devinVerifier?: string;
-  createdAt?: number;
-  consumed?: boolean;
+  callbackVerifier?: string;
 }
+
+function clearOAuthSecrets(data: PendingOAuthData | undefined): void {
+  if (!data) return;
+  data.googleVerifier = undefined;
+  data.googleClientId = undefined;
+  data.googleClientSecret = undefined;
+  data.googleRedirectUri = undefined;
+  data.devinVerifier = undefined;
+  data.callbackVerifier = undefined;
+}
+
 interface AppVariables {
   user: User;
   sessionToken: string;
@@ -200,8 +192,10 @@ export interface ServerOptions {
   assetRevision?: string;
   distDir?: string;
   googleOAuthExchange?: typeof exchangeGoogleCode;
-  googleOAuthNow?: () => number;
+  oauthNow?: () => number;
 }
+
+type PendingOAuthSession = OAuthSession<PendingOAuthData>;
 
 const DEFAULT_DIST_CLIENT_DIR = join(import.meta.dir, "../../dist/client");
 
@@ -241,8 +235,11 @@ export function createServer(
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const auth = authService ?? new AuthService(vault);
-  const pendingOAuth = new Map<string, PendingOAuthSession>();
-  const pendingDeviceOwners = new Map<string, string>();
+  const oauthNow = options?.oauthNow ?? Date.now;
+  const oauthSessions = new OAuthSessionStore<PendingOAuthData>({
+    now: oauthNow,
+    onEnd: session => clearOAuthSecrets(session.data),
+  });
   const rateLimiter = options?.rateLimiter ?? new RateLimiter();
 
   function getClientIp(c: AppContext): string {
@@ -262,20 +259,53 @@ export function createServer(
       429
     );
   }
+
+  function reserveOAuth(ownerId: string, provider: string): PendingOAuthSession | undefined {
+    try {
+      return oauthSessions.reserve(ownerId, provider, {});
+    } catch (error) {
+      if (error instanceof OAuthCapacityError) return undefined;
+      throw error;
+    }
+  }
+
+  function oauthCapacityResponse(c: AppContext) {
+    c.header("Retry-After", "60");
+    return c.json({
+      success: false,
+      error: "Too many active authorization sessions. Please try again later.",
+      errorCode: "OAUTH_CAPACITY",
+      retryAfter: 60,
+    }, 429);
+  }
+
+  function deviceSessionNotFound(c: AppContext) {
+    return c.json({ status: "error", error: "Device authorization session not found or expired" }, 404);
+  }
+
+  function bindOAuthReservationToRequest(c: AppContext, session: PendingOAuthSession): () => void {
+    const requestSignal = c.req.raw.signal;
+    const cancel = () => {
+      oauthSessions.cancel(session.sessionId, session.ownerId);
+    };
+    if (requestSignal.aborted) cancel();
+    else requestSignal.addEventListener("abort", cancel, { once: true });
+    return () => requestSignal.removeEventListener("abort", cancel);
+  }
   const googleOAuthExchange = options?.googleOAuthExchange ?? exchangeGoogleCode;
-  const googleOAuthNow = options?.googleOAuthNow ?? Date.now;
 
   async function validateAndSaveGoogleCredential(
-    ownerId: string,
+    session: PendingOAuthSession,
     code: string,
     verifier: string,
     config: { clientId: string; clientSecret: string; redirectUri: string },
   ) {
-    const tokens = await googleOAuthExchange(code, verifier, config);
+    const tokens = await googleOAuthExchange(code, verifier, config, session.signal);
+    session.signal.throwIfAborted();
     const accountLabel = tokens.email?.trim() || "Antigravity";
     const refreshToken = tokens.refreshToken?.trim() ? tokens.refreshToken : undefined;
-    const saved = await poller.validateAndSaveCredential(ownerId, {
-      ownerId,
+    const saved = await poller.validateAndSaveCredential(session.ownerId, {
+      ownerId: session.ownerId,
       provider: "antigravity",
       accountLabel,
       credentialType: "oauth",
@@ -290,7 +320,10 @@ export function createServer(
             }
           : {}),
       },
-    }, "preserve");
+    }, "preserve", {
+      signal: session.signal,
+      beforeCommit: () => oauthSessions.isActive(session),
+    });
     return { saved, accountLabel };
   }
 
@@ -896,48 +929,66 @@ export function createServer(
     return c.json({ success: true });
   });
 
-  // OAuth: Codex Device Auth - Initiate
+  // OAuth: bounded, owner-bound device and browser authorization sessions.
   app.post("/api/oauth/codex/initiate", async c => {
+    const user = c.get("user");
+    let reservation: PendingOAuthSession | undefined;
+    let detachRequestAbort = NO_OP;
     try {
-      const user = c.get("user");
-      const result = await initiateCodexDeviceAuth();
-      pendingDeviceOwners.set(result.deviceAuthId, user.id);
-      return c.json({ success: true, data: result });
+      reservation = reserveOAuth(user.id, "codex");
+      if (!reservation) return oauthCapacityResponse(c);
+      detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
+      const result = await initiateCodexDeviceAuth(reservation.signal);
+      const sessionId = randomUUID();
+      const expiresIn = oauthExpiresInSeconds(result.expiresIn);
+      if (!oauthSessions.activate(reservation, sessionId, {}, {
+        bindingId: result.deviceAuthId,
+        expiresInMs: expiresIn * 1_000,
+      })) {
+        oauthSessions.cancel(reservation.sessionId, user.id);
+        return c.json({ success: false, error: "Failed to initiate device authorization" }, 500);
+      }
+      return c.json({ success: true, data: { ...result, sessionId, expiresIn } });
     } catch {
+      if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate device authorization" }, 500);
+    }
+    finally {
+      detachRequestAbort();
     }
   });
 
-  // OAuth: Codex Device Auth - Poll & Exchange
   app.post("/api/oauth/codex/poll", async c => {
-    try {
-      const user = c.get("user");
-      const body = (await c.req.json().catch(() => ({}))) as { deviceAuthId: string; userCode: string; label?: string };
-      const flowKey = body.deviceAuthId || getClientIp(c);
-      const rl = rateLimiter.check(`oauthDevicePoll:${user.id}:codex:${flowKey}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
-      if (!rl.allowed) {
-        c.header("Retry-After", String(rl.retryAfterSec || 60));
-        return c.json({ status: "error", error: "Too many polling attempts. Please slow down.", retryAfter: rl.retryAfterSec }, 429);
-      }
-      const boundOwner = pendingDeviceOwners.get(body.deviceAuthId);
-      if (boundOwner && boundOwner !== user.id) {
-        return c.json({ status: "error", error: "Device authentication owned by another user" }, 403);
-      }
-      const pollRes = await pollCodexDeviceAuth(body.deviceAuthId, body.userCode);
+    const user = c.get("user");
+    const body = (await c.req.json().catch(() => ({}))) as { deviceAuthId?: string; userCode?: string; label?: string };
+    const bindingId = typeof body.deviceAuthId === "string" ? body.deviceAuthId : "";
+    const flowKey = bindingId || getClientIp(c);
+    const rl = rateLimiter.check(`oauthDevicePoll:${user.id}:codex:${flowKey}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
+    if (!rl.allowed) {
+      c.header("Retry-After", String(rl.retryAfterSec || 60));
+      return c.json({ status: "error", error: "Too many polling attempts. Please slow down.", retryAfter: rl.retryAfterSec }, 429);
+    }
+    const claim = oauthSessions.claimDevice("codex", bindingId, user.id);
+    if (!claim) return deviceSessionNotFound(c);
+    if (claim.status === "busy") return c.json({ status: "pending" });
+    const session = claim.session;
 
+    try {
+      const pollRes = await pollCodexDeviceAuth(bindingId, body.userCode ?? "", session.signal);
+      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
       if (pollRes.status === "pending") {
+        oauthSessions.releaseClaim(session);
         return c.json({ status: "pending" });
       }
-
       if (pollRes.status === "error") {
+        oauthSessions.fail(session, pollRes.message);
         return c.json({ status: "error", error: pollRes.message });
       }
 
-      pendingDeviceOwners.delete(body.deviceAuthId);
-      const tokenResult = await exchangeCodexToken(pollRes.authorizationCode, pollRes.codeVerifier);
+      const tokenResult = await exchangeCodexToken(pollRes.authorizationCode, pollRes.codeVerifier, session.signal);
+      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
       const accountLabel = tokenResult.email || body.label || "ChatGPT Codex";
-
-      let saved;
+      let saved: StoredCredential;
       try {
         saved = await poller.validateAndSaveCredential(user.id, {
           ownerId: user.id,
@@ -951,39 +1002,47 @@ export function createServer(
             email: tokenResult.email,
             planType: tokenResult.planType,
           },
-        }, "preserve");
+        }, "preserve", {
+          signal: session.signal,
+          beforeCommit: () => oauthSessions.isActive(session),
+        });
       } catch (validationError) {
+        if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
         const message = validationError instanceof Error ? validationError.message : String(validationError);
+        oauthSessions.fail(session, message);
         return c.json({ status: "error", error: message });
       }
-
-      return c.json({
-        status: "complete",
-        data: { id: saved.id, accountLabel: saved.accountLabel },
-      });
-    } catch {
-      return c.json({ status: "error", error: "Failed to complete device authorization" }, 500);
+      if (!oauthSessions.complete(session, saved.accountLabel)) return deviceSessionNotFound(c);
+      return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
+    } catch (error) {
+      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      const message = error instanceof Error ? error.message : "Failed to complete device authorization";
+      oauthSessions.fail(session, message);
+      return c.json({ status: "error", error: message }, 500);
     }
   });
 
-  // OAuth: Google (Antigravity / Gemini) - Initiate
   app.post("/api/oauth/google/initiate", c => {
+    const user = c.get("user");
+    let reservation: PendingOAuthSession | undefined;
+    let detachRequestAbort = NO_OP;
     try {
-      const user = c.get("user");
+      reservation = reserveOAuth(user.id, "antigravity");
+      if (!reservation) return oauthCapacityResponse(c);
+      detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const config = validateGoogleOAuthConfig();
       const { authUrl, verifier, state } = initiateGoogleAuth(config);
       const sessionId = state;
-      pendingOAuth.set(sessionId, {
-        provider: "antigravity",
-        ownerId: user.id,
-        status: "pending",
+      const data: PendingOAuthData = {
         googleVerifier: verifier,
         googleClientId: config.clientId,
         googleClientSecret: config.clientSecret,
         googleRedirectUri: config.redirectUri,
-        createdAt: googleOAuthNow(),
-        consumed: false,
-      });
+      };
+      if (!oauthSessions.activate(reservation, sessionId, data)) {
+        oauthSessions.cancel(reservation.sessionId, user.id);
+        return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+      }
       return c.json({
         success: true,
         data: {
@@ -991,10 +1050,11 @@ export function createServer(
           sessionId,
           redirectUri: config.redirectUri,
           manualCallback: config.redirectUri === GOOGLE_LOOPBACK_CALLBACK_URI,
-          expiresIn: GOOGLE_OAUTH_SESSION_TTL_MS / 1000,
+          expiresIn: OAUTH_MAX_SESSION_TTL_SECONDS,
         },
       });
     } catch (err) {
+      if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       const msg = err instanceof Error ? err.message : "";
       if (
         msg.includes("Public Google OAuth redirect URI requires custom GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET") ||
@@ -1005,9 +1065,11 @@ export function createServer(
       }
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
     }
+    finally {
+      detachRequestAbort();
+    }
   });
 
-  // OAuth: Google loopback callback pasted from the remote browser's address bar.
   app.post("/api/oauth/google/manual", async c => {
     const user = c.get("user");
     const rl = rateLimiter.check(
@@ -1026,73 +1088,67 @@ export function createServer(
     const sessionId = typeof request["sessionId"] === "string" ? request["sessionId"] : "";
     if (!sessionId) return c.json({ success: false, error: "Invalid callback request" }, 400);
 
-    const session = pendingOAuth.get(sessionId);
-    if (!session || session.provider !== "antigravity" || session.ownerId !== user.id) {
+    const session = oauthSessions.getOwned(sessionId, user.id);
+    if (!session || session.provider !== "antigravity") {
       return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
     }
-    if (expireGoogleOAuthSession(session, googleOAuthNow()) || session.createdAt === undefined) {
-      return c.json({ success: false, error: "Authorization session expired" }, 400);
+    if (session.status !== "pending") {
+      const message = session.error === "Authorization session expired"
+        ? session.error
+        : "Authorization response already used";
+      return c.json({ success: false, error: message }, 400);
     }
-    if (session.status !== "pending" || session.consumed) {
-      return c.json({ success: false, error: "Authorization response already used" }, 400);
-    }
-
     const callback = parseGoogleManualCallbackUrl(request["callbackInput"]);
     if (!callback || callback.state !== sessionId) {
       return c.json({ success: false, error: "Invalid callback URL" }, 400);
     }
+    if (!oauthSessions.claim(session)) {
+      return c.json({ success: false, error: "Authorization response already used" }, 400);
+    }
     if (
-      !session.googleVerifier ||
-      !session.googleClientId ||
-      !session.googleClientSecret ||
-      session.googleRedirectUri !== GOOGLE_LOOPBACK_CALLBACK_URI
+      !session.data.googleVerifier ||
+      !session.data.googleClientId ||
+      !session.data.googleClientSecret ||
+      session.data.googleRedirectUri !== GOOGLE_LOOPBACK_CALLBACK_URI
     ) {
-      session.status = "error";
-      session.error = "Authorization session invalid";
-      session.consumed = true;
-      clearGoogleOAuthSecrets(session);
+      oauthSessions.fail(session, "Authorization session invalid");
       return c.json({ success: false, error: "Invalid or expired authorization session" }, 400);
     }
 
-    const verifier = session.googleVerifier;
+    const verifier = session.data.googleVerifier;
     const config = {
-      clientId: session.googleClientId,
-      clientSecret: session.googleClientSecret,
-      redirectUri: session.googleRedirectUri,
+      clientId: session.data.googleClientId,
+      clientSecret: session.data.googleClientSecret,
+      redirectUri: session.data.googleRedirectUri,
     };
-    session.consumed = true;
-    session.googleVerifier = undefined;
-
     if (callback.providerError) {
-      session.status = "error";
-      session.error = "Authorization was denied";
-      clearGoogleOAuthSecrets(session);
+      oauthSessions.fail(session, "Authorization was denied");
       return c.json({ success: false, error: "Authorization was denied" }, 400);
     }
 
     try {
       const { saved, accountLabel } = await validateAndSaveGoogleCredential(
-        user.id,
+        session,
         callback.code!,
         verifier,
         config,
       );
-      session.status = "complete";
-      session.accountLabel = accountLabel;
-      clearGoogleOAuthSecrets(session);
+      if (!oauthSessions.complete(session, accountLabel)) {
+        return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
+      }
       return c.json({ success: true, data: { id: saved.id, accountLabel } });
     } catch {
-      session.status = "error";
-      session.error = "Authorization failed";
-      clearGoogleOAuthSecrets(session);
+      if (!oauthSessions.isActive(session)) {
+        return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
+      }
+      oauthSessions.fail(session, "Authorization failed");
       return c.json({ success: false, error: "Authorization failed" }, 400);
     }
   });
 
-  // OAuth: Google Web-client callback.
   app.get("/api/oauth/google/callback", async c => {
     const params = parseGoogleCallbackParameters(new URL(c.req.url).searchParams);
-    const session = params ? pendingOAuth.get(params.state) : undefined;
+    const session = params ? oauthSessions.get(params.state) : undefined;
     const successPage = (title: string, message: string, color: string) =>
       c.html(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:system-ui,sans-serif;background:#0a0a0b;color:${color};text-align:center;padding:50px"><h2>${title}</h2><p style="color:#a1a1aa">${message}</p><script>setTimeout(()=>window.close(),1500)</script></body></html>`);
 
@@ -1100,271 +1156,361 @@ export function createServer(
     if (
       !session ||
       session.provider !== "antigravity" ||
-      session.googleRedirectUri === GOOGLE_LOOPBACK_CALLBACK_URI
+      session.data.googleRedirectUri === GOOGLE_LOOPBACK_CALLBACK_URI
     ) {
       return c.html("Invalid or expired authorization session.", 400);
     }
-    if (expireGoogleOAuthSession(session, googleOAuthNow()) || session.createdAt === undefined) {
-      return successPage("Google Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
-    }
-    if (session.status !== "pending" || session.consumed) {
+    if (session.status !== "pending") {
       return c.html("Authorization response already used.", 400);
     }
+    if (!oauthSessions.claim(session)) return c.html("Authorization response already used.", 400);
     if (
-      !session.googleVerifier ||
-      !session.googleClientId ||
-      !session.googleClientSecret ||
-      !session.googleRedirectUri
+      !session.data.googleVerifier ||
+      !session.data.googleClientId ||
+      !session.data.googleClientSecret ||
+      !session.data.googleRedirectUri
     ) {
-      session.status = "error";
-      session.error = "Authorization session invalid";
-      session.consumed = true;
-      clearGoogleOAuthSecrets(session);
+      oauthSessions.fail(session, "Authorization session invalid");
       return c.html("Invalid or expired authorization session.", 400);
     }
 
-    const verifier = session.googleVerifier;
+    const verifier = session.data.googleVerifier;
     const config = {
-      clientId: session.googleClientId,
-      clientSecret: session.googleClientSecret,
-      redirectUri: session.googleRedirectUri,
+      clientId: session.data.googleClientId,
+      clientSecret: session.data.googleClientSecret,
+      redirectUri: session.data.googleRedirectUri,
     };
-    session.consumed = true;
-    session.googleVerifier = undefined;
-
     if (params.providerError) {
-      session.status = "error";
-      session.error = "Authorization was denied";
-      clearGoogleOAuthSecrets(session);
+      oauthSessions.fail(session, "Authorization was denied");
       return successPage("Google Login Failed", "Authorization was denied. You can close this tab.", "#f43f5e");
     }
 
     try {
       const { accountLabel } = await validateAndSaveGoogleCredential(
-        session.ownerId,
+        session,
         params.code!,
         verifier,
         config,
       );
-      session.status = "complete";
-      session.accountLabel = accountLabel;
-      clearGoogleOAuthSecrets(session);
+      if (!oauthSessions.complete(session, accountLabel)) {
+        return successPage("Google Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
+      }
       return successPage("Google Login Successful", "You can close this tab and return to useMeter.", "#10b981");
     } catch {
-      session.status = "error";
-      session.error = "Authorization failed";
-      clearGoogleOAuthSecrets(session);
+      if (!oauthSessions.isActive(session)) {
+        return successPage("Google Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
+      }
+      oauthSessions.fail(session, "Authorization failed");
       return successPage("Google Login Failed", "Authorization failed. You can close this tab.", "#f43f5e");
     }
   });
 
-  // OAuth: Claude - Initiate
   app.post("/api/oauth/claude/initiate", c => {
+    const user = c.get("user");
+    let reservation: PendingOAuthSession | undefined;
+    let detachRequestAbort = NO_OP;
     try {
-      const user = c.get("user");
+      reservation = reserveOAuth(user.id, "anthropic");
+      if (!reservation) return oauthCapacityResponse(c);
+      detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const { authUrl, verifier, state } = initiateClaudeAuth();
-      const sessionId = state;
+      if (!oauthSessions.activate(reservation, state, { callbackVerifier: verifier })) {
+        oauthSessions.cancel(reservation.sessionId, user.id);
+        return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+      }
 
-      pendingOAuth.set(sessionId, { provider: "anthropic", ownerId: user.id, status: "pending" });
-
-      listenForClaudeCallback(state)
+      listenForClaudeCallback(state, 120_000, reservation.signal)
         .then(async code => {
-          const tokens = await exchangeClaudeCode(code, verifier);
-          let label = "Claude Pro/Max";
+          if (!oauthSessions.claim(reservation!)) return;
           try {
-            if (tokens.accessToken) {
-              const profileRes = await fetch("https://api.anthropic.com/api/oauth/user_profile", {
-                headers: { Authorization: `Bearer ${tokens.accessToken}`, Accept: "application/json", "User-Agent": "claude-cli/0.2.148 (external, cli)" },
-              });
-              if (profileRes.ok) {
-                const profile = (await profileRes.json()) as { email?: string; user?: { email?: string; id?: string }; id?: string };
-                const discoveredEmail = profile.email || profile.user?.email;
-                const discoveredId = profile.user?.id || profile.id;
-                if (discoveredEmail && discoveredEmail.trim()) label = discoveredEmail.trim();
-                else if (discoveredId && String(discoveredId).trim()) label = String(discoveredId).trim();
+            const currentVerifier = reservation!.data.callbackVerifier;
+            if (!currentVerifier) throw new Error("Authorization session invalid");
+            reservation!.data.callbackVerifier = undefined;
+            const tokens = await exchangeClaudeCode(code, currentVerifier, reservation!.signal);
+            if (!oauthSessions.isActive(reservation!)) return;
+            let label = "Claude Pro/Max";
+            try {
+              if (tokens.accessToken) {
+                const profileRes = await fetch("https://api.anthropic.com/api/oauth/user_profile", {
+                  headers: { Authorization: `Bearer ${tokens.accessToken}`, Accept: "application/json", "User-Agent": "claude-cli/0.2.148 (external, cli)" },
+                  signal: reservation!.signal,
+                });
+                if (profileRes.ok) {
+                  const profile = (await profileRes.json()) as { email?: string; user?: { email?: string; id?: string }; id?: string };
+                  const discoveredEmail = profile.email || profile.user?.email;
+                  const discoveredId = profile.user?.id || profile.id;
+                  if (discoveredEmail && discoveredEmail.trim()) label = discoveredEmail.trim();
+                  else if (discoveredId && String(discoveredId).trim()) label = String(discoveredId).trim();
+                }
               }
+            } catch {
+              if (!oauthSessions.isActive(reservation!)) return;
             }
-          } catch {}
-
-          const saved = vault.saveCredential(user.id, {
-            ownerId: user.id,
-            provider: "anthropic",
-            accountLabel: label,
-            credentialType: "oauth",
-            secret: tokens.accessToken,
-            metadata: {
-              refreshToken: tokens.refreshToken,
-              email: label !== "Claude Pro/Max" ? label : undefined,
-            },
-          });
-          const initialReport = await poller.pollCredential(user.id, saved.id);
-          if (initialReport?.error) {
-            vault.deleteCredential(user.id, saved.id);
-            pendingOAuth.set(sessionId, { provider: "anthropic", ownerId: user.id, status: "error", error: initialReport.error });
-            return;
+            if (!oauthSessions.isActive(reservation!)) return;
+            await poller.validateAndSaveCredential(user.id, {
+              ownerId: user.id,
+              provider: "anthropic",
+              accountLabel: label,
+              credentialType: "oauth",
+              secret: tokens.accessToken,
+              metadata: {
+                refreshToken: tokens.refreshToken,
+                email: label !== "Claude Pro/Max" ? label : undefined,
+              },
+            }, "preserve", {
+              signal: reservation!.signal,
+              beforeCommit: () => oauthSessions.isActive(reservation!),
+            });
+            oauthSessions.complete(reservation!, label);
+          } catch (error) {
+            if (oauthSessions.isActive(reservation!)) {
+              oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
+            }
           }
-          pendingOAuth.set(sessionId, { provider: "anthropic", ownerId: user.id, status: "complete", accountLabel: label });
         })
-        .catch(() => {
-          pendingOAuth.set(sessionId, { provider: "anthropic", ownerId: user.id, status: "error", error: "Authorization failed" });
+        .catch(error => {
+          if (oauthSessions.isActive(reservation!)) {
+            oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
+          }
         });
 
-      return c.json({ success: true, data: { authUrl, sessionId } });
+      return c.json({ success: true, data: { authUrl, sessionId: state, expiresIn: 600 } });
     } catch {
+      if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+    }
+    finally {
+      detachRequestAbort();
     }
   });
 
-  // OAuth: GitHub Copilot - Initiate & Poll
   app.post("/api/oauth/copilot/initiate", async c => {
+    const user = c.get("user");
+    let reservation: PendingOAuthSession | undefined;
+    let detachRequestAbort = NO_OP;
     try {
-      const user = c.get("user");
-      const result = await initiateCopilotDeviceAuth();
-      pendingDeviceOwners.set(result.deviceCode, user.id);
-      return c.json({ success: true, data: result });
+      reservation = reserveOAuth(user.id, "copilot");
+      if (!reservation) return oauthCapacityResponse(c);
+      detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
+      const result = await initiateCopilotDeviceAuth(reservation.signal);
+      const sessionId = randomUUID();
+      const expiresIn = oauthExpiresInSeconds(result.expiresIn);
+      if (!oauthSessions.activate(reservation, sessionId, {}, {
+        bindingId: result.deviceCode,
+        expiresInMs: expiresIn * 1_000,
+      })) {
+        oauthSessions.cancel(reservation.sessionId, user.id);
+        return c.json({ success: false, error: "Failed to initiate device authorization" }, 500);
+      }
+      return c.json({ success: true, data: { ...result, sessionId, expiresIn } });
     } catch {
+      if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate device authorization" }, 500);
+    }
+    finally {
+      detachRequestAbort();
     }
   });
 
   app.post("/api/oauth/copilot/poll", async c => {
+    const user = c.get("user");
+    const body = (await c.req.json().catch(() => ({}))) as { deviceCode?: string; label?: string };
+    const bindingId = typeof body.deviceCode === "string" ? body.deviceCode : "";
+    const rl = rateLimiter.check(`oauthDevicePoll:${user.id}:copilot:${bindingId || getClientIp(c)}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
+    if (!rl.allowed) {
+      c.header("Retry-After", String(rl.retryAfterSec || 60));
+      return c.json({ status: "error", error: "Too many polling attempts. Please slow down.", retryAfter: rl.retryAfterSec }, 429);
+    }
+    const claim = oauthSessions.claimDevice("copilot", bindingId, user.id);
+    if (!claim) return deviceSessionNotFound(c);
+    if (claim.status === "busy") return c.json({ status: "pending" });
+    const session = claim.session;
     try {
-      const user = c.get("user");
-      const body = (await c.req.json().catch(() => ({}))) as { deviceCode: string; label?: string };
-      const flowKey = body.deviceCode || getClientIp(c);
-      const rl = rateLimiter.check(`oauthDevicePoll:${user.id}:copilot:${flowKey}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
-      if (!rl.allowed) {
-        c.header("Retry-After", String(rl.retryAfterSec || 60));
-        return c.json({ status: "error", error: "Too many polling attempts. Please slow down.", retryAfter: rl.retryAfterSec }, 429);
-      }
-      const boundOwner = pendingDeviceOwners.get(body.deviceCode);
-      if (boundOwner && boundOwner !== user.id) {
-        return c.json({ status: "error", error: "Device authentication owned by another user" }, 403);
-      }
-      const pollRes = await pollCopilotDeviceAuth(body.deviceCode);
+      const pollRes = await pollCopilotDeviceAuth(bindingId, session.signal);
+      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
       if (pollRes.status === "pending" || pollRes.status === "slow_down") {
+        oauthSessions.releaseClaim(session);
         return c.json({ status: pollRes.status });
       }
       if (pollRes.status === "error") {
+        oauthSessions.fail(session, pollRes.message);
         return c.json({ status: "error", error: pollRes.message });
       }
-      pendingDeviceOwners.delete(body.deviceCode);
+
       const label = (body.label && body.label !== "GitHub Copilot" ? body.label : (pollRes.token.login || pollRes.token.email)) || pollRes.token.login || pollRes.token.email || "GitHub Copilot";
-      const saved = vault.saveCredential(user.id, {
-        ownerId: user.id,
-        provider: "github-copilot",
-        accountLabel: label,
-        credentialType: "oauth",
-        secret: pollRes.token.accessToken,
-        metadata: {
-          login: pollRes.token.login,
-          email: pollRes.token.email,
-        },
-      });
-      const initialReport = await poller.pollCredential(user.id, saved.id);
-      if (initialReport?.error) {
-        vault.deleteCredential(user.id, saved.id);
-        return c.json({ status: "error", error: initialReport.error });
+      let saved: StoredCredential;
+      try {
+        saved = await poller.validateAndSaveCredential(user.id, {
+          ownerId: user.id,
+          provider: "github-copilot",
+          accountLabel: label,
+          credentialType: "oauth",
+          secret: pollRes.token.accessToken,
+          metadata: { login: pollRes.token.login, email: pollRes.token.email },
+        }, "preserve", {
+          signal: session.signal,
+          beforeCommit: () => oauthSessions.isActive(session),
+        });
+      } catch (validationError) {
+        if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        const message = validationError instanceof Error ? validationError.message : String(validationError);
+        oauthSessions.fail(session, message);
+        return c.json({ status: "error", error: message });
       }
+      if (!oauthSessions.complete(session, saved.accountLabel)) return deviceSessionNotFound(c);
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
-    } catch {
-      return c.json({ status: "error", error: "Failed to complete device authorization" }, 500);
+    } catch (error) {
+      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      const message = error instanceof Error ? error.message : "Failed to complete device authorization";
+      oauthSessions.fail(session, message);
+      return c.json({ status: "error", error: message }, 500);
     }
   });
 
-  // OAuth: Cursor - Initiate & Poll
   app.post("/api/oauth/cursor/initiate", async c => {
+    const user = c.get("user");
+    let reservation: PendingOAuthSession | undefined;
+    let detachRequestAbort = NO_OP;
     try {
-      const user = c.get("user");
+      reservation = reserveOAuth(user.id, "cursor");
+      if (!reservation) return oauthCapacityResponse(c);
+      detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const result = await initiateCursorAuth();
-      pendingDeviceOwners.set(result.uuid, user.id);
-      return c.json({ success: true, data: result });
+      const sessionId = randomUUID();
+      const expiresIn = oauthExpiresInSeconds(result.expiresIn);
+      if (!oauthSessions.activate(reservation, sessionId, { callbackVerifier: result.verifier }, {
+        bindingId: result.uuid,
+        expiresInMs: expiresIn * 1_000,
+      })) {
+        oauthSessions.cancel(reservation.sessionId, user.id);
+        return c.json({ success: false, error: "Failed to initiate cursor authorization" }, 500);
+      }
+      return c.json({ success: true, data: { ...result, sessionId, expiresIn } });
     } catch {
+      if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate cursor authorization" }, 500);
+    }
+    finally {
+      detachRequestAbort();
     }
   });
 
   app.post("/api/oauth/cursor/poll", async c => {
+    const user = c.get("user");
+    const body = (await c.req.json().catch(() => ({}))) as { uuid?: string; verifier?: string; label?: string };
+    const bindingId = typeof body.uuid === "string" ? body.uuid : "";
+    const rl = rateLimiter.check(`oauthDevicePoll:${user.id}:cursor:${bindingId || getClientIp(c)}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
+    if (!rl.allowed) {
+      c.header("Retry-After", String(rl.retryAfterSec || 60));
+      return c.json({ status: "error", error: "Too many polling attempts. Please slow down.", retryAfter: rl.retryAfterSec }, 429);
+    }
+    const claim = oauthSessions.claimDevice("cursor", bindingId, user.id);
+    if (!claim) return deviceSessionNotFound(c);
+    if (claim.status === "busy") return c.json({ status: "pending" });
+    const session = claim.session;
     try {
-      const user = c.get("user");
-      const body = (await c.req.json().catch(() => ({}))) as { uuid: string; verifier: string; label?: string };
-      const flowKey = body.uuid || getClientIp(c);
-      const rl = rateLimiter.check(`oauthDevicePoll:${user.id}:cursor:${flowKey}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
-      if (!rl.allowed) {
-        c.header("Retry-After", String(rl.retryAfterSec || 60));
-        return c.json({ status: "error", error: "Too many polling attempts. Please slow down.", retryAfter: rl.retryAfterSec }, 429);
+      const verifier = session.data.callbackVerifier;
+      if (!verifier || verifier !== body.verifier) {
+        oauthSessions.fail(session, "Invalid device authorization verifier");
+        return c.json({ status: "error", error: "Invalid device authorization verifier" }, 400);
       }
-      const boundOwner = pendingDeviceOwners.get(body.uuid);
-      if (boundOwner && boundOwner !== user.id) {
-        return c.json({ status: "error", error: "Device authentication owned by another user" }, 403);
-      }
-      const pollRes = await pollCursorAuth(body.uuid, body.verifier);
+      const pollRes = await pollCursorAuth(bindingId, verifier, session.signal);
+      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
       if (pollRes.status === "pending") {
+        oauthSessions.releaseClaim(session);
         return c.json({ status: "pending" });
       }
       if (pollRes.status === "error") {
+        oauthSessions.fail(session, pollRes.message);
         return c.json({ status: "error", error: pollRes.message });
       }
-      pendingDeviceOwners.delete(body.uuid);
+
       const label = (body.label && body.label !== "Cursor" ? body.label : pollRes.email) || pollRes.email || "Cursor";
-      const saved = vault.saveCredential(user.id, {
-        ownerId: user.id,
-        provider: "cursor",
-        accountLabel: label,
-        credentialType: "oauth",
-        secret: pollRes.accessToken,
-        metadata: {
-          refreshToken: pollRes.refreshToken,
-          email: pollRes.email,
-        },
-      });
-      const initialReport = await poller.pollCredential(user.id, saved.id);
-      if (initialReport?.error) {
-        vault.deleteCredential(user.id, saved.id);
-        return c.json({ status: "error", error: initialReport.error });
+      let saved: StoredCredential;
+      try {
+        saved = await poller.validateAndSaveCredential(user.id, {
+          ownerId: user.id,
+          provider: "cursor",
+          accountLabel: label,
+          credentialType: "oauth",
+          secret: pollRes.accessToken,
+          metadata: { refreshToken: pollRes.refreshToken, email: pollRes.email },
+        }, "preserve", {
+          signal: session.signal,
+          beforeCommit: () => oauthSessions.isActive(session),
+          accountLabelMode: "provider",
+        });
+      } catch (validationError) {
+        if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        const message = validationError instanceof Error ? validationError.message : String(validationError);
+        oauthSessions.fail(session, message);
+        return c.json({ status: "error", error: message });
       }
+      if (!oauthSessions.complete(session, saved.accountLabel)) return deviceSessionNotFound(c);
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
-    } catch {
-      return c.json({ status: "error", error: "Failed to complete cursor authorization" }, 500);
+    } catch (error) {
+      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      const message = error instanceof Error ? error.message : "Failed to complete cursor authorization";
+      oauthSessions.fail(session, message);
+      return c.json({ status: "error", error: message }, 500);
     }
   });
 
-  // OAuth: xAI Grok - Initiate & Poll
   app.post("/api/oauth/xai/initiate", async c => {
+    const user = c.get("user");
+    let reservation: PendingOAuthSession | undefined;
+    let detachRequestAbort = NO_OP;
     try {
-      const user = c.get("user");
-      const result = await initiateXaiDeviceAuth();
-      pendingDeviceOwners.set(result.deviceCode, user.id);
-      return c.json({ success: true, data: result });
+      reservation = reserveOAuth(user.id, "xai");
+      if (!reservation) return oauthCapacityResponse(c);
+      detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
+      const result = await initiateXaiDeviceAuth(reservation.signal);
+      const sessionId = randomUUID();
+      const expiresIn = oauthExpiresInSeconds(result.expiresIn);
+      if (!oauthSessions.activate(reservation, sessionId, {}, {
+        bindingId: result.deviceCode,
+        expiresInMs: expiresIn * 1_000,
+      })) {
+        oauthSessions.cancel(reservation.sessionId, user.id);
+        return c.json({ success: false, error: "Failed to initiate device authorization" }, 500);
+      }
+      return c.json({ success: true, data: { ...result, sessionId, expiresIn } });
     } catch {
+      if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate device authorization" }, 500);
+    }
+    finally {
+      detachRequestAbort();
     }
   });
 
   app.post("/api/oauth/xai/poll", async c => {
+    const user = c.get("user");
+    const body = (await c.req.json().catch(() => ({}))) as { deviceCode?: string; label?: string };
+    const bindingId = typeof body.deviceCode === "string" ? body.deviceCode : "";
+    const rl = rateLimiter.check(`oauthDevicePoll:${user.id}:xai:${bindingId || getClientIp(c)}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
+    if (!rl.allowed) {
+      c.header("Retry-After", String(rl.retryAfterSec || 60));
+      return c.json({ status: "error", error: "Too many polling attempts. Please slow down.", retryAfter: rl.retryAfterSec }, 429);
+    }
+    const claim = oauthSessions.claimDevice("xai", bindingId, user.id);
+    if (!claim) return deviceSessionNotFound(c);
+    if (claim.status === "busy") return c.json({ status: "pending" });
+    const session = claim.session;
     try {
-      const user = c.get("user");
-      const body = (await c.req.json().catch(() => ({}))) as { deviceCode: string; label?: string };
-      const flowKey = body.deviceCode || getClientIp(c);
-      const rl = rateLimiter.check(`oauthDevicePoll:${user.id}:xai:${flowKey}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
-      if (!rl.allowed) {
-        c.header("Retry-After", String(rl.retryAfterSec || 60));
-        return c.json({ status: "error", error: "Too many polling attempts. Please slow down.", retryAfter: rl.retryAfterSec }, 429);
-      }
-      const boundOwner = pendingDeviceOwners.get(body.deviceCode);
-      if (boundOwner && boundOwner !== user.id) {
-        return c.json({ status: "error", error: "Device authentication owned by another user" }, 403);
-      }
-      const pollRes = await pollXaiDeviceAuth(body.deviceCode);
+      const pollRes = await pollXaiDeviceAuth(bindingId, session.signal);
+      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
       if (pollRes.status === "pending" || pollRes.status === "slow_down") {
+        oauthSessions.releaseClaim(session);
         return c.json({ status: pollRes.status });
       }
       if (pollRes.status === "error") {
+        oauthSessions.fail(session, pollRes.message);
         return c.json({ status: "error", error: pollRes.message });
       }
-      pendingDeviceOwners.delete(body.deviceCode);
+
       const label = (body.label && body.label !== "xAI Grok" ? body.label : pollRes.email) || pollRes.email || "xAI Grok";
-      let saved;
+      let saved: StoredCredential;
       try {
         saved = await poller.validateAndSaveCredential(user.id, {
           ownerId: user.id,
@@ -1372,57 +1518,82 @@ export function createServer(
           accountLabel: label,
           credentialType: "oauth",
           secret: pollRes.accessToken,
-          metadata: {
-            refreshToken: pollRes.refreshToken,
-            email: pollRes.email,
-          },
-        }, "preserve");
+          metadata: { refreshToken: pollRes.refreshToken, email: pollRes.email },
+        }, "preserve", {
+          signal: session.signal,
+          beforeCommit: () => oauthSessions.isActive(session),
+        });
       } catch (validationError) {
+        if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
         const message = validationError instanceof Error ? validationError.message : String(validationError);
+        oauthSessions.fail(session, message);
         return c.json({ status: "error", error: message });
       }
+      if (!oauthSessions.complete(session, saved.accountLabel)) return deviceSessionNotFound(c);
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
-    } catch {
-      return c.json({ status: "error", error: "Failed to complete device authorization" }, 500);
+    } catch (error) {
+      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      const message = error instanceof Error ? error.message : "Failed to complete device authorization";
+      oauthSessions.fail(session, message);
+      return c.json({ status: "error", error: message }, 500);
     }
   });
 
-  // OAuth: Kimi Code - Initiate & Poll
   app.post("/api/oauth/kimi/initiate", async c => {
+    const user = c.get("user");
+    let reservation: PendingOAuthSession | undefined;
+    let detachRequestAbort = NO_OP;
     try {
-      const user = c.get("user");
-      const result = await initiateKimiDeviceAuth();
-      pendingDeviceOwners.set(result.deviceCode, user.id);
-      return c.json({ success: true, data: result });
+      reservation = reserveOAuth(user.id, "kimi");
+      if (!reservation) return oauthCapacityResponse(c);
+      detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
+      const result = await initiateKimiDeviceAuth(reservation.signal);
+      const sessionId = randomUUID();
+      const expiresIn = oauthExpiresInSeconds(result.expiresIn);
+      if (!oauthSessions.activate(reservation, sessionId, {}, {
+        bindingId: result.deviceCode,
+        expiresInMs: expiresIn * 1_000,
+      })) {
+        oauthSessions.cancel(reservation.sessionId, user.id);
+        return c.json({ success: false, error: "Failed to initiate device authorization" }, 500);
+      }
+      return c.json({ success: true, data: { ...result, sessionId, expiresIn } });
     } catch {
+      if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate device authorization" }, 500);
+    }
+    finally {
+      detachRequestAbort();
     }
   });
 
   app.post("/api/oauth/kimi/poll", async c => {
+    const user = c.get("user");
+    const body = (await c.req.json().catch(() => ({}))) as { deviceCode?: string; deviceId?: string; label?: string };
+    const bindingId = typeof body.deviceCode === "string" ? body.deviceCode : "";
+    const rl = rateLimiter.check(`oauthDevicePoll:${user.id}:kimi:${bindingId || getClientIp(c)}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
+    if (!rl.allowed) {
+      c.header("Retry-After", String(rl.retryAfterSec || 60));
+      return c.json({ status: "error", error: "Too many polling attempts. Please slow down.", retryAfter: rl.retryAfterSec }, 429);
+    }
+    const claim = oauthSessions.claimDevice("kimi", bindingId, user.id);
+    if (!claim) return deviceSessionNotFound(c);
+    if (claim.status === "busy") return c.json({ status: "pending" });
+    const session = claim.session;
     try {
-      const user = c.get("user");
-      const body = (await c.req.json().catch(() => ({}))) as { deviceCode: string; deviceId: string; label?: string };
-      const flowKey = body.deviceCode || getClientIp(c);
-      const rl = rateLimiter.check(`oauthDevicePoll:${user.id}:kimi:${flowKey}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
-      if (!rl.allowed) {
-        c.header("Retry-After", String(rl.retryAfterSec || 60));
-        return c.json({ status: "error", error: "Too many polling attempts. Please slow down.", retryAfter: rl.retryAfterSec }, 429);
-      }
-      const boundOwner = pendingDeviceOwners.get(body.deviceCode);
-      if (boundOwner && boundOwner !== user.id) {
-        return c.json({ status: "error", error: "Device authentication owned by another user" }, 403);
-      }
-      const pollRes = await pollKimiDeviceAuth(body.deviceCode, body.deviceId);
+      const pollRes = await pollKimiDeviceAuth(bindingId, body.deviceId ?? "", session.signal);
+      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
       if (pollRes.status === "pending" || pollRes.status === "slow_down") {
+        oauthSessions.releaseClaim(session);
         return c.json({ status: pollRes.status });
       }
       if (pollRes.status === "error") {
+        oauthSessions.fail(session, pollRes.message);
         return c.json({ status: "error", error: pollRes.message });
       }
-      pendingDeviceOwners.delete(body.deviceCode);
+
       const label = (body.label && body.label !== "Kimi Code" ? body.label : (pollRes.accountId || "Kimi Code")) || pollRes.accountId || "Kimi Code";
-      let saved;
+      let saved: StoredCredential;
       try {
         saved = await poller.validateAndSaveCredential(user.id, {
           ownerId: user.id,
@@ -1430,212 +1601,253 @@ export function createServer(
           accountLabel: label,
           credentialType: "oauth",
           secret: pollRes.accessToken,
-          metadata: {
-            refreshToken: pollRes.refreshToken,
-            accountId: pollRes.accountId,
-          },
-        }, "preserve");
+          metadata: { refreshToken: pollRes.refreshToken, accountId: pollRes.accountId },
+        }, "preserve", {
+          signal: session.signal,
+          beforeCommit: () => oauthSessions.isActive(session),
+        });
       } catch (validationError) {
+        if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
         const message = validationError instanceof Error ? validationError.message : String(validationError);
+        oauthSessions.fail(session, message);
         return c.json({ status: "error", error: message });
       }
+      if (!oauthSessions.complete(session, saved.accountLabel)) return deviceSessionNotFound(c);
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
-    } catch {
-      return c.json({ status: "error", error: "Failed to complete device authorization" }, 500);
+    } catch (error) {
+      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      const message = error instanceof Error ? error.message : "Failed to complete device authorization";
+      oauthSessions.fail(session, message);
+      return c.json({ status: "error", error: message }, 500);
     }
   });
 
-  // OAuth: Google Gemini CLI - Initiate
   app.post("/api/oauth/gemini-cli/initiate", c => {
+    const user = c.get("user");
+    let reservation: PendingOAuthSession | undefined;
+    let detachRequestAbort = NO_OP;
     try {
-      const user = c.get("user");
+      reservation = reserveOAuth(user.id, "google-gemini-cli");
+      if (!reservation) return oauthCapacityResponse(c);
+      detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const { authUrl, state } = initiateGeminiCliAuth();
-      const sessionId = state;
-      pendingOAuth.set(sessionId, { provider: "google-gemini-cli", ownerId: user.id, status: "pending" });
+      if (!oauthSessions.activate(reservation, state, {})) {
+        oauthSessions.cancel(reservation.sessionId, user.id);
+        return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+      }
 
-      listenForGeminiCliCallback(state)
+      listenForGeminiCliCallback(state, 120_000, reservation.signal)
         .then(async code => {
-          const tokens = await exchangeGeminiCliCode(code);
-          const label = tokens.email || tokens.projectId || "Gemini CLI";
-          const saved = vault.saveCredential(user.id, {
-            ownerId: user.id,
-            provider: "google-gemini-cli",
-            accountLabel: label,
-            credentialType: "oauth",
-            secret: tokens.accessToken,
-            metadata: {
-              refreshToken: tokens.refreshToken,
-              email: tokens.email,
-              projectId: tokens.projectId,
-            },
-          });
-          const initialReport = await poller.pollCredential(user.id, saved.id);
-          if (initialReport?.error) {
-            vault.deleteCredential(user.id, saved.id);
-            pendingOAuth.set(sessionId, { provider: "google-gemini-cli", ownerId: user.id, status: "error", error: initialReport.error });
-            return;
+          if (!oauthSessions.claim(reservation!)) return;
+          try {
+            const tokens = await exchangeGeminiCliCode(code, reservation!.signal);
+            if (!oauthSessions.isActive(reservation!)) return;
+            const label = tokens.email || tokens.projectId || "Gemini CLI";
+            await poller.validateAndSaveCredential(user.id, {
+              ownerId: user.id,
+              provider: "google-gemini-cli",
+              accountLabel: label,
+              credentialType: "oauth",
+              secret: tokens.accessToken,
+              metadata: { refreshToken: tokens.refreshToken, email: tokens.email, projectId: tokens.projectId },
+            }, "preserve", {
+              signal: reservation!.signal,
+              beforeCommit: () => oauthSessions.isActive(reservation!),
+            });
+            oauthSessions.complete(reservation!, label);
+          } catch (error) {
+            if (oauthSessions.isActive(reservation!)) {
+              oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
+            }
           }
-          pendingOAuth.set(sessionId, { provider: "google-gemini-cli", ownerId: user.id, status: "complete", accountLabel: label });
         })
-        .catch(() => {
-          pendingOAuth.set(sessionId, { provider: "google-gemini-cli", ownerId: user.id, status: "error", error: "Authorization failed" });
+        .catch(error => {
+          if (oauthSessions.isActive(reservation!)) {
+            oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
+          }
         });
 
-      return c.json({ success: true, data: { authUrl, sessionId } });
+      return c.json({ success: true, data: { authUrl, sessionId: state, expiresIn: 600 } });
     } catch {
+      if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+    }
+    finally {
+      detachRequestAbort();
     }
   });
 
-  // OAuth: OpenRouter - Initiate
   app.post("/api/oauth/openrouter/initiate", c => {
+    const user = c.get("user");
+    let reservation: PendingOAuthSession | undefined;
+    let detachRequestAbort = NO_OP;
     try {
-      const user = c.get("user");
+      reservation = reserveOAuth(user.id, "openrouter");
+      if (!reservation) return oauthCapacityResponse(c);
+      detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const { authUrl, verifier, sessionId } = initiateOpenRouterAuth();
-      pendingOAuth.set(sessionId, { provider: "openrouter", ownerId: user.id, status: "pending" });
+      if (!oauthSessions.activate(reservation, sessionId, { callbackVerifier: verifier })) {
+        oauthSessions.cancel(reservation.sessionId, user.id);
+        return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+      }
 
-      listenForOpenRouterCallback()
+      listenForOpenRouterCallback(120_000, reservation.signal)
         .then(async code => {
-          const keyResult = await exchangeOpenRouterCode(code, verifier);
-          const label = keyResult.label || "OpenRouter";
-          const saved = vault.saveCredential(user.id, {
-            ownerId: user.id,
-            provider: "openrouter",
-            accountLabel: label,
-            credentialType: "api_key",
-            secret: keyResult.apiKey,
-            metadata: {
-              source: "oauth-pkce",
-            },
-          });
-          const initialReport = await poller.pollCredential(user.id, saved.id);
-          if (initialReport?.error) {
-            vault.deleteCredential(user.id, saved.id);
-            pendingOAuth.set(sessionId, { provider: "openrouter", ownerId: user.id, status: "error", error: initialReport.error });
-            return;
+          if (!oauthSessions.claim(reservation!)) return;
+          try {
+            const currentVerifier = reservation!.data.callbackVerifier;
+            if (!currentVerifier) throw new Error("Authorization session invalid");
+            reservation!.data.callbackVerifier = undefined;
+            const keyResult = await exchangeOpenRouterCode(code, currentVerifier, reservation!.signal);
+            if (!oauthSessions.isActive(reservation!)) return;
+            const label = keyResult.label || "OpenRouter";
+            await poller.validateAndSaveCredential(user.id, {
+              ownerId: user.id,
+              provider: "openrouter",
+              accountLabel: label,
+              credentialType: "api_key",
+              secret: keyResult.apiKey,
+              metadata: { source: "oauth-pkce" },
+            }, "preserve", {
+              signal: reservation!.signal,
+              beforeCommit: () => oauthSessions.isActive(reservation!),
+            });
+            oauthSessions.complete(reservation!, label);
+          } catch (error) {
+            if (oauthSessions.isActive(reservation!)) {
+              oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
+            }
           }
-          pendingOAuth.set(sessionId, { provider: "openrouter", ownerId: user.id, status: "complete", accountLabel: label });
         })
-        .catch(() => {
-          pendingOAuth.set(sessionId, { provider: "openrouter", ownerId: user.id, status: "error", error: "Authorization failed" });
+        .catch(error => {
+          if (oauthSessions.isActive(reservation!)) {
+            oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
+          }
         });
 
-      return c.json({ success: true, data: { authUrl, sessionId } });
+      return c.json({ success: true, data: { authUrl, sessionId, expiresIn: 600 } });
     } catch {
+      if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+    }
+    finally {
+      detachRequestAbort();
     }
   });
 
-  // OAuth: Zhipu AI (GLM) - Initiate
   app.post("/api/oauth/zai/initiate", c => {
+    const user = c.get("user");
+    let reservation: PendingOAuthSession | undefined;
+    let detachRequestAbort = NO_OP;
     try {
-      const user = c.get("user");
+      reservation = reserveOAuth(user.id, "zai");
+      if (!reservation) return oauthCapacityResponse(c);
+      detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const { authUrl, state, sessionId } = initiateZaiAuth();
-      pendingOAuth.set(sessionId, { provider: "zai", ownerId: user.id, status: "pending" });
+      if (!oauthSessions.activate(reservation, sessionId, {})) {
+        oauthSessions.cancel(reservation.sessionId, user.id);
+        return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+      }
 
-      listenForZaiCallback(state)
+      listenForZaiCallback(state, 120_000, reservation.signal)
         .then(async code => {
-          const keyResult = await exchangeZaiCode(code, state);
-          const label = keyResult.email || "Zhipu AI";
-          const saved = vault.saveCredential(user.id, {
-            ownerId: user.id,
-            provider: "zai",
-            accountLabel: label,
-            credentialType: "api_key",
-            secret: keyResult.apiKey,
-            metadata: {
-              email: keyResult.email,
-              accountId: keyResult.accountId,
-              source: "oauth",
-            },
-          });
-          const initialReport = await poller.pollCredential(user.id, saved.id);
-          if (initialReport?.error) {
-            vault.deleteCredential(user.id, saved.id);
-            pendingOAuth.set(sessionId, { provider: "zai", ownerId: user.id, status: "error", error: initialReport.error });
-            return;
+          if (!oauthSessions.claim(reservation!)) return;
+          try {
+            const keyResult = await exchangeZaiCode(code, state, reservation!.signal);
+            if (!oauthSessions.isActive(reservation!)) return;
+            const label = keyResult.email || "Zhipu AI";
+            await poller.validateAndSaveCredential(user.id, {
+              ownerId: user.id,
+              provider: "zai",
+              accountLabel: label,
+              credentialType: "api_key",
+              secret: keyResult.apiKey,
+              metadata: { email: keyResult.email, accountId: keyResult.accountId, source: "oauth" },
+            }, "preserve", {
+              signal: reservation!.signal,
+              beforeCommit: () => oauthSessions.isActive(reservation!),
+            });
+            oauthSessions.complete(reservation!, label);
+          } catch (error) {
+            if (oauthSessions.isActive(reservation!)) {
+              oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
+            }
           }
-          pendingOAuth.set(sessionId, { provider: "zai", ownerId: user.id, status: "complete", accountLabel: label });
         })
-        .catch(() => {
-          pendingOAuth.set(sessionId, { provider: "zai", ownerId: user.id, status: "error", error: "Authorization failed" });
+        .catch(error => {
+          if (oauthSessions.isActive(reservation!)) {
+            oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
+          }
         });
 
-      return c.json({ success: true, data: { authUrl, sessionId } });
+      return c.json({ success: true, data: { authUrl, sessionId, expiresIn: 600 } });
     } catch {
+      if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+    }
+    finally {
+      detachRequestAbort();
     }
   });
 
-  // Helper: Process Devin authorization code, save credential, poll and update session
   async function processDevinCode(
-    sessionId: string,
+    session: PendingOAuthSession,
     code: string,
-    verifier: string,
-    ownerId: string,
   ): Promise<{ success: boolean; label?: string; error?: string }> {
-    const tokenResult = await exchangeDevinCode(code, verifier);
-    const initialLabel = tokenResult.email || "Devin";
-    const saved = vault.saveCredential(ownerId, {
-      ownerId,
+    const verifier = session.data.devinVerifier;
+    if (!verifier) throw new Error("Invalid or expired authorization session");
+    session.data.devinVerifier = undefined;
+    const tokenResult = await exchangeDevinCode(code, verifier, session.signal);
+    if (!oauthSessions.isActive(session)) return { success: false, error: "Authorization session expired" };
+    const accountLabel = tokenResult.email || "Devin";
+    const saved = await poller.validateAndSaveCredential(session.ownerId, {
+      ownerId: session.ownerId,
       provider: "devin",
-      accountLabel: initialLabel,
+      accountLabel,
       credentialType: "api_key",
       secret: tokenResult.token,
-      metadata: {
-        email: tokenResult.email,
-        source: "oauth-pkce",
-      },
+      metadata: { email: tokenResult.email, source: "oauth-pkce" },
+    }, "preserve", {
+      signal: session.signal,
+      beforeCommit: () => oauthSessions.isActive(session),
+      accountLabelMode: "provider",
     });
-    const initialReport = await poller.pollCredential(ownerId, saved.id);
-    if (initialReport?.error) {
-      vault.deleteCredential(ownerId, saved.id);
-      const existing = pendingOAuth.get(sessionId);
-      pendingOAuth.set(sessionId, { ...existing, provider: "devin", ownerId, status: "error", error: initialReport.error, consumed: true });
-      return { success: false, error: initialReport.error };
+    if (!oauthSessions.complete(session, saved.accountLabel)) {
+      return { success: false, error: "Authorization session expired" };
     }
-    const resolvedLabel = initialReport && initialReport.accountLabel && initialReport.accountLabel !== "Devin" && initialReport.accountLabel !== "Default"
-      ? initialReport.accountLabel
-      : saved.accountLabel;
-    if (resolvedLabel !== saved.accountLabel) {
-      vault.updateCredentialLabel(ownerId, saved.id, resolvedLabel);
-    }
-    const existing = pendingOAuth.get(sessionId);
-    pendingOAuth.set(sessionId, { ...existing, provider: "devin", ownerId, status: "complete", accountLabel: resolvedLabel, consumed: true });
-    return { success: true, label: resolvedLabel };
+    return { success: true, label: saved.accountLabel };
   }
 
-  // OAuth: Devin - Initiate
   app.post("/api/oauth/devin/initiate", c => {
+    const user = c.get("user");
+    let reservation: PendingOAuthSession | undefined;
+    let detachRequestAbort = NO_OP;
     try {
-      const user = c.get("user");
+      reservation = reserveOAuth(user.id, "devin");
+      if (!reservation) return oauthCapacityResponse(c);
+      detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const { authUrl, verifier, state, sessionId, isHosted } = initiateDevinAuth();
-      pendingOAuth.set(sessionId, {
-        provider: "devin",
-        ownerId: user.id,
-        status: "pending",
-        devinVerifier: verifier,
-        createdAt: Date.now(),
-        consumed: false,
-      });
+      if (!oauthSessions.activate(reservation, sessionId, { devinVerifier: verifier }, { expiresInMs: 600_000 })) {
+        oauthSessions.cancel(reservation.sessionId, user.id);
+        return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+      }
 
       if (!isHosted) {
-        listenForDevinCallback(state)
+        listenForDevinCallback(state, 120_000, reservation.signal)
           .then(async code => {
-            const session = pendingOAuth.get(sessionId);
-            if (!session || session.consumed || !session.devinVerifier) return;
-            const currentVerifier = session.devinVerifier;
-            session.consumed = true;
-            session.devinVerifier = undefined;
-            await processDevinCode(sessionId, code, currentVerifier, user.id);
+            if (!oauthSessions.claim(reservation!)) return;
+            try {
+              await processDevinCode(reservation!, code);
+            } catch (error) {
+              if (oauthSessions.isActive(reservation!)) {
+                oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
+              }
+            }
           })
-          .catch(err => {
-            pendingOAuth.set(sessionId, {
-              provider: "devin",
-              ownerId: user.id,
-              status: "error",
-              error: err instanceof Error ? err.message : "Authorization failed",
-            });
+          .catch(error => {
+            if (oauthSessions.isActive(reservation!)) {
+              oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
+            }
           });
       }
       return c.json({
@@ -1648,6 +1860,7 @@ export function createServer(
         },
       });
     } catch (err) {
+      if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       const msg = err instanceof Error ? err.message : "";
       if (
         msg.includes("DEVIN_OAUTH_REDIRECT_URI is not configured") ||
@@ -1660,86 +1873,77 @@ export function createServer(
       }
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
     }
+    finally {
+      detachRequestAbort();
+    }
   });
 
-  // OAuth: Devin public callback (required when the app runs behind Docker/proxy)
   app.get("/api/oauth/devin/callback", async c => {
     const state = c.req.query("state");
     const code = c.req.query("code");
     const oauthError = c.req.query("error");
-    const session = state ? pendingOAuth.get(state) : undefined;
+    const session = state ? oauthSessions.get(state) : undefined;
     const successPage = (title: string, message: string, color: string) =>
       c.html(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:system-ui,sans-serif;background:#0a0a0b;color:${color};text-align:center;padding:50px"><h2>${title}</h2><p style="color:#a1a1aa">${message}</p><script>setTimeout(()=>window.close(),1500)</script></body></html>`);
 
     if (!session || session.provider !== "devin") {
       return c.html("Invalid or expired authorization session.", 400);
     }
-    if (session.consumed) {
+    if (session.status !== "pending" || !oauthSessions.claim(session)) {
       return c.html("Authorization code already used.", 400);
     }
-    if (!session.devinVerifier) {
+    if (!session.data.devinVerifier) {
+      oauthSessions.fail(session, "Invalid or expired authorization session");
       return c.html("Invalid or expired authorization session.", 400);
     }
-    const OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
-    if (session.createdAt && Date.now() - session.createdAt > OAUTH_SESSION_TTL_MS) {
-      pendingOAuth.set(state!, { ...session, status: "error", error: "Authorization session expired", devinVerifier: undefined });
-      return successPage("Devin Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
-    }
-
-    const verifier = session.devinVerifier;
-    session.consumed = true;
-    session.devinVerifier = undefined;
-
     if (oauthError) {
       const errorMsg = oauthError === "access_denied" ? "Authorization was denied" : oauthError;
-      pendingOAuth.set(state!, { ...session, status: "error", error: errorMsg });
+      oauthSessions.fail(session, errorMsg);
       const displayMsg = oauthError === "access_denied"
         ? "Authorization was denied. You can close this tab."
         : "Authorization failed. You can close this tab.";
       return successPage("Devin Login Failed", displayMsg, "#f43f5e");
     }
     if (!code) {
-      pendingOAuth.set(state!, { ...session, status: "error", error: "Authorization code missing" });
+      oauthSessions.fail(session, "Authorization code missing");
       return c.html("Authorization code missing.", 400);
     }
 
     try {
-      const result = await processDevinCode(state!, code, verifier, session.ownerId);
+      const result = await processDevinCode(session, code);
       if (!result.success) {
         return successPage("Devin Login Failed", "Provider validation failed. Please check your dashboard, then close this tab.", "#f43f5e");
       }
       return successPage("Devin Login Successful", "You can close this tab and return to useMeter.", "#10b981");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Authorization failed";
-      pendingOAuth.set(state!, { ...session, status: "error", error: msg });
+    } catch (error) {
+      if (!oauthSessions.isActive(session)) {
+        return successPage("Devin Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
+      }
+      const message = error instanceof Error ? error.message : "Authorization failed";
+      oauthSessions.fail(session, message);
       return successPage("Devin Login Failed", "Authorization failed. You can close this tab.", "#f43f5e");
     }
   });
 
-  // OAuth: Check pending session status (Google & Claude)
+  app.delete("/api/oauth/sessions/:sessionId", c => {
+    const user = c.get("user");
+    const sessionId = c.req.param("sessionId");
+    if (!oauthSessions.cancel(sessionId, user.id)) {
+      return c.json({ success: false, error: "OAuth session not found" }, 404);
+    }
+    return c.json({ success: true });
+  });
+
   app.get("/api/oauth/status/:sessionId", c => {
     const user = c.get("user");
     const sessionId = c.req.param("sessionId");
-    const rl = rateLimiter.check(`oauthDevicePoll:${user ? user.id : getClientIp(c)}:status:${sessionId}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
+    const rl = rateLimiter.check(`oauthDevicePoll:${user.id}:status:${sessionId}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
     if (!rl.allowed) {
       c.header("Retry-After", String(rl.retryAfterSec || 60));
       return c.json({ status: "error", error: "Too many requests", retryAfter: rl.retryAfterSec }, 429);
     }
-    const session = pendingOAuth.get(sessionId);
-    if (!session || session.ownerId !== user.id) return c.json({ status: "not_found" }, 404);
-
-    expireGoogleOAuthSession(session, googleOAuthNow());
-
-    if (session.provider === "devin" && session.status === "pending" && session.createdAt) {
-      const OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
-      if (Date.now() - session.createdAt > OAUTH_SESSION_TTL_MS) {
-        session.status = "error";
-        session.error = "Authorization session expired";
-        session.devinVerifier = undefined;
-        session.consumed = true;
-      }
-    }
-
+    const session = oauthSessions.getOwned(sessionId, user.id);
+    if (!session) return c.json({ status: "not_found" }, 404);
     return c.json({
       provider: session.provider,
       status: session.status,

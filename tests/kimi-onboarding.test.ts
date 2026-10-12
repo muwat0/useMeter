@@ -197,7 +197,7 @@ describe("Kimi device authorization onboarding integration", () => {
       "/api/oauth/kimi/poll",
       authenticatedJson(otherTenant.cookie, pollBody),
     );
-    expect(otherTenantResponse.status).toBe(403);
+    expect(otherTenantResponse.status).toBe(404);
     expect(await otherTenantResponse.json()).toMatchObject({ status: "error" });
     expect(fetchMock.calls.map(call => call.url)).toEqual([DEVICE_AUTHORIZATION_URL]);
     expect(vault.listCredentials(otherTenant.userId, "kimi-code")).toHaveLength(0);

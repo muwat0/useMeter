@@ -103,6 +103,15 @@ useMeter çok kullanıcılı özel SaaS modeline (ADR-0003) geçtikten sonra, se
 - **Ortak Katılım Hız Sınırı (2026-10-12):** Davet kabulü ve genel kayıt IP başına toplam beş istek/dakika ile sınırlıdır; farklı token veya endpoint kullanmak yeni kota açmaz. Limit aşımı HTTP 429 + `Retry-After`; kayıtların kapalı olması davet kabulünü kapatmaz, hız sınırını da kaldırmaz.
 - **E-posta İletim Sınırı (No SMTP Boundary):** useMeter bünyesinde hiçbir e-posta iletim mekanizması bulunmaz. Yönetici panelden bağlantıyı kopyalar ve kullanıcıya harici güvenli yollardan iletir.
 
+### 7. OAuth Pending State Sınırları ve İptal Yetkisi (2026-10-13)
+
+- Web/device state ve initiate rezervasyonları tek bounded store'da: kullanıcı başına 5, sunucu örneği başına 1000 dolu slot; rezervasyon, pending ve 60 saniyelik terminal sonuçlar kapasiteye dahildir. Upstream/listener başlamadan kapasite ayrılır; limitte 429/Retry-After60 ve `OAUTH_CAPACITY`.
+- Pending en fazla 10 dakika; sağlayıcının kısa device TTL'i korunur. Expiry ve terminal temizliği istek beklemeyen unref timer ile yapılır; boş store timer tutmaz. PKCE/client secret gibi geçici hassas alanlar terminal/iptal/expiry sırasında silinir.
+- Her initiate sessionId döner; `DELETE /api/oauth/sessions/:sessionId` sadece sahibine açıktır. Eksik/yabancı/expired/cancelled/replay device binding upstream'e ulaşamaz; eşzamanlı aynı-owner poll duplicate exchange yapmaz.
+- AbortSignal tüm ilgili upstream ve captured callback kaynaklarına taşınır. Staged credential commit anında store deadline/yetkisi yeniden kontrol edilir; zamanlayıcının gecikmesi veya iptal sonrası async dönüş credential/snapshot yazımına izin vermez.
+- Frontend geç gelen initiate yanıtını kaybetmek yerine 12 saniyelik deadline altında alıp yalnız eski sessionId'yi siler; unmount/run değişimi yeni akışı etkilemez. Başarı/hata sonucu poll tüketimi için 60 saniye saklanır. Hosted loopback topology ve genel poller kapasitesi ayrı açık işlerdir.
+
+
 ---
 
 ## 4. Güvenlik ve Tehdit Modeli Takasları (Threat Tradeoffs)
