@@ -66,6 +66,12 @@ export function getGoogleOAuthClientCredentials(
   const { clientId, clientSecret } = getConfiguredGoogleOAuthClient(overrides);
   return { clientId, clientSecret };
 }
+export function getEmbeddedGoogleOAuthClientCredentials(): Pick<
+  GoogleOAuthConfig,
+  "clientId" | "clientSecret"
+> {
+  return { clientId: LEGACY_CLIENT_ID, clientSecret: LEGACY_CLIENT_SECRET };
+}
 
 function isExactPublicCallbackUri(uri: string): boolean {
   try {

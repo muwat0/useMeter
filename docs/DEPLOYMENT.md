@@ -189,6 +189,8 @@ GOOGLE_OAUTH_REDIRECT_URI=https://usemeter.example.com/api/oauth/google/callback
 
 The public redirect must be HTTPS at exactly `/api/oauth/google/callback` and cannot include a query string, fragment, or user information. Client ID and secret must be supplied together; malformed or mismatched custom configuration fails rather than silently switching clients. The session freezes the selected client and redirect URI for code exchange, and refresh uses the same originating client. Google refresh tokens and OAuth client metadata follow the vault's encrypted-metadata path; Compose enables `CREDENTIAL_METADATA_ENCRYPTION=enabled` by default. The API metadata projection does not expose those client secrets.
 
+Legacy Antigravity credentials that contain a refresh token but no stored OAuth client pair were issued by the embedded desktop client. They continue refreshing with that embedded issuer even if an operator-owned Web client is configured later. New credentials with an explicit stored client pair use that pair; changing environment settings does not reassign a stored refresh token to another client.
+
 > **Provider Compatibility Notice:** Upstream Google quota and usage tracking (e.g. Antigravity / Gemini) behavior depends on provider account/API compatibility and the configured scopes; successful authorization does not guarantee quota data, and tracking remains unverified / experimental.
 
 ## Kimi Code quota validation
@@ -215,6 +217,11 @@ Reauthorizing Kimi Code in the dashboard uses staged validation: candidate OAuth
 
 - **Failure rollback and preservation:** If an initial authorization or a repeat reauthorization fails upstream (such as HTTP 401/403 unauthorized or an unsupported HTTP 200 payload), zero database mutations occur. For existing accounts, the previously stored valid credentials, refresh token metadata, custom card accents, and historical usage snapshots are preserved intact rather than deleted.
 - **Staged server-side validation:** Candidate OAuth tokens are verified server-side against `GET /coding/v1/usages` before writing credentials to the database. Upon successful validation, the credential is persisted and the normalized snapshot is committed and broadcast. Note that client-side polling on completion depends on the deployed frontend bundle (the legacy client bundle may trigger an additional dashboard usage poll until the updated client is loaded).
+
+### Manual token replacement
+
+The manual `POST /api/credentials` path validates the submitted token before replacing the stored credential. A successful replacement keeps the credential ID, card accent, and snapshot history, but replaces account/session metadata with the validated candidate's metadata: it does not inherit the prior account's refresh token, OAuth client, email, account identity, or project. A failed replacement leaves the prior credential unchanged. OAuth completion paths separately preserve same-account metadata when a new refresh token is omitted. Queued polling rereads the owner-bound credential at dispatch so it cannot revive an obsolete authorization after successful replacement.
+
 
 ## Devin on Hosted Deployments
 

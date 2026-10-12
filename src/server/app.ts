@@ -290,7 +290,7 @@ export function createServer(
             }
           : {}),
       },
-    });
+    }, "preserve");
     return { saved, accountLabel };
   }
 
@@ -847,7 +847,7 @@ export function createServer(
           ...inputData,
           ownerId: user.id,
           metadata,
-        });
+        }, "replace");
       } catch (validationError) {
         const message = validationError instanceof Error ? validationError.message : String(validationError);
         return c.json({ success: false, error: message }, 400);
@@ -951,7 +951,7 @@ export function createServer(
             email: tokenResult.email,
             planType: tokenResult.planType,
           },
-        });
+        }, "preserve");
       } catch (validationError) {
         const message = validationError instanceof Error ? validationError.message : String(validationError);
         return c.json({ status: "error", error: message });
@@ -1376,7 +1376,7 @@ export function createServer(
             refreshToken: pollRes.refreshToken,
             email: pollRes.email,
           },
-        });
+        }, "preserve");
       } catch (validationError) {
         const message = validationError instanceof Error ? validationError.message : String(validationError);
         return c.json({ status: "error", error: message });
@@ -1434,7 +1434,7 @@ export function createServer(
             refreshToken: pollRes.refreshToken,
             accountId: pollRes.accountId,
           },
-        });
+        }, "preserve");
       } catch (validationError) {
         const message = validationError instanceof Error ? validationError.message : String(validationError);
         return c.json({ status: "error", error: message });

@@ -8,6 +8,7 @@ import {
   isLoopbackRedirectUri,
 } from "../src/core/oauth/google";
 import { GoogleAntigravityAdapter } from "../src/core/providers/google-antigravity";
+import type { StoredCredential } from "../src/types";
 
 describe("Google OAuth configuration and validation", () => {
   const originalClientId = process.env["GOOGLE_OAUTH_CLIENT_ID"];
@@ -373,6 +374,128 @@ describe("Google OAuth configuration and validation", () => {
       expect(refreshParams.get("grant_type")).toBe("refresh_token");
     } finally {
       globalThis.fetch = originalFetch;
+      restoreEnv();
+    }
+  });
+  it("refreshes legacy credentials with the embedded issuer after operator client configuration changes", async () => {
+    try {
+      process.env["GOOGLE_OAUTH_CLIENT_ID"] = "operator-client-id.apps.googleusercontent.com";
+      process.env["GOOGLE_OAUTH_CLIENT_SECRET"] = "operator-client-secret";
+
+      const tokenRequests: URLSearchParams[] = [];
+      const usageAuthorization: string[] = [];
+      const mockFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        if (url === "https://oauth2.googleapis.com/token") {
+          tokenRequests.push(new URLSearchParams(init?.body?.toString() ?? ""));
+          return new Response(JSON.stringify({ access_token: "legacy-renewed-token" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.endsWith("/v1internal:loadCodeAssist")) {
+          usageAuthorization.push(new Headers(init?.headers).get("Authorization") ?? "");
+          return new Response(JSON.stringify({ cloudaicompanionProject: "test-project" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.endsWith("/v1internal:retrieveUserQuotaSummary")) {
+          usageAuthorization.push(new Headers(init?.headers).get("Authorization") ?? "");
+          return new Response(
+            JSON.stringify({
+              groups: [{
+                displayName: "Gemini",
+                buckets: [{ window: "5h", remainingFraction: 0.6 }],
+              }],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        throw new Error(`Unexpected Google provider URL: ${url}`);
+      }) as typeof fetch;
+
+      const credential: StoredCredential = {
+        id: "legacy-google-credential",
+        ownerId: "test-owner",
+        provider: "antigravity",
+        accountLabel: "Google (legacy@example.com)",
+        credentialType: "oauth",
+        secret: "legacy-access-token",
+        metadata: { refreshToken: "legacy-refresh-token" },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      const report = await new GoogleAntigravityAdapter().fetchUsage(credential, { fetch: mockFetch });
+
+      expect(tokenRequests).toHaveLength(1);
+      expect(tokenRequests[0]?.get("client_id")).toBe(
+        "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+      );
+      expect(tokenRequests[0]?.get("client_secret")).toBe("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");
+      expect(tokenRequests[0]?.get("refresh_token")).toBe("legacy-refresh-token");
+      expect(usageAuthorization).toEqual(["Bearer legacy-renewed-token", "Bearer legacy-renewed-token"]);
+      expect(credential.secret).toBe("legacy-renewed-token");
+      expect(report.provider).toBe("Antigravity");
+      expect(report.accountLabel).toBe("legacy@example.com");
+      expect(report.limits).toHaveLength(1);
+      expect(report.limits[0]?.id).toBe("gemini_5h");
+      expect(report.limits[0]?.amount.remaining).toBe(60);
+    } finally {
+      restoreEnv();
+    }
+  });
+
+  it("refreshes a stored Google credential with its original explicit client pair", async () => {
+    try {
+      process.env["GOOGLE_OAUTH_CLIENT_ID"] = "operator-client-id.apps.googleusercontent.com";
+      process.env["GOOGLE_OAUTH_CLIENT_SECRET"] = "operator-client-secret";
+
+      let tokenBody = "";
+      const mockFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = input instanceof Request ? input.url : input.toString();
+        if (url === "https://oauth2.googleapis.com/token") {
+          tokenBody = init?.body?.toString() ?? "";
+          return new Response(JSON.stringify({ access_token: "stored-client-renewed-token" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.endsWith("/v1internal:loadCodeAssist")) {
+          return new Response(JSON.stringify({ cloudaicompanionProject: "test-project" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.endsWith("/v1internal:retrieveUserQuotaSummary")) {
+          return new Response(JSON.stringify({
+            groups: [{ displayName: "Gemini", buckets: [{ window: "5h", remainingFraction: 0.5 }] }],
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        throw new Error(`Unexpected Google provider URL: ${url}`);
+      }) as typeof fetch;
+      const credential: StoredCredential = {
+        id: "stored-google-credential",
+        ownerId: "test-owner",
+        provider: "antigravity",
+        accountLabel: "stored@example.com",
+        credentialType: "oauth",
+        secret: "old-access-token",
+        metadata: {
+          refreshToken: "stored-refresh-token",
+          googleOAuthClientId: "original-client-id.apps.googleusercontent.com",
+          googleOAuthClientSecret: "original-client-secret",
+        },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      await new GoogleAntigravityAdapter().fetchUsage(credential, { fetch: mockFetch });
+      const params = new URLSearchParams(tokenBody);
+      expect(params.get("client_id")).toBe("original-client-id.apps.googleusercontent.com");
+      expect(params.get("client_secret")).toBe("original-client-secret");
+      expect(params.get("refresh_token")).toBe("stored-refresh-token");
+    } finally {
       restoreEnv();
     }
   });

@@ -619,6 +619,7 @@ describe("Manual Credential Route Safe Validation & Isolation", () => {
         credentialType: "api_key",
         secret: "good-initial-secret",
         accent: "emerald",
+        metadata: { refreshToken: "old-refresh", accountId: "old-account", email: "old@example.com" },
       }),
     });
     expect(initRes.status).toBe(200);
@@ -661,6 +662,11 @@ describe("Manual Credential Route Safe Validation & Isolation", () => {
     expect(credAfterFailure).not.toBeNull();
     expect(credAfterFailure?.secret).toBe("good-initial-secret");
     expect(credAfterFailure?.accent).toBe("emerald");
+    expect(credAfterFailure?.metadata).toMatchObject({
+      refreshToken: "old-refresh",
+      accountId: "old-account",
+      email: "old@example.com",
+    });
     expect(vault.getSnapshotHistory(user.id, "manual-mock", 24)).toHaveLength(baselineSnapshots.length);
 
     vault.close();
@@ -749,11 +755,21 @@ describe("Manual Credential Route Safe Validation & Isolation", () => {
     const registry = createDefaultRegistry();
 
     let fetchCalls = 0;
+    let pollMetadata: Record<string, unknown> | undefined;
     const mockAdapter: ProviderAdapter = {
       id: "cursor-like",
       supports: (p: string) => p.toLowerCase() === "cursor-like",
       fetchUsage: async (cred: StoredCredential, ctx?: FetchContext) => {
         fetchCalls += 1;
+        if (cred.secret === "key-reauth-updated") {
+          pollMetadata = cred.metadata;
+          if (cred.metadata?.["accountId"] === "old-account") {
+            ctx?.onTokenRefresh?.("old-account-refreshed-access", {
+              refreshToken: "old-refresh",
+              accountId: "old-account",
+            });
+          }
+        }
         // Provider adapter proposes a discovered email onTokenRefresh
         ctx?.onTokenRefresh?.(cred.secret, { tokenType: "bearer" }, "discovered-user@example.com");
         return {
@@ -791,6 +807,7 @@ describe("Manual Credential Route Safe Validation & Isolation", () => {
         credentialType: "api_key",
         secret: "key-initial",
         accent: "emerald",
+        metadata: { refreshToken: "old-refresh", accountId: "old-account", email: "old@example.com" },
       }),
     });
     expect(initRes.status).toBe(200);
@@ -835,13 +852,28 @@ describe("Manual Credential Route Safe Validation & Isolation", () => {
     expect(credentialsAfter[0]?.id).toBe(credentialId);
     expect(credentialsAfter[0]?.accountLabel).toBe("Personal Dev");
     expect(credentialsAfter[0]?.secret).toBe("key-reauth-updated");
-    expect(credentialsAfter[0]?.accent).toBe("emerald");
+    expect(credentialsAfter[0]?.metadata).toMatchObject({ tokenType: "bearer" });
+    expect(credentialsAfter[0]?.metadata?.["refreshToken"]).toBeUndefined();
+    expect(credentialsAfter[0]?.metadata?.["accountId"]).toBeUndefined();
+    expect(credentialsAfter[0]?.metadata?.["email"]).toBeUndefined();
+
+    const pollReport = await poller.pollCredential(user.id, credentialId);
+    expect(pollReport).not.toBeNull();
+    expect(pollReport?.stale).toBe(false);
+    expect(pollReport?.error).toBeUndefined();
+    expect(pollMetadata).toMatchObject({ tokenType: "bearer" });
+    expect(pollMetadata?.["accountId"]).toBeUndefined();
+    expect(vault.getCredential(user.id, credentialId)).toMatchObject({
+      secret: "key-reauth-updated",
+      metadata: { tokenType: "bearer" },
+    });
 
     // Snapshots appended to the same credential history
     const snapshotsAfter = vault.getSnapshotHistory(user.id, "cursor-like", 24);
-    expect(snapshotsAfter).toHaveLength(2);
-    expect(snapshotsAfter[0]?.credentialId).toBe(credentialId);
-    expect(snapshotsAfter[1]?.credentialId).toBe(credentialId);
+    expect(snapshotsAfter).toHaveLength(3);
+    expect(credentialsAfter[0]?.accent).toBe("emerald");
+
+    expect(snapshotsAfter.every(snapshot => snapshot.credentialId === credentialId)).toBe(true);
 
     vault.close();
   });

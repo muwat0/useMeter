@@ -1,4 +1,7 @@
-import { getGoogleOAuthClientCredentials } from "../oauth/google";
+import {
+  getEmbeddedGoogleOAuthClientCredentials,
+  getGoogleOAuthClientCredentials,
+} from "../oauth/google";
 import type { GoogleOAuthConfig } from "../oauth/google";
 import type { FetchContext, ProviderAdapter } from "./adapter";
 import type { StoredCredential, UsageLimit, UsageReport } from "../../types";
@@ -94,7 +97,7 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
           }
           client = getGoogleOAuthClientCredentials({ clientId, clientSecret });
         } else {
-          client = getGoogleOAuthClientCredentials();
+          client = getEmbeddedGoogleOAuthClientCredentials();
         }
         accessToken = await this.#refreshAccessToken(refreshToken, client, fetchImpl);
         credential.secret = accessToken;

@@ -6,7 +6,8 @@ import { CodexAdapter } from "../src/core/providers/codex";
 import { ProviderRegistry } from "../src/core/providers/registry";
 import { PollerEngine } from "../src/core/poller/poller";
 import { StorageVault } from "../src/core/storage/vault";
-import type { StoredCredential } from "../src/types";
+import type { FetchContext, ProviderAdapter } from "../src/core/providers/adapter";
+import type { StoredCredential, UsageReport } from "../src/types";
 
 const mockCred: StoredCredential = {
   id: "test-cred-1",
@@ -414,5 +415,145 @@ describe("PollerEngine", () => {
     expect(latest[0]?.limits[0]?.amount.remaining).toBe(50);
     expect(await poller.pollCredential("foreign-owner", saved.id)).toBeNull();
     vault.close();
+  });
+
+  it("reloads queued daemon credentials after reauthorization before provider dispatch", async () => {
+    const vault = new StorageVault(":memory:");
+    const owner = vault.createUser("queued-poll@example.com", "hash");
+    const first = vault.saveCredential(owner.id, {
+      provider: "deepseek",
+      accountLabel: "Blocker",
+      credentialType: "api_key",
+      secret: "blocker-secret",
+    });
+    const queued = vault.saveCredential(owner.id, {
+      provider: "openrouter",
+      accountLabel: "Reauthorized",
+      credentialType: "oauth",
+      secret: "old-access",
+      metadata: { refreshToken: "old-refresh" },
+    });
+    const blockerStarted = Promise.withResolvers<void>();
+    const releaseBlocker = Promise.withResolvers<void>();
+    let reauthCompleted = false;
+    const fetches: string[] = [];
+    const registry = new ProviderRegistry();
+    const adapter: ProviderAdapter = {
+      id: "queued-poll-test",
+      supports: provider => provider === "deepseek" || provider === "openrouter",
+      fetchUsage: async (credential: StoredCredential, ctx?: FetchContext): Promise<UsageReport> => {
+        if (credential.id === first.id) {
+          blockerStarted.resolve();
+          await releaseBlocker.promise;
+        } else if (reauthCompleted) {
+          fetches.push(credential.secret);
+          if (credential.secret !== "new-access") {
+            ctx?.onTokenRefresh?.("stale-access", { refreshToken: "stale-refresh" });
+          }
+        }
+        return {
+          ownerId: credential.ownerId,
+          provider: credential.provider,
+          credentialId: credential.id,
+          accountLabel: credential.accountLabel,
+          fetchedAt: Date.now(),
+          limits: [],
+          health: "healthy",
+          source: "live",
+        };
+      },
+    };
+    registry.register(adapter);
+    const poller = new PollerEngine(vault, registry);
+    let sweep: Promise<UsageReport[]> | undefined;
+
+    try {
+      sweep = poller.pollAll();
+      await blockerStarted.promise;
+      const saved = await poller.validateAndSaveCredential(owner.id, {
+        provider: "openrouter",
+        accountLabel: "Reauthorized",
+        credentialType: "oauth",
+        secret: "new-access",
+        metadata: { refreshToken: "new-refresh" },
+      }, "preserve");
+      reauthCompleted = true;
+      expect(saved.id).toBe(queued.id);
+
+      releaseBlocker.resolve();
+      const reports = await sweep;
+      expect(fetches).toEqual(["new-access"]);
+      expect(reports.map(report => report.credentialId)).toEqual([first.id, queued.id]);
+      expect(reports.some(report => report.error || report.stale)).toBe(false);
+      expect(vault.getCredential(owner.id, queued.id)).toMatchObject({
+        secret: "new-access",
+        metadata: { refreshToken: "new-refresh" },
+      });
+    } finally {
+      releaseBlocker.resolve();
+      if (sweep) await sweep;
+      poller.stop();
+      vault.close();
+    }
+  });
+
+  it("skips a queued user credential deleted before dispatch", async () => {
+    const vault = new StorageVault(":memory:");
+    const owner = vault.createUser("deleted-queued-poll@example.com", "hash");
+    const first = vault.saveCredential(owner.id, {
+      provider: "deepseek",
+      accountLabel: "Blocker",
+      credentialType: "api_key",
+      secret: "blocker-secret",
+    });
+    const queued = vault.saveCredential(owner.id, {
+      provider: "openrouter",
+      accountLabel: "Deleted",
+      credentialType: "oauth",
+      secret: "deleted-access",
+    });
+    const blockerStarted = Promise.withResolvers<void>();
+    const releaseBlocker = Promise.withResolvers<void>();
+    const fetchedIds: string[] = [];
+    const registry = new ProviderRegistry();
+    registry.register({
+      id: "deleted-queued-poll-test",
+      supports: provider => provider === "deepseek" || provider === "openrouter",
+      fetchUsage: async (credential: StoredCredential): Promise<UsageReport> => {
+        fetchedIds.push(credential.id);
+        if (credential.id === first.id) {
+          blockerStarted.resolve();
+          await releaseBlocker.promise;
+        }
+        return {
+          ownerId: credential.ownerId,
+          provider: credential.provider,
+          credentialId: credential.id,
+          accountLabel: credential.accountLabel,
+          fetchedAt: Date.now(),
+          limits: [],
+          health: "healthy",
+          source: "live",
+        };
+      },
+    });
+    const poller = new PollerEngine(vault, registry);
+    let polling: Promise<UsageReport[]> | undefined;
+
+    try {
+      polling = poller.pollUser(owner.id);
+      await blockerStarted.promise;
+      vault.deleteCredential(owner.id, queued.id);
+      releaseBlocker.resolve();
+      const reports = await polling;
+      expect(fetchedIds).toEqual([first.id]);
+      expect(reports.map(report => report.credentialId)).toEqual([first.id]);
+      expect(vault.getCredential(owner.id, queued.id)).toBeNull();
+    } finally {
+      releaseBlocker.resolve();
+      if (polling) await polling;
+      poller.stop();
+      vault.close();
+    }
   });
 });

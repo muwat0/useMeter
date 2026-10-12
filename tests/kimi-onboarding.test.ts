@@ -786,7 +786,7 @@ describe("Kimi device authorization onboarding integration", () => {
       credentialType: "oauth",
       secret: "new-reauthorized-access-token",
       metadata: { refreshToken: "new-refresh-token", accountId: "kimi-race" },
-    });
+    }, "preserve");
     expect(reauthCred.id).toBe(initialCred.id);
     expect(vault.getCredential(owner.userId, initialCred.id)?.secret).toBe("new-reauthorized-access-token");
     expect(vault.getSnapshotHistory(owner.userId, "kimi-code", 24)).toHaveLength(2);
@@ -918,7 +918,7 @@ describe("Kimi device authorization onboarding integration", () => {
       credentialType: "oauth",
       secret: "candidate-access-token-new",
       metadata: { accountId: ACCOUNT_ID }, // NO refreshToken provided by new OAuth response
-    });
+    }, "preserve");
 
     // 4. Wait until candidate validation is actively pending inside fetchUsage
     await candidatePending.promise;
@@ -1008,7 +1008,7 @@ describe("Kimi device authorization onboarding integration", () => {
       credentialType: "oauth",
       secret: "abort-delete-access-token",
       metadata: { accountId: ACCOUNT_ID },
-    });
+    }, "preserve");
 
     await candidatePending.promise;
 
@@ -1074,7 +1074,7 @@ describe("Kimi device authorization onboarding integration", () => {
       credentialType: "oauth",
       secret: "abort-rename-access-token",
       metadata: { accountId: ACCOUNT_ID },
-    });
+    }, "preserve");
 
     await candidatePending.promise;
 

@@ -80,7 +80,11 @@ export class PollerEngine {
     return this.#pollCredentialInternal(credential, false);
   }
 
-  async validateAndSaveCredential(ownerId: string, input: InputCredential): Promise<StoredCredential> {
+  async validateAndSaveCredential(
+    ownerId: string,
+    input: InputCredential,
+    metadataMode: "replace" | "preserve",
+  ): Promise<StoredCredential> {
     const adapter = this.#registry.find(input.provider);
     if (!adapter) throw new Error(`No provider adapter for "${input.provider}"`);
 
@@ -130,8 +134,10 @@ export class PollerEngine {
       throw new Error("Credential changed while validation was in progress");
     }
 
-    // Merge only after successful validation, using current metadata and the new candidate.
-    const finalMetadata = mergeDefinedMetadata(currentExisting?.metadata, candidate.metadata);
+    // Callers choose whether reauthorization replaces account metadata or keeps existing metadata.
+    const finalMetadata = metadataMode === "replace"
+      ? candidate.metadata
+      : mergeDefinedMetadata(currentExisting?.metadata, candidate.metadata);
     const saved = this.#vault.saveCredential(ownerId, {
       ...input,
       ownerId,
@@ -155,7 +161,12 @@ export class PollerEngine {
     return reports;
   }
 
-  async #pollCredentialInternal(cred: StoredCredential, daemon: boolean): Promise<UsageReport | null> {
+  async #pollCredentialInternal(queuedCredential: StoredCredential, daemon: boolean): Promise<UsageReport | null> {
+    const cred = queuedCredential.ownerId
+      ? this.#vault.getCredential(queuedCredential.ownerId, queuedCredential.id)
+      : this.#vault.getCredentialInternal(queuedCredential.id);
+    if (!cred || (queuedCredential.ownerId && cred.ownerId !== queuedCredential.ownerId)) return null;
+
     const adapter = this.#registry.find(cred.provider);
     if (!adapter) return null;
 
