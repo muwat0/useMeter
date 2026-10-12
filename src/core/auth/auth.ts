@@ -337,6 +337,20 @@ export class AuthService {
     }
 
     const tokenHash = hashSessionToken(rawToken.trim());
+    const invitation = this.#vault.getInvitationByTokenHash(tokenHash);
+    if (
+      !invitation ||
+      invitation.acceptedAt !== null ||
+      invitation.revokedAt !== null ||
+      invitation.expiresAt <= Date.now()
+    ) {
+      return {
+        success: false,
+        error: "INVALID_INVITATION",
+        message: "Invalid, expired, or revoked invitation",
+      };
+    }
+
     const passwordHash = await hashPassword(password);
 
     let user: User;

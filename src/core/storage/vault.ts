@@ -39,6 +39,94 @@ interface CredentialRow {
   created_at: number;
   updated_at: number;
 }
+const CREDENTIAL_METADATA_ENCRYPTION_ENV = "CREDENTIAL_METADATA_ENCRYPTION";
+const ENCRYPTED_METADATA_VERSION = 1;
+
+interface DecodedCredentialMetadata {
+  metadata: Record<string, unknown>;
+  encrypted: boolean;
+}
+
+function parseMetadataRecord(value: unknown, message: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(message);
+  }
+  return value as Record<string, unknown>;
+}
+
+function decodeCredentialMetadata(serialized: string): DecodedCredentialMetadata {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch {
+    throw new Error("Credential metadata is malformed.");
+  }
+
+  const record = parseMetadataRecord(parsed, "Credential metadata is malformed.");
+
+  if (Object.prototype.hasOwnProperty.call(record, "$vault")) {
+    const keys = Object.keys(record);
+    const ciphertext = record["ciphertext"];
+    const iv = record["iv"];
+    const tag = record["tag"];
+    if (
+      record["$vault"] !== ENCRYPTED_METADATA_VERSION ||
+      keys.length !== 4 ||
+      !keys.includes("ciphertext") ||
+      !keys.includes("iv") ||
+      !keys.includes("tag") ||
+      typeof ciphertext !== "string" ||
+      !/^(?:[0-9a-f]{2})*$/i.test(ciphertext) ||
+      typeof iv !== "string" ||
+      !/^[0-9a-f]{24}$/i.test(iv) ||
+      typeof tag !== "string" ||
+      !/^[0-9a-f]{32}$/i.test(tag)
+    ) {
+      throw new Error("Credential metadata envelope is invalid.");
+    }
+
+    let plaintext: string;
+    try {
+      plaintext = decryptSecret({ ciphertext, iv, tag });
+    } catch {
+      throw new Error("Credential metadata decryption failed.");
+    }
+    let metadata: unknown;
+    try {
+      metadata = JSON.parse(plaintext);
+    } catch {
+      throw new Error("Credential metadata is malformed.");
+    }
+    return {
+      metadata: parseMetadataRecord(metadata, "Credential metadata is malformed."),
+      encrypted: true,
+    };
+  }
+
+  return { metadata: record, encrypted: false };
+}
+
+function serializeCredentialMetadata(
+  metadata: Record<string, unknown> | undefined,
+  encrypt: boolean,
+): string | null {
+  if (metadata === undefined) return null;
+  if (Object.prototype.hasOwnProperty.call(metadata, "$vault")) {
+    throw new Error('Credential metadata cannot use the reserved "$vault" field.');
+  }
+  const plaintext = JSON.stringify(metadata);
+  if (typeof plaintext !== "string") throw new Error("Credential metadata is not serializable.");
+  if (!encrypt) return plaintext;
+
+  const payload = encryptSecret(plaintext);
+  return JSON.stringify({
+    $vault: ENCRYPTED_METADATA_VERSION,
+    ciphertext: payload.ciphertext,
+    iv: payload.iv,
+    tag: payload.tag,
+  });
+}
+
 interface InvitationRow {
   id: string;
   email: string;
@@ -63,6 +151,9 @@ function computeInvitationStatus(
 export class StorageVault {
   readonly #db: Database;
   #closed = false;
+  #metadataEncryptionEnabled =
+    process.env[CREDENTIAL_METADATA_ENCRYPTION_ENV]?.trim().toLowerCase() === "enabled";
+  #schemaVersion = 0;
 
   constructor(dbPath: string = "data/usage.db") {
     const dir = dbPath.includes("/") ? dbPath.slice(0, dbPath.lastIndexOf("/")) : "";
@@ -74,8 +165,17 @@ export class StorageVault {
     }
 
     this.#db = new Database(dbPath, { create: true });
-    this.#initPragmas();
-    this.#migrate();
+    try {
+      this.#initPragmas();
+      this.#migrate();
+      this.#verifyMasterKeyCredentials();
+    } catch (error) {
+      this.#closed = true;
+      try {
+        this.#db.close();
+      } catch {}
+      throw error;
+    }
   }
 
   #initPragmas(): void {
@@ -87,7 +187,7 @@ export class StorageVault {
 
   #migrate(): void {
     const versionRow = this.#db.prepare("PRAGMA user_version;").get() as { user_version: number } | undefined;
-    const currentVersion = versionRow?.user_version ?? 0;
+    let currentVersion = versionRow?.user_version ?? 0;
 
     if (currentVersion < 1) {
       this.#db.transaction(() => {
@@ -174,6 +274,7 @@ export class StorageVault {
           PRAGMA user_version = 1;
         `);
       })();
+      currentVersion = 1;
     }
 
     // Ensure role column exists even on databases migrated prior to role introduction
@@ -203,6 +304,111 @@ export class StorageVault {
       CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email COLLATE NOCASE);
       CREATE INDEX IF NOT EXISTS idx_invitations_created_by ON invitations(created_by);
     `);
+    if (this.#metadataEncryptionEnabled && currentVersion < 2) {
+      this.#migrateCredentialMetadataToV2();
+      currentVersion = 2;
+    }
+
+    this.#schemaVersion = currentVersion;
+  }
+
+  #verifyMasterKeyCredentials(): void {
+    const tableExists = this.#db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'credentials'"
+    ).get();
+    if (!tableExists) return;
+
+    const rows = this.#db.prepare(
+      "SELECT encrypted_secret, iv, tag, metadata FROM credentials"
+    ).all() as { encrypted_secret: string; iv: string; tag: string; metadata: string | null }[];
+
+    for (const row of rows) {
+      try {
+        decryptSecret({ ciphertext: row.encrypted_secret, iv: row.iv, tag: row.tag });
+      } catch {
+        throw new Error("Credential decryption failed.");
+      }
+      if (row.metadata !== null) {
+        decodeCredentialMetadata(row.metadata);
+      }
+    }
+  }
+
+  getSchemaVersion(): number {
+    return this.#schemaVersion;
+  }
+
+  #shouldEncryptMetadata(): boolean {
+    return this.#metadataEncryptionEnabled || this.#schemaVersion >= 2;
+  }
+  #withMetadataWrite<T>(write: () => T): T {
+    const tx = this.#db.transaction(() => {
+      if (this.#schemaVersion < 2) {
+        const versionRow = this.#db.prepare("PRAGMA user_version;").get() as { user_version: number } | undefined;
+        if ((versionRow?.user_version ?? 0) >= 2) {
+          this.#schemaVersion = 2;
+        }
+      }
+      return write();
+    });
+    return tx.immediate();
+  }
+
+
+  #ensureMetadataEncryptionVersion(): void {
+    if (this.#metadataEncryptionEnabled && this.#schemaVersion < 2) {
+      this.#migrateCredentialMetadataToV2();
+    }
+  }
+
+  migrateCredentialMetadata(): void {
+    if (this.#closed) throw new Error("Vault is closed.");
+    if (this.#schemaVersion >= 2) return;
+    this.#migrateCredentialMetadataToV2();
+  }
+
+  #migrateCredentialMetadataToV2(): void {
+    const tx = this.#db.transaction(() => {
+      const versionRow = this.#db.prepare("PRAGMA user_version;").get() as { user_version: number } | undefined;
+      if ((versionRow?.user_version ?? 0) >= 2) {
+        return;
+      }
+
+      const tableExists = this.#db.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'credentials'"
+      ).get();
+      if (!tableExists) {
+        throw new Error("Credential table missing.");
+      }
+
+      const rows = this.#db.prepare(
+        "SELECT id, encrypted_secret, iv, tag, metadata FROM credentials"
+      ).all() as { id: string; encrypted_secret: string; iv: string; tag: string; metadata: string | null }[];
+      const updates: { id: string; encryptedJson: string }[] = [];
+      for (const row of rows) {
+        try {
+          decryptSecret({ ciphertext: row.encrypted_secret, iv: row.iv, tag: row.tag });
+        } catch {
+          throw new Error("Credential decryption failed.");
+        }
+        if (row.metadata !== null) {
+          const decoded = decodeCredentialMetadata(row.metadata);
+          if (!decoded.encrypted) {
+            const encryptedJson = serializeCredentialMetadata(decoded.metadata, true);
+            if (!encryptedJson) throw new Error("Metadata encryption failed.");
+            updates.push({ id: row.id, encryptedJson });
+          }
+        }
+      }
+
+      const updateStmt = this.#db.prepare("UPDATE credentials SET metadata = ? WHERE id = ?");
+      for (const update of updates) {
+        updateStmt.run(update.encryptedJson, update.id);
+      }
+      this.#db.exec("PRAGMA user_version = 2;");
+    });
+    tx.immediate();
+    this.#schemaVersion = 2;
   }
 
   // ==================== User Management ====================
@@ -836,69 +1042,76 @@ export class StorageVault {
   // ==================== Credential Management ====================
 
   saveCredential(ownerId: string, input: InputCredential): StoredCredential {
+    if (this.#closed) throw new Error("Vault is closed.");
+    this.#ensureMetadataEncryptionVersion();
     const provider = input.provider.toLowerCase();
     const accent = input.accent && CARD_ACCENTS[input.accent] ? input.accent : "default";
     const now = Date.now();
     const enc = encryptSecret(input.secret);
-    const metadataJson = input.metadata ? JSON.stringify(input.metadata) : null;
-    const existing = this.#db.prepare(
-      "SELECT id, created_at FROM credentials WHERE owner_id = ? AND provider = ? AND account_label = ?",
-    ).get(ownerId, provider, input.accountLabel) as { id: string; created_at: number } | undefined;
-    if (existing) {
+    return this.#withMetadataWrite(() => {
+      const metadataSerialized = serializeCredentialMetadata(input.metadata, this.#shouldEncryptMetadata());
+      const existing = this.#db.prepare(
+        "SELECT id, created_at FROM credentials WHERE owner_id = ? AND provider = ? AND account_label = ?",
+      ).get(ownerId, provider, input.accountLabel) as { id: string; created_at: number } | undefined;
+      if (existing) {
+        this.#db.prepare(`
+          UPDATE credentials SET accent = ?, credential_type = ?, encrypted_secret = ?, iv = ?, tag = ?, metadata = ?, updated_at = ?
+          WHERE owner_id = ? AND id = ?
+        `).run(accent, input.credentialType, enc.ciphertext, enc.iv, enc.tag, metadataSerialized, now, ownerId, existing.id);
+        return {
+          id: existing.id, ownerId, provider, accountLabel: input.accountLabel, accent,
+          credentialType: input.credentialType, secret: input.secret, metadata: input.metadata,
+          createdAt: existing.created_at, updatedAt: now,
+        };
+      }
+      const id = randomUUID();
       this.#db.prepare(`
-        UPDATE credentials SET accent = ?, credential_type = ?, encrypted_secret = ?, iv = ?, tag = ?, metadata = ?, updated_at = ?
-        WHERE owner_id = ? AND id = ?
-      `).run(accent, input.credentialType, enc.ciphertext, enc.iv, enc.tag, metadataJson, now, ownerId, existing.id);
+        INSERT INTO credentials (id, owner_id, provider, account_label, accent, credential_type, encrypted_secret, iv, tag, metadata, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, ownerId, provider, input.accountLabel, accent, input.credentialType, enc.ciphertext, enc.iv, enc.tag, metadataSerialized, now, now);
       return {
-        id: existing.id, ownerId, provider, accountLabel: input.accountLabel, accent,
+        id, ownerId, provider, accountLabel: input.accountLabel, accent,
         credentialType: input.credentialType, secret: input.secret, metadata: input.metadata,
-        createdAt: existing.created_at, updatedAt: now,
+        createdAt: now, updatedAt: now,
       };
-    }
-    const id = randomUUID();
-    this.#db.prepare(`
-      INSERT INTO credentials (id, owner_id, provider, account_label, accent, credential_type, encrypted_secret, iv, tag, metadata, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, ownerId, provider, input.accountLabel, accent, input.credentialType, enc.ciphertext, enc.iv, enc.tag, metadataJson, now, now);
-    return {
-      id, ownerId, provider, accountLabel: input.accountLabel, accent,
-      credentialType: input.credentialType, secret: input.secret, metadata: input.metadata,
-      createdAt: now, updatedAt: now,
-    };
+    });
   }
 
   saveCredentialInternal(input: InputCredential): StoredCredential {
+    if (this.#closed) throw new Error("Vault is closed.");
+    this.#ensureMetadataEncryptionVersion();
     const provider = input.provider.toLowerCase();
     const accent = input.accent && CARD_ACCENTS[input.accent] ? input.accent : "default";
     const now = Date.now();
     const enc = encryptSecret(input.secret);
-    const metadataJson = input.metadata ? JSON.stringify(input.metadata) : null;
-    const existing = this.#db.prepare(
-      "SELECT id, created_at FROM credentials WHERE owner_id IS NULL AND provider = ? AND account_label = ?",
-    ).get(provider, input.accountLabel) as { id: string; created_at: number } | undefined;
-    if (existing) {
+    return this.#withMetadataWrite(() => {
+      const metadataSerialized = serializeCredentialMetadata(input.metadata, this.#shouldEncryptMetadata());
+      const existing = this.#db.prepare(
+        "SELECT id, created_at FROM credentials WHERE owner_id IS NULL AND provider = ? AND account_label = ?",
+      ).get(provider, input.accountLabel) as { id: string; created_at: number } | undefined;
+      if (existing) {
+        this.#db.prepare(`
+          UPDATE credentials SET accent = ?, credential_type = ?, encrypted_secret = ?, iv = ?, tag = ?, metadata = ?, updated_at = ?
+          WHERE owner_id IS NULL AND id = ?
+        `).run(accent, input.credentialType, enc.ciphertext, enc.iv, enc.tag, metadataSerialized, now, existing.id);
+        return {
+          id: existing.id, ownerId: undefined as unknown as string, provider, accountLabel: input.accountLabel, accent,
+          credentialType: input.credentialType, secret: input.secret, metadata: input.metadata,
+          createdAt: existing.created_at, updatedAt: now,
+        };
+      }
+      const id = randomUUID();
       this.#db.prepare(`
-        UPDATE credentials SET accent = ?, credential_type = ?, encrypted_secret = ?, iv = ?, tag = ?, metadata = ?, updated_at = ?
-        WHERE owner_id IS NULL AND id = ?
-      `).run(accent, input.credentialType, enc.ciphertext, enc.iv, enc.tag, metadataJson, now, existing.id);
+        INSERT INTO credentials (id, owner_id, provider, account_label, accent, credential_type, encrypted_secret, iv, tag, metadata, created_at, updated_at)
+        VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, provider, input.accountLabel, accent, input.credentialType, enc.ciphertext, enc.iv, enc.tag, metadataSerialized, now, now);
       return {
-        id: existing.id, ownerId: undefined as unknown as string, provider, accountLabel: input.accountLabel, accent,
+        id, ownerId: undefined as unknown as string, provider, accountLabel: input.accountLabel, accent,
         credentialType: input.credentialType, secret: input.secret, metadata: input.metadata,
-        createdAt: existing.created_at, updatedAt: now,
+        createdAt: now, updatedAt: now,
       };
-    }
-    const id = randomUUID();
-    this.#db.prepare(`
-      INSERT INTO credentials (id, owner_id, provider, account_label, accent, credential_type, encrypted_secret, iv, tag, metadata, created_at, updated_at)
-      VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(id, provider, input.accountLabel, accent, input.credentialType, enc.ciphertext, enc.iv, enc.tag, metadataJson, now, now);
-    return {
-      id, ownerId: undefined as unknown as string, provider, accountLabel: input.accountLabel, accent,
-      credentialType: input.credentialType, secret: input.secret, metadata: input.metadata,
-      createdAt: now, updatedAt: now,
-    };
+    });
   }
-
   listCredentials(ownerId: string, provider?: string): StoredCredential[] {
     const query = provider
       ? this.#db.prepare("SELECT * FROM credentials WHERE owner_id = ? AND provider = ? ORDER BY created_at ASC")
@@ -994,15 +1207,35 @@ export class StorageVault {
   }
   updateCredentialTokens(ownerId: string, id: string, secret: string, metadataUpdates?: Record<string, unknown>): boolean {
     if (this.#closed) return false;
-    const current = this.#db.prepare("SELECT metadata FROM credentials WHERE owner_id = ? AND id = ?")
-      .get(ownerId, id) as { metadata: string | null } | undefined;
-    if (!current) return false;
-    const existing = current.metadata ? JSON.parse(current.metadata) as Record<string, unknown> : {};
+    this.#ensureMetadataEncryptionVersion();
     const enc = encryptSecret(secret);
-    return this.#db.prepare(`
-      UPDATE credentials SET encrypted_secret = ?, iv = ?, tag = ?, metadata = ?, updated_at = ?
-      WHERE owner_id = ? AND id = ?
-    `).run(enc.ciphertext, enc.iv, enc.tag, JSON.stringify({ ...existing, ...(metadataUpdates ?? {}) }), Date.now(), ownerId, id).changes > 0;
+    return this.#withMetadataWrite(() => {
+      const current = ownerId
+        ? (this.#db.prepare("SELECT metadata FROM credentials WHERE owner_id = ? AND id = ?")
+            .get(ownerId, id) as { metadata: string | null } | undefined)
+        : (this.#db.prepare("SELECT metadata FROM credentials WHERE owner_id IS NULL AND id = ?")
+            .get(id) as { metadata: string | null } | undefined);
+      if (!current) return false;
+      let existing: Record<string, unknown> = {};
+      if (current.metadata !== null) {
+        existing = decodeCredentialMetadata(current.metadata).metadata;
+      }
+      const mergedMetadata = { ...existing, ...(metadataUpdates ?? {}) };
+      const metadataSerialized = serializeCredentialMetadata(mergedMetadata, this.#shouldEncryptMetadata());
+      const query = ownerId
+        ? this.#db.prepare(`
+            UPDATE credentials SET encrypted_secret = ?, iv = ?, tag = ?, metadata = ?, updated_at = ?
+            WHERE owner_id = ? AND id = ?
+          `)
+        : this.#db.prepare(`
+            UPDATE credentials SET encrypted_secret = ?, iv = ?, tag = ?, metadata = ?, updated_at = ?
+            WHERE owner_id IS NULL AND id = ?
+          `);
+      const result = ownerId
+        ? query.run(enc.ciphertext, enc.iv, enc.tag, metadataSerialized, Date.now(), ownerId, id)
+        : query.run(enc.ciphertext, enc.iv, enc.tag, metadataSerialized, Date.now(), id);
+      return result.changes > 0;
+    });
   }
 
   updateCredentialTokensInternal(id: string, secret: string, metadataUpdates?: Record<string, unknown>): boolean {
@@ -1256,6 +1489,10 @@ export class StorageVault {
       secret = decryptSecret({ ciphertext: row.encrypted_secret, iv: row.iv, tag: row.tag });
     } catch {}
     const accent = row.accent && CARD_ACCENTS[row.accent] ? (row.accent as CardAccent) : "default";
+    let metadata: Record<string, unknown> | undefined;
+    if (row.metadata !== null) {
+      metadata = decodeCredentialMetadata(row.metadata).metadata;
+    }
     return {
       id: row.id,
       ownerId: (row.owner_id ?? undefined) as unknown as string,
@@ -1264,7 +1501,7 @@ export class StorageVault {
       accent,
       credentialType: row.credential_type as StoredCredential["credentialType"],
       secret,
-      metadata: row.metadata ? (JSON.parse(row.metadata) as Record<string, unknown>) : undefined,
+      metadata,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

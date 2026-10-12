@@ -73,7 +73,7 @@ const I18N: Record<string, Record<string, string>> = {
     deleteAccount: "Hesabı Kaldır", editLabel: "Etiketi Düzenle",
     save: "Kaydet", saveAndPoll: "Kaydet ve Sorgula", cancel: "İptal",
     noAccounts: 'Henüz kayıtlı bir AI hesabı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.',
-    lastUpdate: "Son Güncelleme", deleteConfirm: "Bu hesabı kaldırmak istediğinizden emin misiniz?",
+    lastUpdate: "Son Güncelleme", deleteConfirm: "Bu hesabın kimlik bilgisi ve kaydedilmiş kullanım geçmişi kalıcı olarak silinecek. Bu işlem geri alınamaz. Devam etmek istiyor musunuz?", deleteFailed: "Hesap kaldırılamadı. Lütfen tekrar deneyin.",
     resetsIn: "Sıfırlanma", rightsAvailable: "Hak Mevcut",
     modalTitle: "AI Hesabı Bağla", modalSubtitle: "OAuth veya doğrudan API anahtarıyla kota takibi kurun.",
     tabOAuth: "OAuth ile Oturum Aç", tabManual: "Manuel API Key",
@@ -92,9 +92,27 @@ const I18N: Record<string, Record<string, string>> = {
     openrouterTitle: "OpenRouter", openrouterDesc: "Otomatik PKCE ile API anahtarı ve bakiye",
     zaiTitle: "Zhipu AI (GLM / BigModel)", zaiDesc: "GLM-4 model kredileri ve bakiyesi",
     devinTitle: "Devin AI", devinDesc: "Cognition Devin kota ve oturum takibi",
+    devinManualAction: "Manuel token",
+    devinDocsLink: "Devin CLI manuel kimlik doğrulama yönergeleri ↗",
     copyCode: "Kodu Kopyala", codeCopied: "Kopyalandı!",
     deviceWaitGeneric: "Yetkilendirme Bekleniyor:",
     deviceDescGeneric: "Açılan doğrulama sayfasına bu kodu girin. Onaylandığı an panel otomatik olarak güncellenecektir.",
+    oauthWaiting: "{provider} yetkilendirmesi bekleniyor...",
+    oauthFailed: "Yetkilendirme başarısız",
+    oauthRequestFailure: "Yetkilendirme isteği başarısız oldu",
+    oauthPollFailure: "Yetkilendirme durumu kontrol edilemedi",
+    oauthNetworkFailure: "Bağlantı hatası",
+    oauthTimeout: "Yetkilendirme isteği zaman aşımına uğradı",
+    googleManualInstructions: "Google yetkilendirmesinden sonra localhost sayfasının açılamaması barındırılan sunucularda beklenir. Hata sekmesinin adres çubuğundaki URL'nin tamamını kopyalayıp aşağıya yapıştırın.",
+    googleManualPlaceholder: "http://127.0.0.1:51121/oauth-callback?code=...&state=...",
+    googleManualLabel: "Tam callback URL'si",
+    googleManualSubmit: "Yetkilendirmeyi Tamamla",
+    googleManualSubmitting: "Tamamlanıyor...",
+    googleManualFailure: "Tam callback URL'si doğrulanamadı veya yetkilendirme tamamlanamadı. URL'nin tamamını kopyalayıp yeniden deneyin.",
+    googleManualNetworkFailure: "Callback gönderilemedi. Bağlantınızı kontrol edip yeniden deneyin.",
+    oauthSessionNotFound: "Yetkilendirme oturumu bulunamadı veya süresi doldu",
+    oauthExpired: "Yetkilendirme süresi doldu. Yeniden başlayın.",
+    oauthRetrying: "İstek hız sınırına ulaştı; {seconds} saniye sonra yeniden denenecek.",
     provider: "Sağlayıcı", accountLabel: "Hesap Adı / Etiket",
     accountLabelPlaceholder: "Örn: Kişisel Pro, İş Hesabı",
     accountAccent: "Kart Vurgu Rengi", cardAccent: "Kart Vurgusu",
@@ -113,6 +131,7 @@ const I18N: Record<string, Record<string, string>> = {
     statusStale: "Eski Veri", staleBadge: "Eski Veri",
     staleNotice: "Önbelleğe alınmış kotalar gösteriliyor",
     lastSuccessfulUpdate: "Son başarılı güncelleme:", initialUnavailable: "Kullanım verisi henüz alınamadı",
+    accountConnectedNoQuota: "Hesap bağlandı; sağlayıcı kota verisi bildirmiyor",
     logoutText: "Çıkış", logoutTitle: "Oturumu Kapat",
     adminLink: "Yönetim", adminTitle: "Yönetim Paneli",
     editModeNotice: "✏️ Düzenleme Modu Aktif",
@@ -127,7 +146,7 @@ const I18N: Record<string, Record<string, string>> = {
     deleteAccount: "Remove Account", editLabel: "Edit Label",
     save: "Save", saveAndPoll: "Save & Poll", cancel: "Cancel",
     noAccounts: 'No AI accounts connected yet. Click <b>+ Connect Account</b> to add one.',
-    lastUpdate: "Updated", deleteConfirm: "Are you sure you want to remove this account?",
+    lastUpdate: "Updated", deleteConfirm: "This account's credential and saved usage history will be permanently deleted. This cannot be undone. Continue?", deleteFailed: "The account could not be removed. Please try again.",
     resetsIn: "Resets in", rightsAvailable: "Available",
     modalTitle: "Connect AI Account", modalSubtitle: "Track quotas and credits via OAuth or direct API key.",
     tabOAuth: "Login with OAuth", tabManual: "Manual API Key",
@@ -146,9 +165,27 @@ const I18N: Record<string, Record<string, string>> = {
     openrouterTitle: "OpenRouter", openrouterDesc: "Automatic PKCE key exchange & balance",
     zaiTitle: "Zhipu AI (GLM / BigModel)", zaiDesc: "GLM-4 model credits & balance",
     devinTitle: "Devin AI", devinDesc: "Cognition Devin quota & session tracking",
+    devinManualAction: "Manual token",
+    devinDocsLink: "Devin CLI manual authentication instructions ↗",
     copyCode: "Copy Code", codeCopied: "Copied!",
     deviceWaitGeneric: "Authorization Pending:",
     deviceDescGeneric: "Enter this code on the verification page. The dashboard will update automatically.",
+    oauthWaiting: "Waiting for {provider} authorization...",
+    oauthFailed: "Authorization failed",
+    oauthRequestFailure: "Authorization request failed",
+    oauthPollFailure: "Could not check authorization status",
+    oauthNetworkFailure: "Network connection failed",
+    oauthTimeout: "Authorization request timed out",
+    googleManualInstructions: "After Google authorization, the localhost page may fail to load on a hosted server; this is expected. Copy the entire URL from that tab's address bar and paste it below.",
+    googleManualPlaceholder: "http://127.0.0.1:51121/oauth-callback?code=...&state=...",
+    googleManualLabel: "Full callback URL",
+    googleManualSubmit: "Complete authorization",
+    googleManualSubmitting: "Completing...",
+    googleManualFailure: "The full callback URL could not be verified or authorization failed. Copy the entire URL and try again.",
+    googleManualNetworkFailure: "The callback could not be submitted. Check your connection and try again.",
+    oauthSessionNotFound: "Authorization session was not found or has expired",
+    oauthExpired: "Authorization expired. Start again.",
+    oauthRetrying: "Polling is rate limited; retrying in {seconds} seconds.",
     provider: "Provider", accountLabel: "Account Label",
     accountLabelPlaceholder: "e.g. Personal Pro, Work Key",
     accountAccent: "Card Accent Color", cardAccent: "Card Accent",
@@ -166,6 +203,7 @@ const I18N: Record<string, Record<string, string>> = {
     networkError: "Connection Error", authError: "Authentication Error / Invalid Token",
     statusStale: "Stale", staleBadge: "Stale", staleNotice: "Showing cached limits",
     lastSuccessfulUpdate: "Last successful update:", initialUnavailable: "Usage data not yet available",
+    accountConnectedNoQuota: "Account connected; provider reports no quota data",
     logoutText: "Sign Out", logoutTitle: "Sign out",
     adminLink: "Admin", adminTitle: "Admin Panel",
     editModeNotice: "✏️ Edit Mode Active",
@@ -253,6 +291,8 @@ function translateLimitLabel(label: string | undefined, id: string | undefined, 
       total_credits: 'Hesap Net Bakiyesi', key_usage: 'API Anahtar Harcaması',
       rate_limit: 'İstek Hız Sınırı', balance_usd: 'Kullanılabilir Bakiye (USD)',
       '5h': '5 Saatlik Kayan Kota', '7d': 'Haftalık Genel Kota',
+      'kimi-code-5h': '5 Saatlik Kota', 'kimi-code-7d': 'Haftalık Kota',
+      'kimi-code-monthly': 'Aylık Kota',
     };
     return trMap[lid] || str;
   }
@@ -267,6 +307,8 @@ function translateLimitLabel(label: string | undefined, id: string | undefined, 
     total_credits: 'Account Net Balance', key_usage: 'API Key Spending',
     rate_limit: 'Rate Limit', balance_usd: 'Available Balance (USD)',
     '5h': '5-Hour Rolling Quota', '7d': 'Weekly Quota',
+    'kimi-code-5h': '5-Hour Quota', 'kimi-code-7d': 'Weekly Quota',
+    'kimi-code-monthly': 'Monthly Quota',
   };
   if (enMap[lid]) return enMap[lid];
   return str.replaceAll('Cursor Hızlı İstek Kotası', 'Cursor Fast Requests Quota')
@@ -282,7 +324,8 @@ function translateLimitLabel(label: string | undefined, id: string | undefined, 
 function translateNote(note: string, lang: string): string {
   const str = String(note || '');
   if (lang === 'tr') return str;
-  return str.replace('Kullanılan:', 'Used:').replace('Kalan:', 'Remaining:')
+  return str.replace(/^Kod kullanımı:\s*%(\d+(?:\.\d+)?)$/, 'Code usage: $1%')
+    .replace('Kullanılan:', 'Used:').replace('Kalan:', 'Remaining:')
     .replaceAll('istek', 'requests')
     .replaceAll('Son Geçerlilik:', 'Expires:')
     .replaceAll('Toplam Yüklenen:', 'Total Loaded:')
@@ -356,11 +399,12 @@ function getCleanLabel(r: Report): string {
 }
 
 // ── AccountCard ──
-function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStartEditLabel, onCancelEditLabel, onSaveLabel, onSaveAccent, onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd }: {
+function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStartEditLabel, onCancelEditLabel, onSaveLabel, onSaveAccent, onDeleteAccount, onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd }: {
   r: Report; lang: string; isEditMode: boolean; editingCardId: string | null;
   currentGroup: string;
   onStartEditLabel: (key: string) => void; onCancelEditLabel: () => void;
   onSaveLabel: (key: string, label: string) => void; onSaveAccent: (key: string, accent: string) => void;
+  onDeleteAccount: (id: string) => void;
   onDragStart: (e: DragEvent<HTMLDivElement>, id: string) => void;
   onDragOver: (e: DragEvent<HTMLDivElement>) => void;
   onDragLeave: (e: DragEvent<HTMLDivElement>) => void;
@@ -376,6 +420,7 @@ function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStart
   const hasLimits = Array.isArray(r.limits) && r.limits.length > 0;
   const isStale = Boolean(r.stale || r.health === 'stale' || r.source === 'stale' || (Boolean(r.error) && hasLimits));
   const isFirstError = Boolean((r.health === 'error' || r.error) && !isStale && !hasLimits);
+  const isHealthyNoQuota = !hasLimits && !r.error && !r.stale && r.health === 'healthy' && r.source === 'live';
   const cardStatus = isStale ? 'stale' : (isFirstError ? 'error' : 'healthy');
 
   const successTimestamp = (isStale && r.lastGoodFetchedAt) ? r.lastGoodFetchedAt : r.fetchedAt;
@@ -471,9 +516,16 @@ function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStart
           <span className="truncate">{rawError || t('initialUnavailable', lang)}</span>
         </div>
       )}
+      {isHealthyNoQuota && (
+        <div role="status" className="bg-appMuted/60 border border-appBorder text-appTextMuted text-xs px-3 py-2 rounded-xl flex items-center gap-2">
+          <svg className="w-4 h-4 shrink-0 text-appTextMuted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          <span>{t('accountConnectedNoQuota', lang)}</span>
+        </div>
+      )}
 
       {/* Limits */}
-      <div className="space-y-2.5">
+      {hasLimits && (
+        <div className="space-y-2.5">
         {(r.limits || []).map((l, idx) => {
           const cleanLimitLabel = translateLimitLabel(l.label, l.id, lang);
           const cleanNotes = (l.notes || []).filter(n => !String(n).toLowerCase().includes('model') && !String(n).toLowerCase().startsWith('plan:'));
@@ -527,22 +579,34 @@ function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStart
             </div>
           );
         })}
-      </div>
+        </div>
+      )}
 
       {/* Edit mode accent picker */}
       {isEditMode && (
-        <div className="pt-2 border-t border-appBorder/50 flex items-center justify-between text-xs" draggable={false} onMouseDown={e => e.stopPropagation()}>
+        <div className="pt-2 border-t border-appBorder/50 flex flex-wrap items-center justify-between gap-2 text-xs" draggable={false} onMouseDown={e => e.stopPropagation()}>
           <span className="text-[11px] font-semibold text-appTextMuted">{t('cardAccent', lang)}:</span>
-          <div className="flex items-center gap-1.5">
-            <button type="button" onClick={() => onSaveAccent(cardKey, 'default')} title={t('accentDefault', lang)}
-              className={`w-4 h-4 rounded-full border border-appBorder bg-transparent relative flex items-center justify-center ${(!cardAccent || cardAccent === 'default') ? 'ring-2 ring-appAccent ring-offset-1 ring-offset-appSurface' : ''}`}>
-              <span className="w-1.5 h-1.5 rounded-full bg-appTextMuted/40" />
-            </button>
-            {ACCENT_KEYS.map(ak => (
-              <button key={ak} type="button" onClick={() => onSaveAccent(cardKey, ak)} title={ak.charAt(0).toUpperCase() + ak.slice(1)}
-                className={`w-4 h-4 rounded-full ${cardAccent === ak ? 'ring-2 ring-white ring-offset-1 ring-offset-appSurface' : ''}`}
-                style={{ backgroundColor: ACCENT_COLORS[ak] }} />
-            ))}
+          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
+            <div className="flex items-center gap-1.5">
+              <button type="button" onClick={() => onSaveAccent(cardKey, 'default')} title={t('accentDefault', lang)}
+                className={`w-4 h-4 rounded-full border border-appBorder bg-transparent relative flex items-center justify-center ${(!cardAccent || cardAccent === 'default') ? 'ring-2 ring-appAccent ring-offset-1 ring-offset-appSurface' : ''}`}>
+                <span className="w-1.5 h-1.5 rounded-full bg-appTextMuted/40" />
+              </button>
+              {ACCENT_KEYS.map(ak => (
+                <button key={ak} type="button" onClick={() => onSaveAccent(cardKey, ak)} title={ak.charAt(0).toUpperCase() + ak.slice(1)}
+                  className={`w-4 h-4 rounded-full ${cardAccent === ak ? 'ring-2 ring-white ring-offset-1 ring-offset-appSurface' : ''}`}
+                  style={{ backgroundColor: ACCENT_COLORS[ak] }} />
+              ))}
+            </div>
+            {r.credentialId && (
+              <button type="button" draggable={false}
+                onClick={e => { e.preventDefault(); e.stopPropagation(); onDeleteAccount(r.credentialId!); }}
+                onMouseDown={e => e.stopPropagation()}
+                onDragStart={e => { e.preventDefault(); e.stopPropagation(); }}
+                className="font-semibold text-rose-400 hover:text-rose-300 hover:underline whitespace-nowrap">
+                {t('deleteAccount', lang)}
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -565,8 +629,16 @@ const OAUTH_PROVIDERS: { id: string; titleKey: string; descKey: string; handler:
 
 
 // ── Provider Hints ──
-function getProviderHint(p: string, lang: string): { placeholder: string; help: string; type: string } {
-  const hints: Record<string, { placeholder: (l: string) => string; help: (l: string) => string; type: string }> = {
+interface ProviderHint {
+  placeholder: string;
+  help: string;
+  type: string;
+  docsUrl?: string;
+  docsLabelKey?: string;
+}
+
+function getProviderHint(p: string, lang: string): ProviderHint {
+  const hints: Record<string, { placeholder: (l: string) => string; help: (l: string) => string; type: string; docsUrl?: string; docsLabelKey?: string }> = {
     'antigravity': { placeholder: l => l === 'tr' ? 'ya29... veya OAuth Token' : 'ya29... or OAuth Token', help: l => l === 'tr' ? 'Google OAuth Access Token veya Refresh Token' : 'Google OAuth Access Token or Refresh Token', type: 'oauth' },
     'openai-codex': { placeholder: () => 'OpenAI Access Token (eyJ...)', help: l => l === 'tr' ? 'OpenAI Bearer Access Token' : 'OpenAI Bearer Access Token', type: 'oauth' },
     'github-copilot': { placeholder: l => l === 'tr' ? 'gho_... veya GitHub Personal Token' : 'gho_... or GitHub Personal Token', help: l => l === 'tr' ? 'GitHub Copilot yetkili erişim tokenı' : 'GitHub Copilot authorization token', type: 'oauth' },
@@ -576,7 +648,7 @@ function getProviderHint(p: string, lang: string): { placeholder: string; help: 
     'xai-oauth': { placeholder: l => l === 'tr' ? 'xAI OAuth Bearer Token veya API Anahtarı' : 'xAI OAuth Bearer Token or API Key', help: l => l === 'tr' ? 'xAI Grok CLI OAuth Tokenı' : 'xAI Grok CLI OAuth Token', type: 'oauth' },
     'zai': { placeholder: l => l === 'tr' ? 'Zhipu API Anahtarı veya OAuth Token' : 'Zhipu API Key or OAuth Token', help: l => l === 'tr' ? 'Zhipu AI / GLM erişim anahtarı' : 'Zhipu AI / GLM access key or token', type: 'oauth' },
     'anthropic': { placeholder: l => l === 'tr' ? 'sk-ant-... veya Claude OAuth Token' : 'sk-ant-... or Claude OAuth Token', help: l => l === 'tr' ? 'Anthropic API Anahtarı veya Claude Code Tokenı' : 'Anthropic API Key or Claude Code Token', type: 'oauth' },
-    'devin': { placeholder: l => l === 'tr' ? 'Devin CLI Token veya API Anahtarı' : 'Devin CLI Token or API Key', help: l => l === 'tr' ? 'Devin oturum tokenı' : 'Devin session token', type: 'oauth' },
+    'devin': { placeholder: l => l === 'tr' ? 'Mevcut Devin CLI oturum tokenı' : 'Existing Devin CLI session token', help: l => l === 'tr' ? 'Yalnızca zaten sahip olduğunuz uyumlu Devin CLI oturum tokenını (devin-session-token$) yapıştırın. cog_ V3 API kişisel erişim tokenları (PAT) desteklenmez.' : 'Paste a compatible Devin CLI session token (devin-session-token$) only if you already have one. cog_ V3 API personal access tokens (PATs) are not supported.', type: 'oauth', docsUrl: 'https://docs.devin.ai/cli/troubleshooting', docsLabelKey: 'devinDocsLink' },
     'minimax-code': { placeholder: l => l === 'tr' ? 'MiniMax API Key veya Token' : 'MiniMax API Key or Token', help: l => l === 'tr' ? 'MiniMax Code token plan erişim anahtarı' : 'MiniMax Code token-plan access key', type: 'api_key' },
     'cline-pass': { placeholder: () => 'ClinePass API Key', help: l => l === 'tr' ? 'Cline kullanım kotası API anahtarı' : 'Cline usage quota API key', type: 'api_key' },
     'umans': { placeholder: () => 'Umans API Key', help: l => l === 'tr' ? 'Umans Code kullanım API anahtarı' : 'Umans Code usage API key', type: 'api_key' },
@@ -586,7 +658,7 @@ function getProviderHint(p: string, lang: string): { placeholder: string; help: 
     'alibaba-token-plan': { placeholder: l => l === 'tr' ? 'Alibaba Token Plan Key / Cookie' : 'Alibaba Token Plan Key / Cookie', help: l => l === 'tr' ? 'Bailian/Qwen token plan anahtarı veya konsol oturumu' : 'Bailian/Qwen token-plan key or console session', type: 'api_key' },
   };
   const h = hints[p];
-  if (h) return { placeholder: h.placeholder(lang), help: h.help(lang), type: h.type };
+  if (h) return { placeholder: h.placeholder(lang), help: h.help(lang), type: h.type, docsUrl: h.docsUrl, docsLabelKey: h.docsLabelKey };
   return { placeholder: lang === 'tr' ? 'Secret veya API Anahtarı' : 'Secret or API Key', help: lang === 'tr' ? 'Sağlayıcı erişim anahtarı' : 'Provider access credential', type: 'api_key' };
 }
 
@@ -634,13 +706,22 @@ function Dashboard() {
 
   // OAuth state
   const [oauthPanel, setOauthPanel] = useState<'list' | 'device' | 'browser'>('list');
-  const [deviceCode, setDeviceCode] = useState('...');
+  const [deviceCode, setDeviceCode] = useState('');
   const [deviceBadge, setDeviceBadge] = useState('OAuth');
-  const [deviceAuthLink, setDeviceAuthLink] = useState('#');
+  const [deviceAuthLink, setDeviceAuthLink] = useState('');
   const [browserAuthText, setBrowserAuthText] = useState('');
-  const [browserAuthLink, setBrowserAuthLink] = useState('#');
+  const [browserAuthLink, setBrowserAuthLink] = useState('');
+  const [googleManualCallback, setGoogleManualCallback] = useState(false);
+  const [googleManualSessionId, setGoogleManualSessionId] = useState('');
+  const [googleCallbackInput, setGoogleCallbackInput] = useState('');
+  const [googleCallbackSubmitting, setGoogleCallbackSubmitting] = useState(false);
+  const [googleCallbackError, setGoogleCallbackError] = useState('');
   const [copyBtnText, setCopyBtnText] = useState(() => t('copyCode', detectInitialLang()));
-  const oauthTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const oauthTimerRef = useRef<number | null>(null);
+  const oauthAbortRef = useRef<AbortController | null>(null);
+  const oauthRunIdRef = useRef(0);
+  const [oauthNotice, setOauthNotice] = useState('');
+  const [oauthFailed, setOauthFailed] = useState(false);
 
   // Manual form state
   const [manualProvider, setManualProvider] = useState('antigravity');
@@ -659,6 +740,17 @@ function Dashboard() {
     document.documentElement.classList.toggle('light', !isDark);
     localStorage.setItem('usage_mode', mode);
   }, [mode]);
+  // ── OAuth unmount cleanup ──
+  useEffect(() => {
+    return () => {
+      clearOAuthTimer();
+      if (oauthAbortRef.current) {
+        oauthAbortRef.current.abort();
+        oauthAbortRef.current = null;
+      }
+    };
+  }, []);
+
 
   // ── Apply accent ──
   useEffect(() => {
@@ -832,13 +924,33 @@ function Dashboard() {
   }
 
   const deleteAccount = useCallback(async (id: string) => {
-    if (!id || !confirm(t('deleteConfirm', lang))) return;
-    await fetch('/api/credentials/' + encodeURIComponent(id), { method: 'DELETE' });
-    await loadUsage();
+    if (!id || !window.confirm(t('deleteConfirm', lang))) return;
+    try {
+      const response = await fetch('/api/credentials/' + encodeURIComponent(id), { method: 'DELETE' });
+      const result = await response.json() as { success?: boolean };
+      if (!response.ok || result.success !== true) {
+        window.alert(t('deleteFailed', lang));
+        return;
+      }
+
+      setReports(prev => prev.filter(r => r.credentialId !== id));
+      setEditingCardId(prev => prev === id ? null : prev);
+      if (draggedRef.current === id) draggedRef.current = null;
+      try {
+        const savedOrder = localStorage.getItem('usage_custom_order');
+        if (savedOrder) {
+          const order: unknown = JSON.parse(savedOrder);
+          if (Array.isArray(order)) {
+            localStorage.setItem('usage_custom_order', JSON.stringify(order.filter(key => key !== id)));
+          }
+        }
+      } catch { /* ignore invalid or unavailable local ordering */ }
+      await loadUsage();
+    } catch {
+      window.alert(t('deleteFailed', lang));
+    }
   }, [lang, loadUsage]);
 
-  // Expose for external access
-  useEffect(() => { (window as unknown as Record<string, unknown>)['deleteAccount'] = deleteAccount; }, [deleteAccount]);
 
   // ── Drag handlers ──
   function onDragStart(e: DragEvent<HTMLDivElement>, id: string) {
@@ -883,9 +995,126 @@ function Dashboard() {
   }
 
   // ── OAuth flow handlers ──
+  const DEFAULT_OAUTH_EXPIRES_IN_SEC = 600;
+  const OAUTH_REQUEST_TIMEOUT_MS = 12000;
+
+  function clearOAuthTimer() {
+    if (oauthTimerRef.current !== null) {
+      window.clearTimeout(oauthTimerRef.current);
+      oauthTimerRef.current = null;
+    }
+  }
+
   function cancelOAuth() {
-    if (oauthTimerRef.current) { clearInterval(oauthTimerRef.current); oauthTimerRef.current = null; }
+    oauthRunIdRef.current += 1;
+    clearOAuthTimer();
+    if (oauthAbortRef.current) {
+      oauthAbortRef.current.abort();
+      oauthAbortRef.current = null;
+    }
     setOauthPanel('list');
+    setOauthNotice('');
+    setOauthFailed(false);
+    setDeviceCode('');
+    setDeviceBadge('OAuth');
+    setDeviceAuthLink('');
+    setBrowserAuthText('');
+    setBrowserAuthLink('');
+    setGoogleManualCallback(false);
+    setGoogleManualSessionId('');
+    setGoogleCallbackInput('');
+    setGoogleCallbackSubmitting(false);
+    setGoogleCallbackError('');
+  }
+
+  function failOAuth(message: string, runId: number) {
+    if (runId !== oauthRunIdRef.current) return;
+    oauthRunIdRef.current += 1;
+    clearOAuthTimer();
+    if (oauthAbortRef.current) {
+      oauthAbortRef.current.abort();
+      oauthAbortRef.current = null;
+    }
+    setOauthFailed(true);
+    setOauthNotice(message);
+  }
+
+  function finishOAuth(runId: number) {
+    if (runId !== oauthRunIdRef.current) return;
+    oauthRunIdRef.current += 1;
+    clearOAuthTimer();
+    if (oauthAbortRef.current) {
+      oauthAbortRef.current.abort();
+      oauthAbortRef.current = null;
+    }
+    closeAddModal();
+    void loadUsage();
+  }
+
+  async function readOAuthJson(res: Response): Promise<Record<string, unknown> | null> {
+    const value: unknown = await res.json().catch(() => null);
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : null;
+  }
+
+  function oauthMessage(key: string, detail?: string) {
+    const message = t(key, lang);
+    return detail ? `${message}: ${detail}` : message;
+  }
+
+  function oauthResponseMessage(key: string, body: Record<string, unknown> | null) {
+    const detail = typeof body?.['error'] === 'string' ? body['error'].trim() : '';
+    return oauthMessage(key, detail || undefined);
+  }
+
+  function oauthExpiry(data: Record<string, unknown>, fallbackSeconds = DEFAULT_OAUTH_EXPIRES_IN_SEC): number {
+    const raw = data['expiresIn'] ?? data['expires_in'];
+    if (raw !== undefined && raw !== null) {
+      const expiresIn = Number(raw);
+      if (Number.isFinite(expiresIn) && expiresIn > 0) {
+        return Date.now() + Math.max(0, expiresIn * 1000);
+      }
+    }
+    return Date.now() + fallbackSeconds * 1000;
+  }
+
+  function retryDelayMs(res: Response, body: Record<string, unknown> | null) {
+    const retryAfter = res.headers.get('Retry-After');
+    if (retryAfter) {
+      const seconds = Number(retryAfter);
+      if (Number.isFinite(seconds) && seconds >= 0) return Math.max(1000, seconds * 1000);
+      const retryAt = Date.parse(retryAfter);
+      if (Number.isFinite(retryAt)) return Math.max(1000, retryAt - Date.now());
+    }
+    const bodySeconds = Number(body?.['retryAfter']);
+    return Number.isFinite(bodySeconds) && bodySeconds >= 0
+      ? Math.max(1000, bodySeconds * 1000)
+      : null;
+  }
+
+  function showRetryNotice(delayMs: number) {
+    setOauthNotice(t('oauthRetrying', lang).replace('{seconds}', String(Math.ceil(delayMs / 1000))));
+  }
+
+  function scheduleOAuthPoll(runId: number, poll: () => Promise<void>, delayMs: number, expiresAt: number) {
+    if (runId !== oauthRunIdRef.current) return;
+    clearOAuthTimer();
+    const remainingMs = Math.max(0, expiresAt - Date.now());
+    if (remainingMs <= 0) {
+      failOAuth(t('oauthExpired', lang), runId);
+      return;
+    }
+    const waitMs = Math.min(delayMs, remainingMs);
+    oauthTimerRef.current = window.setTimeout(() => {
+      oauthTimerRef.current = null;
+      if (runId !== oauthRunIdRef.current) return;
+      if (Date.now() >= expiresAt) {
+        failOAuth(t('oauthExpired', lang), runId);
+        return;
+      }
+      void poll();
+    }, waitMs);
   }
 
   function closeAddModal() {
@@ -895,66 +1124,376 @@ function Dashboard() {
 
   async function startBrowserOAuth(endpoint: string, providerName: string) {
     cancelOAuth();
+    const runId = oauthRunIdRef.current;
     setOauthPanel('browser');
-    setBrowserAuthText(lang === 'tr' ? `${providerName} yetkilendirmesi bekleniyor...` : `Waiting for ${providerName} authorization...`);
+    setBrowserAuthText(t('oauthWaiting', lang).replace('{provider}', providerName));
+    setBrowserAuthLink('');
+    setDeviceAuthLink('');
+    setDeviceCode('');
+    setDeviceBadge('OAuth');
+    setOauthFailed(false);
+    setOauthNotice('');
+    setGoogleManualCallback(false);
+    setGoogleManualSessionId('');
+    setGoogleCallbackInput('');
+    setGoogleCallbackSubmitting(false);
+    setGoogleCallbackError('');
+
+    const initiateController = new AbortController();
+    oauthAbortRef.current = initiateController;
+    let initiateTimedOut = false;
+    const initiateTimer = window.setTimeout(() => {
+      initiateTimedOut = true;
+      initiateController.abort();
+    }, OAUTH_REQUEST_TIMEOUT_MS);
+
     try {
-      const res = await fetch(`/api/oauth/${endpoint}/initiate`, { method: 'POST' });
-      const json = await res.json();
-      if (!json.success) { cancelOAuth(); alert((lang === 'tr' ? 'Hata: ' : 'Error: ') + json.error); return; }
-      const { authUrl, sessionId } = json.data;
+      const res = await fetch(`/api/oauth/${endpoint}/initiate`, {
+        method: 'POST',
+        signal: initiateController.signal,
+      });
+      const json = await readOAuthJson(res);
+      if (runId !== oauthRunIdRef.current) return;
+      if (!res.ok || !json || json['success'] !== true) {
+        failOAuth(oauthResponseMessage('oauthRequestFailure', json), runId);
+        return;
+      }
+      const data = json['data'] && typeof json['data'] === 'object' && !Array.isArray(json['data'])
+        ? json['data'] as Record<string, unknown>
+        : null;
+      if (!data) {
+        failOAuth(t('oauthRequestFailure', lang), runId);
+        return;
+      }
+      const authUrl = typeof data['authUrl'] === 'string' ? data['authUrl'] : '';
+      const sessionId = typeof data['sessionId'] === 'string' ? data['sessionId'] : '';
+      if (!authUrl || !sessionId) {
+        failOAuth(t('oauthRequestFailure', lang), runId);
+        return;
+      }
+      const manualCallback = endpoint === 'google' && data['manualCallback'] === true;
+      setGoogleManualCallback(manualCallback);
+      setGoogleManualSessionId(manualCallback ? sessionId : '');
       setBrowserAuthLink(authUrl);
       window.open(authUrl, '_blank');
-      oauthTimerRef.current = setInterval(async () => {
+      const expiresAt = oauthExpiry(data);
+
+      const pollStatus = async () => {
+        if (runId !== oauthRunIdRef.current) return;
+        if (Date.now() >= expiresAt) {
+          failOAuth(t('oauthExpired', lang), runId);
+          return;
+        }
+
+        const remainingFlowMs = expiresAt - Date.now();
+        const requestTimeoutMs = Math.min(OAUTH_REQUEST_TIMEOUT_MS, Math.max(100, remainingFlowMs));
+        const pollController = new AbortController();
+        oauthAbortRef.current = pollController;
+        let didTimeout = false;
+        const pollTimer = window.setTimeout(() => {
+          didTimeout = true;
+          pollController.abort();
+        }, requestTimeoutMs);
+
         try {
-          const statusRes = await fetch(`/api/oauth/status/${sessionId}`);
-          const statusJson = await statusRes.json();
-          if (statusJson.status === 'complete') { cancelOAuth(); closeAddModal(); pollNow(); }
-          else if (statusJson.status === 'error') { cancelOAuth(); alert((lang === 'tr' ? 'Yetkilendirme hatası: ' : 'Authorization error: ') + statusJson.error); }
-        } catch (e) { console.warn('Browser OAuth status check failed:', e); }
-      }, 2000);
-    } catch (err) { cancelOAuth(); alert((lang === 'tr' ? 'Bağlantı hatası: ' : 'Network error: ') + err); }
+          const statusRes = await fetch(`/api/oauth/status/${encodeURIComponent(sessionId)}`, {
+            signal: pollController.signal,
+          });
+          const statusJson = await readOAuthJson(statusRes);
+          if (runId !== oauthRunIdRef.current) return;
+          if (statusRes.status === 429) {
+            const retryMs = retryDelayMs(statusRes, statusJson);
+            if (retryMs !== null) {
+              showRetryNotice(retryMs);
+              scheduleOAuthPoll(runId, pollStatus, retryMs, expiresAt);
+              return;
+            }
+          }
+          if (!statusRes.ok) {
+            failOAuth(oauthResponseMessage(statusRes.status === 404 ? 'oauthSessionNotFound' : 'oauthPollFailure', statusJson), runId);
+            return;
+          }
+          if (statusJson?.['status'] === 'complete') {
+            finishOAuth(runId);
+          } else if (statusJson?.['status'] === 'error') {
+            failOAuth(oauthResponseMessage('oauthFailed', statusJson), runId);
+          } else if (statusJson?.['status'] === 'pending') {
+            setOauthNotice('');
+            scheduleOAuthPoll(runId, pollStatus, 2000, expiresAt);
+          } else {
+            failOAuth(t('oauthPollFailure', lang), runId);
+          }
+        } catch (err) {
+          if (runId !== oauthRunIdRef.current) return;
+          if (pollController.signal.aborted) {
+            if (Date.now() >= expiresAt) {
+              failOAuth(t('oauthExpired', lang), runId);
+            } else if (didTimeout) {
+              failOAuth(t('oauthTimeout', lang), runId);
+            }
+            return;
+          }
+          failOAuth(oauthMessage('oauthNetworkFailure', err instanceof Error ? err.message : String(err)), runId);
+        } finally {
+          window.clearTimeout(pollTimer);
+          if (oauthAbortRef.current === pollController) {
+            oauthAbortRef.current = null;
+          }
+        }
+      };
+
+      if (expiresAt <= Date.now()) {
+        failOAuth(t('oauthExpired', lang), runId);
+      } else {
+        scheduleOAuthPoll(runId, pollStatus, 2000, expiresAt);
+      }
+    } catch (err) {
+      if (runId !== oauthRunIdRef.current) return;
+      if (initiateController.signal.aborted && initiateTimedOut) {
+        failOAuth(t('oauthTimeout', lang), runId);
+        return;
+      }
+      failOAuth(oauthMessage('oauthNetworkFailure', err instanceof Error ? err.message : String(err)), runId);
+    } finally {
+      window.clearTimeout(initiateTimer);
+      if (oauthAbortRef.current === initiateController) {
+        oauthAbortRef.current = null;
+      }
+    }
   }
 
-  async function startDeviceOAuth(endpoint: string, badgeName: string, pollEndpoint: string, bodyKeys: string[]) {
-    cancelOAuth();
-    setOauthPanel('device');
-    setDeviceBadge(badgeName);
+  async function submitGoogleManualCallback(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (googleCallbackSubmitting || !googleManualSessionId || !googleCallbackInput.trim()) return;
+
+    const runId = oauthRunIdRef.current;
+    const controller = new AbortController();
+    let didTimeout = false;
+    setGoogleCallbackSubmitting(true);
+    setGoogleCallbackError('');
+    oauthAbortRef.current = controller;
+    const timeout = window.setTimeout(() => {
+      didTimeout = true;
+      controller.abort();
+    }, OAUTH_REQUEST_TIMEOUT_MS);
+
     try {
-      const res = await fetch(`/api/oauth/${endpoint}/initiate`, { method: 'POST' });
-      const json = await res.json();
-      if (!json.success) { cancelOAuth(); alert(`${badgeName} error: ${json.error}`); return; }
-      const data = json.data;
-      setDeviceCode(data.userCode || '...');
-      setDeviceAuthLink(data.verificationUrl || data.verificationUri || '#');
-      try { await navigator.clipboard.writeText(data.userCode || ''); } catch { /* ignore */ }
-      window.open(data.verificationUrl || data.verificationUri || '#', '_blank');
-      const interval = (data.interval || 5) * 1000;
-      oauthTimerRef.current = setInterval(async () => {
+      const res = await fetch('/api/oauth/google/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: googleManualSessionId,
+          callbackInput: googleCallbackInput,
+        }),
+        signal: controller.signal,
+      });
+      const json = await readOAuthJson(res);
+      if (runId !== oauthRunIdRef.current) return;
+      if (!res.ok || !json || json['success'] !== true) {
+        setGoogleCallbackError(t('googleManualFailure', lang));
+        return;
+      }
+      finishOAuth(runId);
+    } catch {
+      if (runId === oauthRunIdRef.current) {
+        setGoogleCallbackError(
+          t(didTimeout ? 'oauthTimeout' : 'googleManualNetworkFailure', lang),
+        );
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      if (oauthAbortRef.current === controller) oauthAbortRef.current = null;
+      if (runId === oauthRunIdRef.current) setGoogleCallbackSubmitting(false);
+    }
+  }
+
+  async function startOAuthPoll(
+    endpoint: string,
+    badgeName: string,
+    pollEndpoint: string,
+    bodyKeys: string[],
+    panel: 'device' | 'browser' = 'device',
+  ) {
+    cancelOAuth();
+    const runId = oauthRunIdRef.current;
+    setOauthPanel(panel);
+    setOauthFailed(false);
+    setOauthNotice('');
+    setBrowserAuthLink('');
+    setDeviceAuthLink('');
+    setDeviceCode('');
+    if (panel === 'device') {
+      setDeviceBadge(badgeName);
+    } else {
+      setDeviceBadge('OAuth');
+      setBrowserAuthText(t('oauthWaiting', lang).replace('{provider}', badgeName));
+    }
+
+    const initiateController = new AbortController();
+    oauthAbortRef.current = initiateController;
+    let initiateTimedOut = false;
+    const initiateTimer = window.setTimeout(() => {
+      initiateTimedOut = true;
+      initiateController.abort();
+    }, OAUTH_REQUEST_TIMEOUT_MS);
+
+    try {
+      const res = await fetch(`/api/oauth/${endpoint}/initiate`, {
+        method: 'POST',
+        signal: initiateController.signal,
+      });
+      const json = await readOAuthJson(res);
+      if (runId !== oauthRunIdRef.current) return;
+      if (!res.ok || !json || json['success'] !== true) {
+        failOAuth(oauthResponseMessage('oauthRequestFailure', json), runId);
+        return;
+      }
+      const data = json['data'] && typeof json['data'] === 'object' && !Array.isArray(json['data'])
+        ? json['data'] as Record<string, unknown>
+        : null;
+      if (!data) {
+        failOAuth(t('oauthRequestFailure', lang), runId);
+        return;
+      }
+      const missingBodyKey = bodyKeys.find(key => {
+        const value = data[key];
+        return value === undefined || value === null || (typeof value === 'string' && !value.trim());
+      });
+      const authUrlValue = panel === 'browser'
+        ? data['authUrl']
+        : data['verificationUrl'] || data['verificationUri'];
+      const authUrl = typeof authUrlValue === 'string' ? authUrlValue : '';
+      if (missingBodyKey || !authUrl || (panel === 'device' && typeof data['userCode'] !== 'string')) {
+        failOAuth(t('oauthRequestFailure', lang), runId);
+        return;
+      }
+      const body: Record<string, unknown> = {};
+      for (const key of bodyKeys) body[key] = data[key];
+      if (panel === 'device') {
+        setDeviceCode(data['userCode'] as string);
+        setDeviceAuthLink(authUrl);
+        if (typeof data['userCode'] === 'string' && data['userCode'].trim()) {
+          try { await navigator.clipboard.writeText(data['userCode']); } catch { /* ignore */ }
+        }
+      } else {
+        setBrowserAuthLink(authUrl);
+      }
+      if (runId !== oauthRunIdRef.current) return;
+      window.open(authUrl, '_blank');
+
+      const rawInterval = Number(data['interval']);
+      let intervalMs = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval * 1000 : 5000;
+      const expiresAt = oauthExpiry(data);
+
+      const poll = async () => {
+        if (runId !== oauthRunIdRef.current) return;
+        if (Date.now() >= expiresAt) {
+          failOAuth(t('oauthExpired', lang), runId);
+          return;
+        }
+
+        const remainingFlowMs = expiresAt - Date.now();
+        const requestTimeoutMs = Math.min(OAUTH_REQUEST_TIMEOUT_MS, Math.max(100, remainingFlowMs));
+        const pollController = new AbortController();
+        oauthAbortRef.current = pollController;
+        let didTimeout = false;
+        const pollTimer = window.setTimeout(() => {
+          didTimeout = true;
+          pollController.abort();
+        }, requestTimeoutMs);
+
         try {
-          const body: Record<string, unknown> = {};
-          for (const k of bodyKeys) { if (data[k] !== undefined) body[k] = data[k]; }
           const pollRes = await fetch(`/api/oauth/${pollEndpoint}/poll`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
+            signal: pollController.signal,
           });
-          const pollJson = await pollRes.json();
-          if (pollJson.status === 'complete') { cancelOAuth(); closeAddModal(); pollNow(); }
-          else if (pollJson.status === 'error') { cancelOAuth(); alert((lang === 'tr' ? 'Giriş başarısız: ' : 'Login failed: ') + pollJson.error); }
-        } catch (e) { console.warn(`${badgeName} poll error:`, e); }
-      }, interval);
-    } catch (err) { cancelOAuth(); alert(`${badgeName} error: ${err}`); }
+          const pollJson = await readOAuthJson(pollRes);
+          if (runId !== oauthRunIdRef.current) return;
+          if (pollRes.status === 429) {
+            const retryMs = retryDelayMs(pollRes, pollJson);
+            if (retryMs !== null) {
+              showRetryNotice(retryMs);
+              scheduleOAuthPoll(runId, poll, retryMs, expiresAt);
+              return;
+            }
+          }
+          if (!pollRes.ok) {
+            failOAuth(oauthResponseMessage(pollRes.status === 404 ? 'oauthSessionNotFound' : 'oauthPollFailure', pollJson), runId);
+            return;
+          }
+          if (pollJson?.['status'] === 'complete') {
+            finishOAuth(runId);
+          } else if (pollJson?.['status'] === 'error') {
+            failOAuth(oauthResponseMessage('oauthFailed', pollJson), runId);
+          } else if (pollJson?.['status'] === 'slow_down') {
+            const serverInterval = Number(pollJson['interval']);
+            intervalMs = Math.max(
+              intervalMs + 5000,
+              Number.isFinite(serverInterval) && serverInterval > 0 ? serverInterval * 1000 : 0,
+            );
+            showRetryNotice(intervalMs);
+            scheduleOAuthPoll(runId, poll, intervalMs, expiresAt);
+          } else if (pollJson?.['status'] === 'pending') {
+            setOauthNotice('');
+            scheduleOAuthPoll(runId, poll, intervalMs, expiresAt);
+          } else {
+            failOAuth(t('oauthPollFailure', lang), runId);
+          }
+        } catch (err) {
+          if (runId !== oauthRunIdRef.current) return;
+          if (pollController.signal.aborted) {
+            if (Date.now() >= expiresAt) {
+              failOAuth(t('oauthExpired', lang), runId);
+            } else if (didTimeout) {
+              failOAuth(t('oauthTimeout', lang), runId);
+            }
+            return;
+          }
+          failOAuth(oauthMessage('oauthNetworkFailure', err instanceof Error ? err.message : String(err)), runId);
+        } finally {
+          window.clearTimeout(pollTimer);
+          if (oauthAbortRef.current === pollController) {
+            oauthAbortRef.current = null;
+          }
+        }
+      };
+
+      if (expiresAt <= Date.now()) {
+        failOAuth(t('oauthExpired', lang), runId);
+      } else {
+        scheduleOAuthPoll(runId, poll, intervalMs, expiresAt);
+      }
+    } catch (err) {
+      if (runId !== oauthRunIdRef.current) return;
+      if (initiateController.signal.aborted && initiateTimedOut) {
+        failOAuth(t('oauthTimeout', lang), runId);
+        return;
+      }
+      failOAuth(oauthMessage('oauthNetworkFailure', err instanceof Error ? err.message : String(err)), runId);
+    } finally {
+      window.clearTimeout(initiateTimer);
+      if (oauthAbortRef.current === initiateController) {
+        oauthAbortRef.current = null;
+      }
+    }
   }
 
   function handleOAuthProviderClick(handler: string) {
     if (handler === 'google') startBrowserOAuth('google', 'Google Antigravity');
     else if (handler === 'claude') startBrowserOAuth('claude', 'Anthropic Claude');
-    else if (handler === 'cursor') startBrowserOAuth('cursor', 'Cursor');
+    else if (handler === 'cursor') startOAuthPoll('cursor', 'Cursor', 'cursor', ['uuid', 'verifier'], 'browser');
     else if (handler === 'openrouter') startBrowserOAuth('openrouter', 'OpenRouter');
-    else if (handler === 'devin') startBrowserOAuth('devin', 'Devin AI');
-    else if (handler === 'codex-device') startDeviceOAuth('codex', 'OpenAI', 'codex', ['deviceAuthId', 'userCode']);
-    else if (handler === 'copilot-device') startDeviceOAuth('copilot', 'GitHub Copilot', 'copilot', ['deviceCode']);
-    else if (handler === 'xai-device') startDeviceOAuth('xai', 'xAI Grok', 'xai', ['deviceCode']);
-    else if (handler === 'kimi-device') startDeviceOAuth('kimi', 'Kimi Code', 'kimi', ['deviceCode', 'deviceId']);
+    else if (handler === 'devin') {
+      cancelOAuth();
+      setManualProvider('devin');
+      setModalTab('manual');
+    }
+    else if (handler === 'codex-device') startOAuthPoll('codex', 'OpenAI', 'codex', ['deviceAuthId', 'userCode']);
+    else if (handler === 'copilot-device') startOAuthPoll('copilot', 'GitHub Copilot', 'copilot', ['deviceCode']);
+    else if (handler === 'xai-device') startOAuthPoll('xai', 'xAI Grok', 'xai', ['deviceCode']);
+    else if (handler === 'kimi-device') startOAuthPoll('kimi', 'Kimi Code', 'kimi', ['deviceCode', 'deviceId']);
   }
 
   async function copyDeviceCode() {
@@ -990,7 +1529,7 @@ function Dashboard() {
       }
       closeAddModal();
       (form.querySelector('input[name="secret"]') as HTMLInputElement).value = '';
-      setTimeout(pollNow, 300);
+      void loadUsage();
     } catch (err) {
       alert((lang === 'tr' ? 'Bağlantı Hatası: ' : 'Connection Error: ') + err);
     } finally { setManualSaving(false); }
@@ -1128,7 +1667,7 @@ function Dashboard() {
                   <AccountCard key={getCardKey(r)} r={r} lang={lang} isEditMode={isEditMode} editingCardId={editingCardId}
                     currentGroup={currentGroup}
                     onStartEditLabel={setEditingCardId} onCancelEditLabel={() => setEditingCardId(null)}
-                    onSaveLabel={saveAccountLabel} onSaveAccent={saveAccountAccent}
+                    onSaveLabel={saveAccountLabel} onSaveAccent={saveAccountAccent} onDeleteAccount={deleteAccount}
                     onDragStart={onDragStart} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop} onDragEnd={onDragEnd} />
                 ))}
               </React.Fragment>
@@ -1138,7 +1677,7 @@ function Dashboard() {
               <AccountCard key={getCardKey(r)} r={r} lang={lang} isEditMode={isEditMode} editingCardId={editingCardId}
                 currentGroup={currentGroup}
                 onStartEditLabel={setEditingCardId} onCancelEditLabel={() => setEditingCardId(null)}
-                onSaveLabel={saveAccountLabel} onSaveAccent={saveAccountAccent}
+                onSaveLabel={saveAccountLabel} onSaveAccent={saveAccountAccent} onDeleteAccount={deleteAccount}
                 onDragStart={onDragStart} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop} onDragEnd={onDragEnd} />
             ))
           )}
@@ -1215,7 +1754,7 @@ function Dashboard() {
                             <div className="text-[11px] text-appTextMuted">{t(op.descKey, lang)}</div>
                           </div>
                         </div>
-                        <span className="text-xs font-semibold text-appAccent shrink-0">{t('loginBtn', lang)}</span>
+                        <span className="text-xs font-semibold text-appAccent shrink-0">{t(op.handler === 'devin' ? 'devinManualAction' : 'loginBtn', lang)}</span>
                       </button>
                     ))}
                   </div>
@@ -1223,18 +1762,32 @@ function Dashboard() {
                 {oauthPanel === 'device' && (
                   <div id="deviceAuthPanel" className="p-4 rounded-xl bg-appMuted border border-appAccent/40 space-y-3.5">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-appText">{t('deviceWaitGeneric', lang)}</span>
+                      <span className="text-xs font-semibold text-appText">{oauthFailed ? t('oauthFailed', lang) : t('deviceWaitGeneric', lang)}</span>
                       <span className="text-xs px-2.5 py-0.5 rounded-full bg-appAccentSoft text-appAccent font-semibold tracking-wide">{deviceBadge}</span>
                     </div>
-                    <div className="flex items-center gap-2 bg-appSurface border border-appBorder rounded-lg p-2.5">
-                      <code className="flex-1 font-mono text-base font-bold tracking-widest text-center text-appAccent select-all">{deviceCode}</code>
-                      <button type="button" onClick={copyDeviceCode} className="px-3 py-1.5 text-xs font-semibold rounded-md bg-appMuted hover:bg-appBorder text-appText transition flex items-center gap-1.5">
-                        <span>📋</span><span>{copyBtnText}</span>
-                      </button>
-                    </div>
+                    {deviceCode ? (
+                      <div className="flex items-center gap-2 bg-appSurface border border-appBorder rounded-lg p-2.5">
+                        <code className="flex-1 font-mono text-base font-bold tracking-widest text-center text-appAccent select-all">{deviceCode}</code>
+                        <button type="button" onClick={copyDeviceCode} className="px-3 py-1.5 text-xs font-semibold rounded-md bg-appMuted hover:bg-appBorder text-appText transition flex items-center gap-1.5">
+                          <span>📋</span><span>{copyBtnText}</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center p-2.5 text-xs text-appTextMuted">
+                        {!oauthFailed && <div className="w-4 h-4 border-2 border-appAccent border-t-transparent rounded-full animate-spin shrink-0 mr-2" />}
+                        <span>{oauthFailed ? t('oauthFailed', lang) : t('oauthWaiting', lang).replace('{provider}', deviceBadge)}</span>
+                      </div>
+                    )}
                     <p className="text-xs text-appTextMuted leading-relaxed">{t('deviceDescGeneric', lang)}</p>
+                    {oauthNotice && (
+                      <div role={oauthFailed ? 'alert' : 'status'} className={`text-xs px-3 py-2 rounded-xl flex items-center gap-2 ${oauthFailed ? 'bg-rose-500/10 border border-rose-500/20 text-rose-400 font-medium' : 'bg-appSurface border border-appBorder text-appTextMuted'}`}>
+                        <span className="break-all">{oauthNotice}</span>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between pt-1">
-                      <a href={deviceAuthLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-appAccent hover:underline">{t('reopenLink', lang)}</a>
+                      {Boolean(deviceAuthLink && deviceAuthLink !== '#') ? (
+                        <a href={deviceAuthLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-appAccent hover:underline">{t('reopenLink', lang)}</a>
+                      ) : <span />}
                       <button type="button" onClick={cancelOAuth} className="text-xs text-appTextMuted hover:text-appText transition font-medium">{t('cancel', lang)}</button>
                     </div>
                   </div>
@@ -1242,12 +1795,50 @@ function Dashboard() {
                 {oauthPanel === 'browser' && (
                   <div id="browserAuthPanel" className="p-4 rounded-xl bg-appMuted border border-appAccent/40 space-y-3">
                     <div className="flex items-center gap-3">
-                      <div className="w-4 h-4 border-2 border-appAccent border-t-transparent rounded-full animate-spin shrink-0" />
-                      <span className="text-xs font-semibold text-appText">{browserAuthText}</span>
+                      {!oauthFailed && <div className="w-4 h-4 border-2 border-appAccent border-t-transparent rounded-full animate-spin shrink-0" />}
+                      <span className="text-xs font-semibold text-appText">{oauthFailed ? t('oauthFailed', lang) : browserAuthText}</span>
                     </div>
-                    <p className="text-xs text-appTextMuted leading-relaxed">{lang === 'tr' ? 'Açılan sekmede yetkilendirmeyi tamamlayın.' : 'Complete authorization in the opened tab.'}</p>
+                    {googleManualCallback ? (
+                      <>
+                        <p className="text-xs text-appTextMuted leading-relaxed">{t('googleManualInstructions', lang)}</p>
+                        <form onSubmit={submitGoogleManualCallback} className="space-y-2.5">
+                          <label htmlFor="googleManualCallbackInput" className="block text-xs font-semibold text-appTextMuted">{t('googleManualLabel', lang)}</label>
+                          <textarea
+                            id="googleManualCallbackInput"
+                            value={googleCallbackInput}
+                            onChange={e => {
+                              setGoogleCallbackInput(e.target.value);
+                              setGoogleCallbackError('');
+                            }}
+                            placeholder={t('googleManualPlaceholder', lang)}
+                            autoComplete="off"
+                            spellCheck={false}
+                            rows={2}
+                            required
+                            className="w-full resize-y bg-appSurface border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none"
+                          />
+                          {googleCallbackError && <div role="alert" className="text-xs text-rose-400">{googleCallbackError}</div>}
+                          <button
+                            type="submit"
+                            disabled={googleCallbackSubmitting || !googleCallbackInput.trim()}
+                            className="w-full rounded-lg bg-appAccent px-3 py-2 text-xs font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {googleCallbackSubmitting ? t('googleManualSubmitting', lang) : t('googleManualSubmit', lang)}
+                          </button>
+                        </form>
+                      </>
+                    ) : (
+                      <p className="text-xs text-appTextMuted leading-relaxed">{lang === 'tr' ? 'Açılan sekmede yetkilendirmeyi tamamlayın.' : 'Complete authorization in the opened tab.'}</p>
+                    )}
+                    {oauthNotice && (
+                      <div role={oauthFailed ? 'alert' : 'status'} className={`text-xs px-3 py-2 rounded-xl flex items-center gap-2 ${oauthFailed ? 'bg-rose-500/10 border border-rose-500/20 text-rose-400 font-medium' : 'bg-appSurface border border-appBorder text-appTextMuted'}`}>
+                        <span className="break-all">{oauthNotice}</span>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between pt-1">
-                      <a href={browserAuthLink} target="_blank" rel="noreferrer" className="text-xs font-semibold text-appAccent hover:underline">{t('reopenLink', lang)}</a>
+                      {Boolean(browserAuthLink && browserAuthLink !== '#') ? (
+                        <a href={browserAuthLink} target="_blank" rel="noreferrer" className="text-xs font-semibold text-appAccent hover:underline">{t('reopenLink', lang)}</a>
+                      ) : <span />}
                       <button type="button" onClick={cancelOAuth} className="text-xs text-appTextMuted hover:text-appText transition font-medium">{t('cancel', lang)}</button>
                     </div>
                   </div>
@@ -1291,6 +1882,12 @@ function Dashboard() {
                   <input type="password" name="secret" placeholder={hint.placeholder} required
                     className="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none" />
                   <p className="text-[11px] text-appTextMuted mt-1">{hint.help}</p>
+                  {hint.docsUrl && hint.docsLabelKey && (
+                    <a href={hint.docsUrl} target="_blank" rel="noopener noreferrer"
+                      className="inline-block text-[11px] text-appAccent hover:underline mt-1">
+                      {t(hint.docsLabelKey, lang)}
+                    </a>
+                  )}
                 </div>
                 <div className="flex justify-end gap-2.5 pt-3 border-t border-appBorder">
                   <button type="button" onClick={closeAddModal} className="px-4 py-2 rounded-lg text-xs font-semibold bg-appMuted hover:bg-appBorder text-appText transition">{t('cancel', lang)}</button>

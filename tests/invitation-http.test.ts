@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { RateLimiter, RATE_LIMIT_POLICIES } from "../src/server/security";
 import { StorageVault } from "../src/core/storage/vault";
 import { createDefaultRegistry } from "../src/core/providers/registry";
 import { PollerEngine } from "../src/core/poller/poller";
@@ -60,12 +61,12 @@ type TestApp = {
   request: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 };
 
-function createTestApp() {
+function createTestApp(rateLimiter?: RateLimiter) {
   const vault = new StorageVault(":memory:");
   const registry = createDefaultRegistry();
   const poller = new PollerEngine(vault, registry);
   const authService = new AuthService(vault);
-  const app = createServer(vault, poller, registry, authService) as unknown as TestApp;
+  const app = createServer(vault, poller, registry, authService, rateLimiter ? { rateLimiter } : undefined) as unknown as TestApp;
   return { vault, registry, poller, authService, app };
 }
 
@@ -346,7 +347,8 @@ describe("Invitation HTTP API & End-to-End Onboarding", () => {
   });
 
   it("generically rejects invalid, expired, revoked, or replayed tokens without leaking internal state", async () => {
-    const { vault, app } = createTestApp();
+    let now = Date.now();
+    const { vault, app } = createTestApp(new RateLimiter({ now: () => now }));
     try {
       const admin = await registerAdmin(app);
 
@@ -416,7 +418,8 @@ describe("Invitation HTTP API & End-to-End Onboarding", () => {
       expect(revokedAcceptJson.success).toBe(false);
       expect(revokedAcceptJson.error).toBe(standardError);
 
-      // 4. Replay attack: single-use token cannot be accepted twice
+      expect(vault.getUserCount()).toBe(1);
+      expect(vault.getSystemStatsAdmin(false).activeSessions).toBe(1);
       const singleCreate = await app.request("/api/admin/invitations", {
         method: "POST",
         headers: { "Content-Type": "application/json", Cookie: admin.cookie },
@@ -432,6 +435,7 @@ describe("Invitation HTTP API & End-to-End Onboarding", () => {
         body: JSON.stringify({ password: "Strong-Password-12345!" }),
       });
       expect(firstAccept.status).toBe(200);
+      now += RATE_LIMIT_POLICIES.registration.windowMs + 1;
 
       // Second acceptance (replay): rejected generically
       const replayAccept = await app.request(`/api/invitations/${singleRawToken}/accept`, {
@@ -443,6 +447,8 @@ describe("Invitation HTTP API & End-to-End Onboarding", () => {
       const replayJson = (await replayAccept.json()) as GenericResponse;
       expect(replayJson.success).toBe(false);
       expect(replayJson.error).toBe(standardError);
+      expect(vault.getUserCount()).toBe(2);
+      expect(vault.getSystemStatsAdmin(false).activeSessions).toBe(2);
     } finally {
       vault.close();
     }

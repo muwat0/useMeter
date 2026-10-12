@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { AuthService } from "../src/core/auth/auth";
 import { decryptSecret, encryptSecret, hashSessionToken } from "../src/core/crypto";
 import { StorageVault } from "../src/core/storage/vault";
@@ -1366,5 +1366,894 @@ describe("StorageVault System Settings & Registration Policy", () => {
 
     migratedVault.close();
     try { unlinkSync(testDbPath); } catch {}
+  });
+});
+describe("StorageVault Credential Metadata Encryption & Migration (At-Rest Security)", () => {
+  const origEnv = process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+  const origMasterKey = process.env["USAGE_MASTER_KEY"];
+
+  function createSeededV1Database(dbPath: string): { ownerId: string; credIds: string[] } {
+    const rawDb = new Database(dbPath, { create: true });
+    rawDb.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL COLLATE NOCASE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX idx_users_email ON users(email);
+
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE credentials (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        account_label TEXT NOT NULL,
+        accent TEXT NOT NULL DEFAULT 'default',
+        credential_type TEXT NOT NULL,
+        encrypted_secret TEXT NOT NULL,
+        iv TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        metadata TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE usage_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+        credential_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        account_label TEXT NOT NULL,
+        report_json TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL,
+        FOREIGN KEY(credential_id) REFERENCES credentials(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE system_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE invitations (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL COLLATE NOCASE,
+        token_hash TEXT NOT NULL UNIQUE,
+        created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at INTEGER NOT NULL,
+        accepted_at INTEGER,
+        revoked_at INTEGER,
+        created_at INTEGER NOT NULL
+      );
+
+      PRAGMA user_version = 1;
+    `);
+
+    const ownerId = "synthetic-prod-user-1";
+    const now = 1720000000000;
+    rawDb.prepare(`
+      INSERT INTO users (id, email, password_hash, role, created_at, updated_at)
+      VALUES (?, 'operator@example.com', 'synthetic-hash', 'admin', ?, ?)
+    `).run(ownerId, now, now);
+
+    const credStmt = rawDb.prepare(`
+      INSERT INTO credentials (
+        id, owner_id, provider, account_label, accent, credential_type,
+        encrypted_secret, iv, tag, metadata, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const snapStmt = rawDb.prepare(`
+      INSERT INTO usage_snapshots (
+        owner_id, credential_id, provider, account_label, report_json, fetched_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    const providers = [
+      {
+        id: "cred-cursor",
+        provider: "cursor",
+        label: "Cursor Pro",
+        accent: "cyan",
+        secret: "cursor-access-key-1",
+        metadata: { refreshToken: "cursor-rt-plaintext-12345", email: "dev@cursor.com" },
+      },
+      {
+        id: "cred-copilot",
+        provider: "github-copilot",
+        label: "GitHub Copilot Enterprise",
+        accent: "emerald",
+        secret: "ghu_copilot_token_1",
+        metadata: { user: "copilot-operator", scopes: ["read:user", "copilot"] },
+      },
+      {
+        id: "cred-codex",
+        provider: "openai-codex",
+        label: "OpenAI Codex Main",
+        accent: "amber",
+        secret: "sk-proj-codex-token-1",
+        metadata: { organization: "org-synthetic-codex", refreshToken: "codex-rt-plaintext-98765" },
+      },
+      {
+        id: "cred-xai",
+        provider: "xai-oauth",
+        label: "xAI Main Account",
+        accent: "violet",
+        secret: "xai-bearer-token-1",
+        metadata: { refreshToken: "xai-rt-plaintext-45678", scope: "offline_access" },
+      },
+    ];
+
+    for (const p of providers) {
+      const enc = encryptSecret(p.secret);
+      credStmt.run(
+        p.id,
+        ownerId,
+        p.provider,
+        p.label,
+        p.accent,
+        "oauth",
+        enc.ciphertext,
+        enc.iv,
+        enc.tag,
+        JSON.stringify(p.metadata),
+        now,
+        now,
+      );
+
+      const report: UsageReport = {
+        provider: p.provider,
+        credentialId: p.id,
+        accountLabel: p.label,
+        fetchedAt: now,
+        limits: [
+          {
+            id: "req",
+            label: "Requests",
+            amount: { remaining: 500, unit: "requests" },
+            status: "ok",
+          },
+        ],
+      };
+      snapStmt.run(ownerId, p.id, p.provider, p.label, JSON.stringify(report), now);
+    }
+
+    rawDb.close();
+    return { ownerId, credIds: providers.map(p => p.id) };
+  }
+
+  function cleanupDbFiles(basePath: string): void {
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        unlinkSync(`${basePath}${suffix}`);
+      } catch {}
+    }
+  }
+
+  it("Fresh database initializes at schema version 1 and caches version 1 in Phase 1 mode", () => {
+    delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    const memVault = new StorageVault(":memory:");
+    try {
+      expect(memVault.getSchemaVersion()).toBe(1);
+    } finally {
+      memVault.close();
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+
+  it("Phase 1 dual-reader accepts legacy plaintext metadata and preserves v1 writes without env", () => {
+    const testDbPath = `data/test-phase1-reader-${Date.now()}.db`;
+    delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    const { ownerId } = createSeededV1Database(testDbPath);
+
+    try {
+      const testVault = new StorageVault(testDbPath);
+      expect(testVault.getSchemaVersion()).toBe(1);
+
+      const creds = testVault.listCredentials(ownerId);
+      expect(creds.length).toBe(4);
+
+      const cursorCred = creds.find(c => c.provider === "cursor");
+      expect(cursorCred?.metadata?.["refreshToken"]).toBe("cursor-rt-plaintext-12345");
+
+      const newCred = testVault.saveCredential(ownerId, {
+        provider: "openrouter",
+        accountLabel: "OpenRouter Phase 1",
+        credentialType: "api_key",
+        secret: "sk-or-test-key",
+        metadata: { client: "phase1-test" },
+      });
+      expect(newCred.metadata?.["client"]).toBe("phase1-test");
+      testVault.close();
+
+      const rawDb = new Database(testDbPath);
+      const row = rawDb.prepare("SELECT metadata FROM credentials WHERE id = ?").get(newCred.id) as { metadata: string };
+      const parsed = JSON.parse(row.metadata);
+      expect(parsed["$vault"]).toBeUndefined();
+      expect(parsed["client"]).toBe("phase1-test");
+      rawDb.close();
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+
+  it("Phase 1 dual-reader accepts versioned encrypted envelopes even when env is absent", () => {
+    const testDbPath = `data/test-phase1-envelope-${Date.now()}.db`;
+    delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    const { ownerId } = createSeededV1Database(testDbPath);
+
+    try {
+      const encMetadata = encryptSecret(JSON.stringify({ refreshToken: "staged-envelope-rt" }));
+      const envelopeJson = JSON.stringify({
+        $vault: 1,
+        ciphertext: encMetadata.ciphertext,
+        iv: encMetadata.iv,
+        tag: encMetadata.tag,
+      });
+
+      const rawDb = new Database(testDbPath);
+      const encSecret = encryptSecret("anthropic-oauth-key");
+      rawDb.prepare(`
+        INSERT INTO credentials (
+          id, owner_id, provider, account_label, accent, credential_type,
+          encrypted_secret, iv, tag, metadata, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "cred-envelope-1",
+        ownerId,
+        "anthropic",
+        "Anthropic Envelope",
+        "default",
+        "oauth",
+        encSecret.ciphertext,
+        encSecret.iv,
+        encSecret.tag,
+        envelopeJson,
+        2000,
+        2000,
+      );
+      rawDb.close();
+
+      const testVault = new StorageVault(testDbPath);
+      const retrieved = testVault.getCredential(ownerId, "cred-envelope-1");
+      expect(retrieved?.metadata?.["refreshToken"]).toBe("staged-envelope-rt");
+      testVault.close();
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+
+  it("Phase 2 migration atomically encrypts all 4 provider credentials and sets user_version=2 without changing other fields", () => {
+    const testDbPath = `data/test-phase2-migration-${Date.now()}.db`;
+    process.env["CREDENTIAL_METADATA_ENCRYPTION"] = "enabled";
+    const { ownerId } = createSeededV1Database(testDbPath);
+
+    try {
+      interface RawCredRow {
+        id: string;
+        owner_id: string;
+        provider: string;
+        account_label: string;
+        accent: string;
+        credential_type: string;
+        encrypted_secret: string;
+        iv: string;
+        tag: string;
+        metadata: string;
+        created_at: number;
+        updated_at: number;
+      }
+      interface RawSnapRow {
+        id: number;
+        owner_id: string;
+        credential_id: string;
+        provider: string;
+        account_label: string;
+        report_json: string;
+        fetched_at: number;
+      }
+
+      const rawBefore = new Database(testDbPath);
+      const beforeRows = rawBefore.prepare("SELECT * FROM credentials ORDER BY id ASC").all() as RawCredRow[];
+      const beforeSnaps = rawBefore.prepare("SELECT * FROM usage_snapshots ORDER BY id ASC").all() as RawSnapRow[];
+      rawBefore.close();
+
+      const testVault = new StorageVault(testDbPath);
+      expect(testVault.getSchemaVersion()).toBe(2);
+
+      const creds = testVault.listCredentials(ownerId);
+      expect(creds.length).toBe(4);
+
+      const credById: Record<string, StoredCredential> = {};
+      for (const c of creds) {
+        credById[c.id] = c;
+      }
+      expect(credById["cred-cursor"]?.metadata?.["refreshToken"]).toBe("cursor-rt-plaintext-12345");
+      expect(credById["cred-copilot"]?.metadata?.["user"]).toBe("copilot-operator");
+      expect(credById["cred-codex"]?.metadata?.["refreshToken"]).toBe("codex-rt-plaintext-98765");
+      expect(credById["cred-xai"]?.metadata?.["refreshToken"]).toBe("xai-rt-plaintext-45678");
+
+      testVault.close();
+
+      const rawAfter = new Database(testDbPath);
+      const afterRows = rawAfter.prepare("SELECT * FROM credentials ORDER BY id ASC").all() as RawCredRow[];
+      const afterSnaps = rawAfter.prepare("SELECT * FROM usage_snapshots ORDER BY id ASC").all() as RawSnapRow[];
+      rawAfter.close();
+
+      expect(afterRows.length).toBe(beforeRows.length);
+      for (let i = 0; i < afterRows.length; i++) {
+        const b = beforeRows[i];
+        const a = afterRows[i];
+        expect(a.id).toBe(b.id);
+        expect(a.owner_id).toBe(b.owner_id);
+        expect(a.provider).toBe(b.provider);
+        expect(a.account_label).toBe(b.account_label);
+        expect(a.accent).toBe(b.accent);
+        expect(a.credential_type).toBe(b.credential_type);
+        expect(a.encrypted_secret).toBe(b.encrypted_secret);
+        expect(a.iv).toBe(b.iv);
+        expect(a.tag).toBe(b.tag);
+        expect(a.created_at).toBe(b.created_at);
+        expect(a.updated_at).toBe(b.updated_at);
+
+        const envObj = JSON.parse(a.metadata);
+        expect(envObj.$vault).toBe(1);
+        expect(typeof envObj.ciphertext).toBe("string");
+        expect(typeof envObj.iv).toBe("string");
+        expect(typeof envObj.tag).toBe("string");
+        expect(a.metadata.includes("cursor-rt-plaintext")).toBe(false);
+        expect(a.metadata.includes("codex-rt-plaintext")).toBe(false);
+        expect(a.metadata.includes("xai-rt-plaintext")).toBe(false);
+      }
+
+      expect(afterSnaps.length).toBe(beforeSnaps.length);
+      for (let i = 0; i < afterSnaps.length; i++) {
+        expect(afterSnaps[i]).toEqual(beforeSnaps[i]);
+      }
+
+      const reopenedVault = new StorageVault(testDbPath);
+      reopenedVault.migrateCredentialMetadata();
+      expect(reopenedVault.getSchemaVersion()).toBe(2);
+      const secondCheck = reopenedVault.listCredentials(ownerId);
+      expect(secondCheck.length).toBe(4);
+      reopenedVault.close();
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+
+  it("New writes and token updates in v2 database encrypt metadata with independent random IVs", () => {
+    const testDbPath = `data/test-new-writes-${Date.now()}.db`;
+    process.env["CREDENTIAL_METADATA_ENCRYPTION"] = "enabled";
+    const { ownerId } = createSeededV1Database(testDbPath);
+
+    try {
+      const testVault = new StorageVault(testDbPath);
+      const kimiSecret = "sk-kimi-access-token-live";
+      const kimiMetadata = { refreshToken: "kimi-sensitive-rt-xyz987", region: "intl" };
+
+      const cred1 = testVault.saveCredential(ownerId, {
+        provider: "kimi",
+        accountLabel: "Kimi Primary",
+        credentialType: "oauth",
+        secret: kimiSecret,
+        metadata: kimiMetadata,
+      });
+
+      testVault.saveCredential(ownerId, {
+        provider: "kimi",
+        accountLabel: "Kimi Secondary",
+        credentialType: "oauth",
+        secret: kimiSecret,
+        metadata: kimiMetadata,
+      });
+
+      const updated = testVault.updateCredentialTokens(ownerId, cred1.id, "new-kimi-access-secret", {
+        lastRefresh: 1725000000000,
+      });
+      expect(updated).toBe(true);
+
+      const refreshed1 = testVault.getCredential(ownerId, cred1.id);
+      expect(refreshed1?.secret).toBe("new-kimi-access-secret");
+      expect(refreshed1?.metadata?.["refreshToken"]).toBe("kimi-sensitive-rt-xyz987");
+      expect(refreshed1?.metadata?.["lastRefresh"]).toBe(1725000000000);
+
+      testVault.close();
+
+      const rawDb = new Database(testDbPath);
+      const rows = rawDb.prepare(
+        "SELECT id, metadata FROM credentials WHERE provider = 'kimi' ORDER BY id ASC"
+      ).all() as { id: string; metadata: string }[];
+      rawDb.close();
+
+      expect(rows.length).toBe(2);
+      const env1 = JSON.parse(rows[0]!.metadata);
+      const env2 = JSON.parse(rows[1]!.metadata);
+      expect(env1.$vault).toBe(1);
+      expect(env2.$vault).toBe(1);
+      expect(env1.iv).not.toBe(env2.iv);
+      expect(env1.ciphertext).not.toBe(env2.ciphertext);
+      expect(rows[0]!.metadata.includes("kimi-sensitive-rt")).toBe(false);
+      expect(rows[1]!.metadata.includes("kimi-sensitive-rt")).toBe(false);
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+
+  it("Rollback to Phase 1 image (env absent) can read v2 envelopes and preserves encryption on future writes", () => {
+    const testDbPath = `data/test-rollback-compat-${Date.now()}.db`;
+    process.env["CREDENTIAL_METADATA_ENCRYPTION"] = "enabled";
+    const { ownerId } = createSeededV1Database(testDbPath);
+
+    try {
+      const v2Vault = new StorageVault(testDbPath);
+      v2Vault.saveCredential(ownerId, {
+        provider: "kimi",
+        accountLabel: "Kimi Pre-Rollback",
+        credentialType: "oauth",
+        secret: "kimi-secret-123",
+        metadata: { refreshToken: "kimi-rt-prerollback" },
+      });
+      v2Vault.close();
+
+      delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+      const rollbackVault = new StorageVault(testDbPath);
+      expect(rollbackVault.getSchemaVersion()).toBe(2);
+
+      const rollbackCreds = rollbackVault.listCredentials(ownerId);
+      expect(rollbackCreds.length).toBe(5);
+      const kimiCred = rollbackCreds.find(c => c.provider === "kimi");
+      expect(kimiCred?.metadata?.["refreshToken"]).toBe("kimi-rt-prerollback");
+
+      const newCred = rollbackVault.saveCredential(ownerId, {
+        provider: "claude",
+        accountLabel: "Claude Post-Rollback",
+        credentialType: "api_key",
+        secret: "sk-ant-live",
+        metadata: { org: "ant-org" },
+      });
+      expect(newCred.metadata?.["org"]).toBe("ant-org");
+      rollbackVault.close();
+
+      const rawDb = new Database(testDbPath);
+      const rawRow = rawDb.prepare("SELECT metadata FROM credentials WHERE id = ?").get(newCred.id) as { metadata: string };
+      const envObj = JSON.parse(rawRow.metadata);
+      expect(envObj.$vault).toBe(1);
+      rawDb.close();
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+
+  it("Fails closed on wrong master key during constructor startup, closes database, and leaves v1 DB unchanged", () => {
+    const testDbPath = `data/test-wrong-key-v1-${Date.now()}.db`;
+    process.env["CREDENTIAL_METADATA_ENCRYPTION"] = "enabled";
+    const { ownerId } = createSeededV1Database(testDbPath);
+
+    try {
+      process.env["USAGE_MASTER_KEY"] = "different-wrong-master-key-32-chars-long";
+
+      expect(() => {
+        const faultyVault = new StorageVault(testDbPath);
+        faultyVault.close();
+      }).toThrow("Credential decryption failed.");
+
+      // Verify DB handle was closed and can be opened raw without lock errors
+      const rawCheck = new Database(testDbPath);
+      const versionRow = rawCheck.prepare("PRAGMA user_version;").get() as { user_version: number };
+      expect(versionRow.user_version).toBe(1);
+
+      const cursorRow = rawCheck.prepare("SELECT metadata FROM credentials WHERE id = 'cred-cursor'").get() as { metadata: string };
+      const parsedCursor = JSON.parse(cursorRow.metadata);
+      expect(parsedCursor.$vault).toBeUndefined();
+      expect(parsedCursor.refreshToken).toBe("cursor-rt-plaintext-12345");
+      rawCheck.close();
+
+      // Restore correct key: vault should successfully construct, migrate, and read all rows
+      if (origMasterKey !== undefined) process.env["USAGE_MASTER_KEY"] = origMasterKey;
+      else delete process.env["USAGE_MASTER_KEY"];
+
+      const validVault = new StorageVault(testDbPath);
+      expect(validVault.getSchemaVersion()).toBe(2);
+      const creds = validVault.listCredentials(ownerId);
+      expect(creds.length).toBe(4);
+      validVault.close();
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+      if (origMasterKey !== undefined) process.env["USAGE_MASTER_KEY"] = origMasterKey;
+      else delete process.env["USAGE_MASTER_KEY"];
+    }
+  });
+
+  it("Fails closed on wrong master key on reopened v2 database before service health", () => {
+    const testDbPath = `data/test-wrong-key-v2-${Date.now()}.db`;
+    process.env["CREDENTIAL_METADATA_ENCRYPTION"] = "enabled";
+    const { ownerId } = createSeededV1Database(testDbPath);
+
+    try {
+      // 1. Initial migration to v2 with valid key
+      const v2Vault = new StorageVault(testDbPath);
+      expect(v2Vault.getSchemaVersion()).toBe(2);
+      v2Vault.close();
+
+      // 2. Change master key and attempt reopen
+      process.env["USAGE_MASTER_KEY"] = "different-wrong-master-key-32-chars-long";
+
+      expect(() => {
+        const faultyVault = new StorageVault(testDbPath);
+        faultyVault.close();
+      }).toThrow("Credential decryption failed.");
+
+      // 3. Verify clean close: can open raw DB, version is still 2, envelopes intact
+      const rawCheck = new Database(testDbPath);
+      const versionRow = rawCheck.prepare("PRAGMA user_version;").get() as { user_version: number };
+      expect(versionRow.user_version).toBe(2);
+      rawCheck.close();
+
+      // 4. Restore key: reopened vault is completely healthy
+      if (origMasterKey !== undefined) process.env["USAGE_MASTER_KEY"] = origMasterKey;
+      else delete process.env["USAGE_MASTER_KEY"];
+
+      const healthyVault = new StorageVault(testDbPath);
+      expect(healthyVault.checkIntegrity()).toBe(true);
+      const creds = healthyVault.listCredentials(ownerId);
+      expect(creds.length).toBe(4);
+      healthyVault.close();
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+      if (origMasterKey !== undefined) process.env["USAGE_MASTER_KEY"] = origMasterKey;
+      else delete process.env["USAGE_MASTER_KEY"];
+    }
+  });
+
+  it("Fails closed on malformed envelope during migration, closes database, and preserves v1 state without partial updates", () => {
+    const testDbPath = `data/test-fail-closed-${Date.now()}.db`;
+    process.env["CREDENTIAL_METADATA_ENCRYPTION"] = "enabled";
+    const { ownerId } = createSeededV1Database(testDbPath);
+
+    try {
+      const rawDb = new Database(testDbPath);
+      const enc = encryptSecret("good-secret");
+      rawDb.prepare(`
+        INSERT INTO credentials (
+          id, owner_id, provider, account_label, accent, credential_type,
+          encrypted_secret, iv, tag, metadata, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "cred-corrupt",
+        ownerId,
+        "test-provider",
+        "Bad Envelope",
+        "default",
+        "api_key",
+        enc.ciphertext,
+        enc.iv,
+        enc.tag,
+        '{"$vault":1,"ciphertext":"abcd","iv":"not-hex-24","tag":"bad"}',
+        3000,
+        3000,
+      );
+      rawDb.close();
+
+      expect(() => {
+        const faultyVault = new StorageVault(testDbPath);
+        faultyVault.close();
+      }).toThrow("Credential metadata envelope is invalid.");
+
+      const rawCheck = new Database(testDbPath);
+      const versionRow = rawCheck.prepare("PRAGMA user_version;").get() as { user_version: number };
+      expect(versionRow.user_version).toBe(1);
+
+      const cursorRow = rawCheck.prepare("SELECT metadata FROM credentials WHERE id = 'cred-cursor'").get() as { metadata: string };
+      const parsedCursor = JSON.parse(cursorRow.metadata);
+      expect(parsedCursor.$vault).toBeUndefined();
+      expect(parsedCursor.refreshToken).toBe("cursor-rt-plaintext-12345");
+      rawCheck.close();
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+
+  it("Preserves pre-migration database backup and produces restorable v2 backup", () => {
+    const liveDbPath = `data/test-backup-live-${Date.now()}.db`;
+    const backupDbPath = `data/test-backup-v1-${Date.now()}.db`;
+    const v2BackupDbPath = `data/test-backup-v2-${Date.now()}.db`;
+    delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    const { ownerId } = createSeededV1Database(liveDbPath);
+
+    try {
+      copyFileSync(liveDbPath, backupDbPath);
+      expect(existsSync(backupDbPath)).toBe(true);
+
+      process.env["CREDENTIAL_METADATA_ENCRYPTION"] = "enabled";
+      const liveVault = new StorageVault(liveDbPath);
+      expect(liveVault.getSchemaVersion()).toBe(2);
+      liveVault.close();
+
+      const v1BackupDb = new Database(backupDbPath);
+      const v1Version = v1BackupDb.prepare("PRAGMA user_version;").get() as { user_version: number };
+      expect(v1Version.user_version).toBe(1);
+      const v1Cursor = v1BackupDb.prepare("SELECT metadata FROM credentials WHERE id = 'cred-cursor'").get() as { metadata: string };
+      expect(JSON.parse(v1Cursor.metadata).$vault).toBeUndefined();
+      v1BackupDb.close();
+
+      copyFileSync(liveDbPath, v2BackupDbPath);
+      const restoredVault = new StorageVault(v2BackupDbPath);
+      expect(restoredVault.getSchemaVersion()).toBe(2);
+      const restoredCreds = restoredVault.listCredentials(ownerId);
+      expect(restoredCreds.length).toBe(4);
+      expect(restoredCreds.find(c => c.provider === "cursor")?.metadata?.["refreshToken"]).toBe("cursor-rt-plaintext-12345");
+      restoredVault.close();
+    } finally {
+      cleanupDbFiles(liveDbPath);
+      cleanupDbFiles(backupDbPath);
+      cleanupDbFiles(v2BackupDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+
+  it("Prevents plaintext metadata writes when another connection migrates database to v2 while Phase 1 vault remains open", () => {
+    const testDbPath = `data/test-concurrent-migration-${Date.now()}.db`;
+    delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    const { ownerId } = createSeededV1Database(testDbPath);
+
+    let phase1Vault: StorageVault | null = null;
+    let migratorVault: StorageVault | null = null;
+
+    try {
+      // 1. Open Phase 1 vault against v1 DB (env disabled). Cached schema version is 1.
+      phase1Vault = new StorageVault(testDbPath);
+      expect(phase1Vault.getSchemaVersion()).toBe(1);
+
+      // 2. Another vault connection with encryption enabled opens and migrates the DB to v2
+      process.env["CREDENTIAL_METADATA_ENCRYPTION"] = "enabled";
+      migratorVault = new StorageVault(testDbPath);
+      expect(migratorVault.getSchemaVersion()).toBe(2);
+
+      // 3. Phase 1 vault subsequently saves a new credential with metadata
+      const newCred = phase1Vault.saveCredential(ownerId, {
+        provider: "mistral",
+        accountLabel: "Mistral Phase 1 Concurrency",
+        credentialType: "api_key",
+        secret: "sk-mistral-phase1-concurrent",
+        metadata: { refreshToken: "mistral-secret-rt-999", note: "concurrent-test" },
+      });
+      expect(newCred.metadata?.["refreshToken"]).toBe("mistral-secret-rt-999");
+      expect(phase1Vault.getSchemaVersion()).toBe(2);
+
+      // 4. Phase 1 vault updates tokens / metadata for an existing credential
+      const updateSuccess = phase1Vault.updateCredentialTokens(ownerId, "cred-cursor", "cursor-new-token", {
+        refreshToken: "cursor-rt-updated-concurrently",
+      });
+      expect(updateSuccess).toBe(true);
+
+      // Close both vaults before inspecting raw database
+      phase1Vault.close();
+      phase1Vault = null;
+      migratorVault.close();
+      migratorVault = null;
+
+      // 5. Inspect raw SQLite database to verify raw metadata is encrypted and never plaintext
+      const rawDb = new Database(testDbPath);
+      const newCredRow = rawDb.prepare("SELECT metadata FROM credentials WHERE id = ?").get(newCred.id) as { metadata: string };
+      const parsedNew = JSON.parse(newCredRow.metadata);
+      expect(parsedNew.$vault).toBe(1);
+      expect(parsedNew.ciphertext).toBeDefined();
+      expect(newCredRow.metadata.includes("mistral-secret-rt-999")).toBe(false);
+
+      const cursorRow = rawDb.prepare("SELECT metadata FROM credentials WHERE id = 'cred-cursor'").get() as { metadata: string };
+      const parsedCursor = JSON.parse(cursorRow.metadata);
+      expect(parsedCursor.$vault).toBe(1);
+      expect(parsedCursor.ciphertext).toBeDefined();
+      expect(cursorRow.metadata.includes("cursor-rt-updated-concurrently")).toBe(false);
+
+      rawDb.close();
+    } finally {
+      if (phase1Vault) {
+        try { (phase1Vault as StorageVault).close(); } catch {}
+      }
+      if (migratorVault) {
+        try { (migratorVault as StorageVault).close(); } catch {}
+      }
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+
+  it("Fails closed and rolls back version if enabled-mode v2 migration encounters missing credentials table", () => {
+    const testDbPath = `data/test-missing-credentials-table-${Date.now()}.db`;
+    const rawDb = new Database(testDbPath, { create: true });
+    rawDb.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL COLLATE NOCASE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      PRAGMA user_version = 1;
+    `);
+    rawDb.close();
+
+    process.env["CREDENTIAL_METADATA_ENCRYPTION"] = "enabled";
+    try {
+      expect(() => {
+        new StorageVault(testDbPath);
+      }).toThrow("Credential table missing");
+
+      // Verify user_version was NOT updated to 2 and remains 1
+      const verifyDb = new Database(testDbPath);
+      const versionRow = verifyDb.prepare("PRAGMA user_version;").get() as { user_version: number };
+      expect(versionRow.user_version).toBe(1);
+      verifyDb.close();
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+  it("Fails closed during v1 migration when non-null metadata is empty string without partial updates or version bump", () => {
+    const testDbPath = `data/test-empty-metadata-v1-${Date.now()}.db`;
+    process.env["CREDENTIAL_METADATA_ENCRYPTION"] = "enabled";
+    const { ownerId } = createSeededV1Database(testDbPath);
+
+    try {
+      const rawDb = new Database(testDbPath);
+      const enc = encryptSecret("test-secret-empty-meta");
+      rawDb.prepare(`
+        INSERT INTO credentials (
+          id, owner_id, provider, account_label, accent, credential_type,
+          encrypted_secret, iv, tag, metadata, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "cred-empty-metadata",
+        ownerId,
+        "test-provider",
+        "Empty Metadata Credential",
+        "default",
+        "api_key",
+        enc.ciphertext,
+        enc.iv,
+        enc.tag,
+        "",
+        3000,
+        3000,
+      );
+      rawDb.close();
+
+      expect(() => {
+        const faultyVault = new StorageVault(testDbPath);
+        faultyVault.close();
+      }).toThrow("Credential metadata is malformed.");
+
+      // Must not bump version or make partial row updates
+      const rawCheck = new Database(testDbPath);
+      const versionRow = rawCheck.prepare("PRAGMA user_version;").get() as { user_version: number };
+      expect(versionRow.user_version).toBe(1);
+
+      const cursorRow = rawCheck.prepare("SELECT metadata FROM credentials WHERE id = 'cred-cursor'").get() as { metadata: string };
+      const parsedCursor = JSON.parse(cursorRow.metadata);
+      expect(parsedCursor.$vault).toBeUndefined();
+      expect(parsedCursor.refreshToken).toBe("cursor-rt-plaintext-12345");
+
+      const emptyRow = rawCheck.prepare("SELECT metadata FROM credentials WHERE id = 'cred-empty-metadata'").get() as { metadata: string };
+      expect(emptyRow.metadata).toBe("");
+      rawCheck.close();
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+
+  it("Fails closed on reopened v2 database when non-null metadata is empty string before healthy initialization", () => {
+    const testDbPath = `data/test-empty-metadata-v2-${Date.now()}.db`;
+    process.env["CREDENTIAL_METADATA_ENCRYPTION"] = "enabled";
+    const { ownerId } = createSeededV1Database(testDbPath);
+
+    try {
+      // 1. Initial migration to v2
+      const v2Vault = new StorageVault(testDbPath);
+      expect(v2Vault.getSchemaVersion()).toBe(2);
+      v2Vault.close();
+
+      // 2. Insert corrupted empty string metadata row into v2 DB
+      const rawDb = new Database(testDbPath);
+      const enc = encryptSecret("v2-secret-empty-meta");
+      rawDb.prepare(`
+        INSERT INTO credentials (
+          id, owner_id, provider, account_label, accent, credential_type,
+          encrypted_secret, iv, tag, metadata, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "cred-v2-empty",
+        ownerId,
+        "test-provider",
+        "V2 Empty Meta",
+        "default",
+        "api_key",
+        enc.ciphertext,
+        enc.iv,
+        enc.tag,
+        "",
+        4000,
+        4000,
+      );
+      rawDb.close();
+
+      // 3. Attempt reopen: verifyMasterKeyCredentials must fail closed before healthy initialization
+      expect(() => {
+        const faultyVault = new StorageVault(testDbPath);
+        faultyVault.close();
+      }).toThrow("Credential metadata is malformed.");
+
+      const rawCheck = new Database(testDbPath);
+      const versionRow = rawCheck.prepare("PRAGMA user_version;").get() as { user_version: number };
+      expect(versionRow.user_version).toBe(2);
+      rawCheck.close();
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
+  });
+
+  it("Phase 1 legacy mode (env absent) tolerates incomplete synthetic users-only table without error", () => {
+    const testDbPath = `data/test-phase1-users-only-${Date.now()}.db`;
+    delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    const rawDb = new Database(testDbPath, { create: true });
+    rawDb.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL COLLATE NOCASE,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      PRAGMA user_version = 1;
+    `);
+    rawDb.close();
+
+    try {
+      const phase1Vault = new StorageVault(testDbPath);
+      expect(phase1Vault.getSchemaVersion()).toBe(1);
+      expect(phase1Vault.checkIntegrity()).toBe(true);
+      phase1Vault.close();
+    } finally {
+      cleanupDbFiles(testDbPath);
+      if (origEnv !== undefined) process.env["CREDENTIAL_METADATA_ENCRYPTION"] = origEnv;
+      else delete process.env["CREDENTIAL_METADATA_ENCRYPTION"];
+    }
   });
 });

@@ -82,7 +82,8 @@ useMeter çok kullanıcılı özel SaaS modeline (ADR-0003) geçtikten sonra, se
 ### 5. Sınırlandırılmış Bellek-İçi Hız Sınırlayıcı (RateLimiter)
 - En fazla 10.000 benzersiz anahtar tutan (`maxKeys: 10000`) ve kayan pencere (sliding window) kullanan hafif bellek-içi hız sınırlayıcı devreye alınmıştır.
 - Standart politikalar:
-  - `auth`: `5 istek / dakika / IP` (`/api/auth/login`, `/api/auth/register`)
+  - `auth`: `5 istek / dakika / IP` (`POST /api/auth/login`).
+  - `registration`: `5 istek / dakika / IP`; `POST /api/auth/register` ve `POST /api/invitations/:token/accept` ortak `registration:<IP>` kovasını kullanır. Gövde ayrıştırma ve parola hashing'inden önce uygulanır.
   - `manualPoll`: `1 istek / 30 saniye / kullanıcı + credential` (`/api/refresh`)
   - `oauthDevicePoll`: `30 istek / dakika / kullanıcı + flow`
 - Aşımlarda `429 Too Many Requests` ve `Retry-After` yanıtı verilir.
@@ -98,6 +99,8 @@ useMeter çok kullanıcılı özel SaaS modeline (ADR-0003) geçtikten sonra, se
   - Yönetici dilediğinde davetiyeyi tek tıkla iptal edebilir (`DELETE /api/admin/invitations/:id` -> `revoked_at`).
 - **Zorunlu E-posta Kilidi (Strict Email Binding):** Davetiye üretilirken yönetici tarafından geçerli bir hedef e-posta adresi belirtilmesi zorunludur; useMeter bünyesinde anonim veya e-postasız serbest davetiye bulunmaz. Kabul formunda e-posta alanı salt-okunur olarak kilitlenir ve kayıt sırasında hesap doğrudan bu e-posta ile büyük/küçük harf duyarsız (`COLLATE NOCASE`) olarak oluşturulur.
 - **Kayıt Kapalıyken Katılım (Registration Policy Bypass):** Sistemde genel dış kayıtlar kapatılmış olsa dahi (`isRegistrationAllowed() === false`), geçerli bir davetiye token'ı taşıyan kullanıcılar başarıyla kaydolabilir.
+- **Hashing Ön Kontrolü (2026-10-12):** Davet kabulünde bulunamayan, süresi dolmuş, iptal edilmiş veya kullanılmış token, pahalı parola hashing'inden önce aynı genel hatayla reddedilir. Ön kontrol yetkilendirme kararı değildir: hash üretiminden sonra atomik transaction bütün koşulları tekrar kontrol eder; iptal/expiry/eşzamanlı kabul yarışları tek kullanım güvencesini aşamaz.
+- **Ortak Katılım Hız Sınırı (2026-10-12):** Davet kabulü ve genel kayıt IP başına toplam beş istek/dakika ile sınırlıdır; farklı token veya endpoint kullanmak yeni kota açmaz. Limit aşımı HTTP 429 + `Retry-After`; kayıtların kapalı olması davet kabulünü kapatmaz, hız sınırını da kaldırmaz.
 - **E-posta İletim Sınırı (No SMTP Boundary):** useMeter bünyesinde hiçbir e-posta iletim mekanizması bulunmaz. Yönetici panelden bağlantıyı kopyalar ve kullanıcıya harici güvenli yollardan iletir.
 
 ---

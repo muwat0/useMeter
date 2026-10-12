@@ -17,14 +17,15 @@ import {
   resolveClientIp,
 } from "./security";
 import { join } from "path";
-import { realpathSync, statSync } from "fs";
+import { existsSync, readFileSync, realpathSync, statSync } from "fs";
+import { createHash } from "crypto";
 import {
   initiateCodexDeviceAuth,
   pollCodexDeviceAuth,
   exchangeCodexToken,
   initiateGoogleAuth,
   exchangeGoogleCode,
-  getGoogleRedirectUri,
+  validateGoogleOAuthConfig,
   initiateClaudeAuth,
   exchangeClaudeCode,
   listenForClaudeCallback,
@@ -48,8 +49,82 @@ import {
   initiateDevinAuth,
   exchangeDevinCode,
   listenForDevinCallback,
+  getDevinRedirectUri,
 } from "../core/oauth";
 
+
+const GOOGLE_LOOPBACK_CALLBACK_URI = "http://127.0.0.1:51121/oauth-callback";
+const GOOGLE_OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
+
+interface ParsedGoogleCallback {
+  state: string;
+  code?: string;
+  providerError?: string;
+}
+
+function parseGoogleCallbackParameters(params: URLSearchParams): ParsedGoogleCallback | null {
+  const seen = new Set<string>();
+  for (const [name] of params) {
+    if (seen.has(name)) return null;
+    seen.add(name);
+  }
+
+  const state = params.get("state");
+  const code = params.get("code");
+  const providerError = params.get("error");
+  if (!state?.trim() || (code !== null && !code.trim()) || (providerError !== null && !providerError.trim())) {
+    return null;
+  }
+  if (code !== null && providerError !== null) return null;
+  if (providerError !== null) return { state, providerError };
+  if (code === null) return null;
+  return { state, code };
+}
+
+function parseGoogleManualCallbackUrl(value: unknown): ParsedGoogleCallback | null {
+  if (typeof value !== "string") return null;
+  const input = value.trim();
+  if (!input.startsWith(`${GOOGLE_LOOPBACK_CALLBACK_URI}?`) || input.includes("#")) return null;
+  try {
+    const callback = new URL(input);
+    if (
+      callback.origin !== "http://127.0.0.1:51121" ||
+      callback.pathname !== "/oauth-callback" ||
+      callback.username ||
+      callback.password ||
+      callback.hash
+    ) {
+      return null;
+    }
+    return parseGoogleCallbackParameters(callback.searchParams);
+  } catch {
+    return null;
+  }
+}
+
+function clearGoogleOAuthSecrets(session: PendingOAuthSession): void {
+  session.googleVerifier = undefined;
+  session.googleClientId = undefined;
+  session.googleClientSecret = undefined;
+  session.googleRedirectUri = undefined;
+}
+
+function expireGoogleOAuthSession(session: PendingOAuthSession, now: number): boolean {
+  if (
+    session.provider !== "antigravity" ||
+    session.status !== "pending" ||
+    session.consumed ||
+    session.createdAt === undefined ||
+    now - session.createdAt < GOOGLE_OAUTH_SESSION_TTL_MS
+  ) {
+    return false;
+  }
+  session.status = "error";
+  session.error = "Authorization session expired";
+  session.consumed = true;
+  clearGoogleOAuthSecrets(session);
+  return true;
+}
 
 interface PendingOAuthSession {
   provider: string;
@@ -58,13 +133,20 @@ interface PendingOAuthSession {
   error?: string;
   accountLabel?: string;
   googleVerifier?: string;
+  googleClientId?: string;
+  googleClientSecret?: string;
+  googleRedirectUri?: string;
+  devinVerifier?: string;
+  createdAt?: number;
+  consumed?: boolean;
 }
 interface AppVariables {
   user: User;
   sessionToken: string;
 }
-type AppEnv = { Variables: AppVariables };
-type AppContext = Context<AppEnv>;
+export type AppEnv = { Variables: AppVariables };
+export type AppContext = Context<AppEnv>;
+export type AppInstance = Hono<AppEnv>;
 
 const SESSION_COOKIE = "usage_session";
 const SESSION_MAX_AGE = 2_592_000;
@@ -113,13 +195,49 @@ function originAllowed(c: AppContext, allowedOrigins?: string[] | "*"): boolean 
 function jsonUnauthorized(c: AppContext) {
   return c.json({ success: false, error: "Unauthorized" }, 401);
 }
+export interface ServerOptions {
+  rateLimiter?: RateLimiter;
+  assetRevision?: string;
+  distDir?: string;
+  googleOAuthExchange?: typeof exchangeGoogleCode;
+  googleOAuthNow?: () => number;
+}
+
+const DEFAULT_DIST_CLIENT_DIR = join(import.meta.dir, "../../dist/client");
+
+export function computeAssetRevision(distDir: string = DEFAULT_DIST_CLIENT_DIR): string {
+  try {
+    const hash = createHash("sha256");
+    let hasBytes = false;
+    for (const filename of ["app.js", "app.css"]) {
+      const filePath = join(distDir, filename);
+      if (existsSync(filePath)) {
+        hash.update(filename);
+        hash.update(readFileSync(filePath));
+        hasBytes = true;
+      }
+    }
+    return hasBytes ? hash.digest("hex").slice(0, 16) : "";
+  } catch {
+    return "";
+  }
+}
+
+let cachedAssetRevision: string | null = null;
+
+export function getAssetRevision(reload = false, distDir: string = DEFAULT_DIST_CLIENT_DIR): string {
+  if (cachedAssetRevision === null || reload) {
+    cachedAssetRevision = computeAssetRevision(distDir);
+  }
+  return cachedAssetRevision;
+}
 
 export function createServer(
   vault: StorageVault,
   poller: PollerEngine,
   _registry?: ProviderRegistry,
   authService?: AuthService,
-  options?: { rateLimiter?: RateLimiter }
+  options?: ServerOptions
 ): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const auth = authService ?? new AuthService(vault);
@@ -143,6 +261,37 @@ export function createServer(
       },
       429
     );
+  }
+  const googleOAuthExchange = options?.googleOAuthExchange ?? exchangeGoogleCode;
+  const googleOAuthNow = options?.googleOAuthNow ?? Date.now;
+
+  async function validateAndSaveGoogleCredential(
+    ownerId: string,
+    code: string,
+    verifier: string,
+    config: { clientId: string; clientSecret: string; redirectUri: string },
+  ) {
+    const tokens = await googleOAuthExchange(code, verifier, config);
+    const accountLabel = tokens.email?.trim() || "Antigravity";
+    const refreshToken = tokens.refreshToken?.trim() ? tokens.refreshToken : undefined;
+    const saved = await poller.validateAndSaveCredential(ownerId, {
+      ownerId,
+      provider: "antigravity",
+      accountLabel,
+      credentialType: "oauth",
+      secret: tokens.accessToken,
+      metadata: {
+        refreshToken,
+        email: tokens.email,
+        ...(refreshToken
+          ? {
+              googleOAuthClientId: config.clientId,
+              googleOAuthClientSecret: config.clientSecret,
+            }
+          : {}),
+      },
+    }, "preserve");
+    return { saved, accountLabel };
   }
 
   const allowedOriginsEnv = process.env["CORS_ALLOWED_ORIGINS"] || process.env["USEMETER_ALLOWED_ORIGINS"];
@@ -191,6 +340,7 @@ export function createServer(
       path === "/health" ||
       path.startsWith("/assets/") ||
       path === "/api/oauth/google/callback" ||
+      path === "/api/oauth/devin/callback" ||
       (path === "/login" && c.req.method === "GET") ||
       (path === "/register" && c.req.method === "GET") ||
       ((path === "/invite" || path.startsWith("/invite/")) && c.req.method === "GET") ||
@@ -251,7 +401,8 @@ export function createServer(
     ".woff2": "font/woff2",
     ".woff": "font/woff",
   };
-  const distClientDir = join(import.meta.dir, "../../dist/client");
+  const distClientDir = options?.distDir ?? DEFAULT_DIST_CLIENT_DIR;
+  const assetRevision = options?.assetRevision ?? (options?.distDir ? computeAssetRevision(distClientDir) : getAssetRevision());
 
   app.on(["GET", "HEAD"], "/assets/*", async (c) => {
     const rawPath = decodeURIComponent(c.req.path);
@@ -376,6 +527,12 @@ export function createServer(
 
   app.post("/api/invitations/:token/accept", async c => {
     try {
+      const ip = getClientIp(c);
+      const rl = rateLimiter.check(`registration:${ip}`, RATE_LIMIT_POLICIES.registration);
+      if (!rl.allowed) {
+        return rateLimitResponse(c, rl.retryAfterSec, "Too many registration attempts. Please try again later.");
+      }
+
       const token = c.req.param("token");
       if (!token || typeof token !== "string" || !token.trim()) {
         return c.json({ success: false, error: "Invalid or expired invitation" }, 400);
@@ -579,13 +736,12 @@ export function createServer(
     const credentials = new Map(vault.listCredentials(user.id).map(credential => [credential.id, credential]));
     const data = latest.map(report => {
       const credential = report.credentialId ? credentials.get(report.credentialId) : undefined;
-      return {
-        ...report,
+      return toPublicUsageReport(report, {
         accountLabel: credential?.accountLabel || report.accountLabel,
         createdAt: credential?.createdAt,
         accent: credential?.accent || "default",
         metadata: credential?.metadata,
-      };
+      });
     });
     return c.json({ success: true, data });
   };
@@ -601,10 +757,19 @@ export function createServer(
         return rateLimitResponse(c, rl.retryAfterSec, "Rate limit exceeded. Please wait before polling again.");
       }
       const credentials = vault.listCredentials(user.id);
-      const reports: UsageReport[] = [];
+      const reports: PublicUsageReport[] = [];
       for (const cred of credentials) {
         const report = await poller.pollCredential(user.id, cred.id);
-        if (report) reports.push(report);
+        if (report) {
+          reports.push(
+            toPublicUsageReport(report, {
+              accountLabel: cred.accountLabel,
+              createdAt: cred.createdAt,
+              accent: cred.accent || "default",
+              metadata: cred.metadata,
+            })
+          );
+        }
       }
       return c.json({ success: true, count: reports.length, data: reports });
     } catch {
@@ -626,7 +791,17 @@ export function createServer(
         return c.json({ success: false, error: "Credential not found" }, 404);
       }
       const report = await poller.pollCredential(user.id, id);
-      return c.json({ success: true, data: report });
+      return c.json({
+        success: true,
+        data: report
+          ? toPublicUsageReport(report, {
+              accountLabel: cred.accountLabel,
+              createdAt: cred.createdAt,
+              accent: cred.accent || "default",
+              metadata: cred.metadata,
+            })
+          : null,
+      });
     } catch {
       return c.json({ success: false, error: "Failed to poll credential" }, 500);
     }
@@ -660,27 +835,31 @@ export function createServer(
         return c.json({ success: false, error: "Tüm alanlar zorunludur." }, 400);
       }
 
+      let metadata = body.metadata;
       if (body.accent) {
-        body.metadata = { ...(body.metadata || {}), accent: body.accent };
+        metadata = { ...(metadata || {}), accent: body.accent };
       }
 
       const { ownerId: _, ...inputData } = body;
-      const saved = vault.saveCredential(user.id, {
-        ...inputData,
-        ownerId: user.id,
-      });
-      const initialReport = await poller.pollCredential(user.id, saved.id);
-      if (initialReport?.error) {
-        vault.deleteCredential(user.id, saved.id);
-        return c.json({ success: false, error: initialReport.error }, 400);
+      let saved;
+      try {
+        saved = await poller.validateAndSaveCredential(user.id, {
+          ...inputData,
+          ownerId: user.id,
+          metadata,
+        }, "replace");
+      } catch (validationError) {
+        const message = validationError instanceof Error ? validationError.message : String(validationError);
+        return c.json({ success: false, error: message }, 400);
       }
+
       return c.json({
         success: true,
         data: {
           id: saved.id,
           provider: saved.provider,
           accountLabel: saved.accountLabel,
-          accent: body.accent || null,
+          accent: body.accent || (saved.accent && saved.accent !== "default" ? saved.accent : null),
         },
       });
     } catch {
@@ -758,24 +937,24 @@ export function createServer(
       const tokenResult = await exchangeCodexToken(pollRes.authorizationCode, pollRes.codeVerifier);
       const accountLabel = tokenResult.email || body.label || "ChatGPT Codex";
 
-      const saved = vault.saveCredential(user.id, {
-        ownerId: user.id,
-        provider: "openai-codex",
-        accountLabel,
-        credentialType: "oauth",
-        secret: tokenResult.accessToken,
-        metadata: {
-          refreshToken: tokenResult.refreshToken,
-          accountId: tokenResult.accountId,
-          email: tokenResult.email,
-          planType: tokenResult.planType,
-        },
-      });
-
-      const initialReport = await poller.pollCredential(user.id, saved.id);
-      if (initialReport?.error) {
-        vault.deleteCredential(user.id, saved.id);
-        return c.json({ status: "error", error: initialReport.error });
+      let saved;
+      try {
+        saved = await poller.validateAndSaveCredential(user.id, {
+          ownerId: user.id,
+          provider: "openai-codex",
+          accountLabel,
+          credentialType: "oauth",
+          secret: tokenResult.accessToken,
+          metadata: {
+            refreshToken: tokenResult.refreshToken,
+            accountId: tokenResult.accountId,
+            email: tokenResult.email,
+            planType: tokenResult.planType,
+          },
+        }, "preserve");
+      } catch (validationError) {
+        const message = validationError instanceof Error ? validationError.message : String(validationError);
+        return c.json({ status: "error", error: message });
       }
 
       return c.json({
@@ -791,54 +970,190 @@ export function createServer(
   app.post("/api/oauth/google/initiate", c => {
     try {
       const user = c.get("user");
-      const { authUrl, verifier, state } = initiateGoogleAuth();
+      const config = validateGoogleOAuthConfig();
+      const { authUrl, verifier, state } = initiateGoogleAuth(config);
       const sessionId = state;
-      pendingOAuth.set(sessionId, { provider: "antigravity", ownerId: user.id, status: "pending", googleVerifier: verifier });
-      return c.json({ success: true, data: { authUrl, sessionId, redirectUri: getGoogleRedirectUri() } });
-    } catch {
+      pendingOAuth.set(sessionId, {
+        provider: "antigravity",
+        ownerId: user.id,
+        status: "pending",
+        googleVerifier: verifier,
+        googleClientId: config.clientId,
+        googleClientSecret: config.clientSecret,
+        googleRedirectUri: config.redirectUri,
+        createdAt: googleOAuthNow(),
+        consumed: false,
+      });
+      return c.json({
+        success: true,
+        data: {
+          authUrl,
+          sessionId,
+          redirectUri: config.redirectUri,
+          manualCallback: config.redirectUri === GOOGLE_LOOPBACK_CALLBACK_URI,
+          expiresIn: GOOGLE_OAUTH_SESSION_TTL_MS / 1000,
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
+      if (
+        msg.includes("Public Google OAuth redirect URI requires custom GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET") ||
+        msg.includes("GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET must both be provided together") ||
+        msg.startsWith("Invalid Google OAuth redirect URI")
+      ) {
+        return c.json({ success: false, error: msg }, 400);
+      }
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
     }
   });
 
-  // OAuth: Google public callback (required when the app runs behind Docker/proxy)
+  // OAuth: Google loopback callback pasted from the remote browser's address bar.
+  app.post("/api/oauth/google/manual", async c => {
+    const user = c.get("user");
+    const rl = rateLimiter.check(
+      `oauthDevicePoll:${user.id}:google-manual`,
+      RATE_LIMIT_POLICIES.oauthDevicePoll,
+    );
+    if (!rl.allowed) {
+      return rateLimitResponse(c, rl.retryAfterSec, "Too many authorization attempts. Please slow down.");
+    }
+
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return c.json({ success: false, error: "Invalid callback request" }, 400);
+    }
+    const request = body as Record<string, unknown>;
+    const sessionId = typeof request["sessionId"] === "string" ? request["sessionId"] : "";
+    if (!sessionId) return c.json({ success: false, error: "Invalid callback request" }, 400);
+
+    const session = pendingOAuth.get(sessionId);
+    if (!session || session.provider !== "antigravity" || session.ownerId !== user.id) {
+      return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
+    }
+    if (expireGoogleOAuthSession(session, googleOAuthNow()) || session.createdAt === undefined) {
+      return c.json({ success: false, error: "Authorization session expired" }, 400);
+    }
+    if (session.status !== "pending" || session.consumed) {
+      return c.json({ success: false, error: "Authorization response already used" }, 400);
+    }
+
+    const callback = parseGoogleManualCallbackUrl(request["callbackInput"]);
+    if (!callback || callback.state !== sessionId) {
+      return c.json({ success: false, error: "Invalid callback URL" }, 400);
+    }
+    if (
+      !session.googleVerifier ||
+      !session.googleClientId ||
+      !session.googleClientSecret ||
+      session.googleRedirectUri !== GOOGLE_LOOPBACK_CALLBACK_URI
+    ) {
+      session.status = "error";
+      session.error = "Authorization session invalid";
+      session.consumed = true;
+      clearGoogleOAuthSecrets(session);
+      return c.json({ success: false, error: "Invalid or expired authorization session" }, 400);
+    }
+
+    const verifier = session.googleVerifier;
+    const config = {
+      clientId: session.googleClientId,
+      clientSecret: session.googleClientSecret,
+      redirectUri: session.googleRedirectUri,
+    };
+    session.consumed = true;
+    session.googleVerifier = undefined;
+
+    if (callback.providerError) {
+      session.status = "error";
+      session.error = "Authorization was denied";
+      clearGoogleOAuthSecrets(session);
+      return c.json({ success: false, error: "Authorization was denied" }, 400);
+    }
+
+    try {
+      const { saved, accountLabel } = await validateAndSaveGoogleCredential(
+        user.id,
+        callback.code!,
+        verifier,
+        config,
+      );
+      session.status = "complete";
+      session.accountLabel = accountLabel;
+      clearGoogleOAuthSecrets(session);
+      return c.json({ success: true, data: { id: saved.id, accountLabel } });
+    } catch {
+      session.status = "error";
+      session.error = "Authorization failed";
+      clearGoogleOAuthSecrets(session);
+      return c.json({ success: false, error: "Authorization failed" }, 400);
+    }
+  });
+
+  // OAuth: Google Web-client callback.
   app.get("/api/oauth/google/callback", async c => {
-    const state = c.req.query("state");
-    const code = c.req.query("code");
-    const oauthError = c.req.query("error");
-    const session = state ? pendingOAuth.get(state) : undefined;
+    const params = parseGoogleCallbackParameters(new URL(c.req.url).searchParams);
+    const session = params ? pendingOAuth.get(params.state) : undefined;
     const successPage = (title: string, message: string, color: string) =>
       c.html(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:system-ui,sans-serif;background:#0a0a0b;color:${color};text-align:center;padding:50px"><h2>${title}</h2><p style="color:#a1a1aa">${message}</p><script>setTimeout(()=>window.close(),1500)</script></body></html>`);
 
-    if (!session || session.provider !== "antigravity" || !session.googleVerifier) {
+    if (!params) return c.html("Invalid authorization response.", 400);
+    if (
+      !session ||
+      session.provider !== "antigravity" ||
+      session.googleRedirectUri === GOOGLE_LOOPBACK_CALLBACK_URI
+    ) {
       return c.html("Invalid or expired authorization session.", 400);
     }
-    if (oauthError) {
-      pendingOAuth.set(state!, { ...session, status: "error", error: "Authorization was denied" });
+    if (expireGoogleOAuthSession(session, googleOAuthNow()) || session.createdAt === undefined) {
+      return successPage("Google Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
+    }
+    if (session.status !== "pending" || session.consumed) {
+      return c.html("Authorization response already used.", 400);
+    }
+    if (
+      !session.googleVerifier ||
+      !session.googleClientId ||
+      !session.googleClientSecret ||
+      !session.googleRedirectUri
+    ) {
+      session.status = "error";
+      session.error = "Authorization session invalid";
+      session.consumed = true;
+      clearGoogleOAuthSecrets(session);
+      return c.html("Invalid or expired authorization session.", 400);
+    }
+
+    const verifier = session.googleVerifier;
+    const config = {
+      clientId: session.googleClientId,
+      clientSecret: session.googleClientSecret,
+      redirectUri: session.googleRedirectUri,
+    };
+    session.consumed = true;
+    session.googleVerifier = undefined;
+
+    if (params.providerError) {
+      session.status = "error";
+      session.error = "Authorization was denied";
+      clearGoogleOAuthSecrets(session);
       return successPage("Google Login Failed", "Authorization was denied. You can close this tab.", "#f43f5e");
     }
-    if (!code) return c.html("Authorization code missing.", 400);
 
     try {
-      const tokens = await exchangeGoogleCode(code, session.googleVerifier);
-      const label = tokens.email || "Antigravity";
-      const saved = vault.saveCredential(session.ownerId, {
-        ownerId: session.ownerId,
-        provider: "antigravity",
-        accountLabel: label,
-        credentialType: "oauth",
-        secret: tokens.accessToken,
-        metadata: { refreshToken: tokens.refreshToken, email: tokens.email },
-      });
-      const initialReport = await poller.pollCredential(session.ownerId, saved.id);
-      if (initialReport?.error) {
-        vault.deleteCredential(session.ownerId, saved.id);
-        pendingOAuth.set(state!, { ...session, status: "error", error: "Initial provider validation failed" });
-        return successPage("Google Login Failed", "Provider validation failed. You can close this tab.", "#f43f5e");
-      }
-      pendingOAuth.set(state!, { ...session, status: "complete", accountLabel: label, googleVerifier: undefined });
+      const { accountLabel } = await validateAndSaveGoogleCredential(
+        session.ownerId,
+        params.code!,
+        verifier,
+        config,
+      );
+      session.status = "complete";
+      session.accountLabel = accountLabel;
+      clearGoogleOAuthSecrets(session);
       return successPage("Google Login Successful", "You can close this tab and return to useMeter.", "#10b981");
     } catch {
-      pendingOAuth.set(state!, { ...session, status: "error", error: "Authorization failed", googleVerifier: undefined });
+      session.status = "error";
+      session.error = "Authorization failed";
+      clearGoogleOAuthSecrets(session);
       return successPage("Google Login Failed", "Authorization failed. You can close this tab.", "#f43f5e");
     }
   });
@@ -1049,21 +1364,22 @@ export function createServer(
       }
       pendingDeviceOwners.delete(body.deviceCode);
       const label = (body.label && body.label !== "xAI Grok" ? body.label : pollRes.email) || pollRes.email || "xAI Grok";
-      const saved = vault.saveCredential(user.id, {
-        ownerId: user.id,
-        provider: "xai-oauth",
-        accountLabel: label,
-        credentialType: "oauth",
-        secret: pollRes.accessToken,
-        metadata: {
-          refreshToken: pollRes.refreshToken,
-          email: pollRes.email,
-        },
-      });
-      const initialReport = await poller.pollCredential(user.id, saved.id);
-      if (initialReport?.error) {
-        vault.deleteCredential(user.id, saved.id);
-        return c.json({ status: "error", error: initialReport.error });
+      let saved;
+      try {
+        saved = await poller.validateAndSaveCredential(user.id, {
+          ownerId: user.id,
+          provider: "xai-oauth",
+          accountLabel: label,
+          credentialType: "oauth",
+          secret: pollRes.accessToken,
+          metadata: {
+            refreshToken: pollRes.refreshToken,
+            email: pollRes.email,
+          },
+        }, "preserve");
+      } catch (validationError) {
+        const message = validationError instanceof Error ? validationError.message : String(validationError);
+        return c.json({ status: "error", error: message });
       }
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
     } catch {
@@ -1106,21 +1422,22 @@ export function createServer(
       }
       pendingDeviceOwners.delete(body.deviceCode);
       const label = (body.label && body.label !== "Kimi Code" ? body.label : (pollRes.accountId || "Kimi Code")) || pollRes.accountId || "Kimi Code";
-      const saved = vault.saveCredential(user.id, {
-        ownerId: user.id,
-        provider: "kimi-code",
-        accountLabel: label,
-        credentialType: "oauth",
-        secret: pollRes.accessToken,
-        metadata: {
-          refreshToken: pollRes.refreshToken,
-          accountId: pollRes.accountId,
-        },
-      });
-      const initialReport = await poller.pollCredential(user.id, saved.id);
-      if (initialReport?.error) {
-        vault.deleteCredential(user.id, saved.id);
-        return c.json({ status: "error", error: initialReport.error });
+      let saved;
+      try {
+        saved = await poller.validateAndSaveCredential(user.id, {
+          ownerId: user.id,
+          provider: "kimi-code",
+          accountLabel: label,
+          credentialType: "oauth",
+          secret: pollRes.accessToken,
+          metadata: {
+            refreshToken: pollRes.refreshToken,
+            accountId: pollRes.accountId,
+          },
+        }, "preserve");
+      } catch (validationError) {
+        const message = validationError instanceof Error ? validationError.message : String(validationError);
+        return c.json({ status: "error", error: message });
       }
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
     } catch {
@@ -1250,49 +1567,152 @@ export function createServer(
     }
   });
 
+  // Helper: Process Devin authorization code, save credential, poll and update session
+  async function processDevinCode(
+    sessionId: string,
+    code: string,
+    verifier: string,
+    ownerId: string,
+  ): Promise<{ success: boolean; label?: string; error?: string }> {
+    const tokenResult = await exchangeDevinCode(code, verifier);
+    const initialLabel = tokenResult.email || "Devin";
+    const saved = vault.saveCredential(ownerId, {
+      ownerId,
+      provider: "devin",
+      accountLabel: initialLabel,
+      credentialType: "api_key",
+      secret: tokenResult.token,
+      metadata: {
+        email: tokenResult.email,
+        source: "oauth-pkce",
+      },
+    });
+    const initialReport = await poller.pollCredential(ownerId, saved.id);
+    if (initialReport?.error) {
+      vault.deleteCredential(ownerId, saved.id);
+      const existing = pendingOAuth.get(sessionId);
+      pendingOAuth.set(sessionId, { ...existing, provider: "devin", ownerId, status: "error", error: initialReport.error, consumed: true });
+      return { success: false, error: initialReport.error };
+    }
+    const resolvedLabel = initialReport && initialReport.accountLabel && initialReport.accountLabel !== "Devin" && initialReport.accountLabel !== "Default"
+      ? initialReport.accountLabel
+      : saved.accountLabel;
+    if (resolvedLabel !== saved.accountLabel) {
+      vault.updateCredentialLabel(ownerId, saved.id, resolvedLabel);
+    }
+    const existing = pendingOAuth.get(sessionId);
+    pendingOAuth.set(sessionId, { ...existing, provider: "devin", ownerId, status: "complete", accountLabel: resolvedLabel, consumed: true });
+    return { success: true, label: resolvedLabel };
+  }
+
   // OAuth: Devin - Initiate
   app.post("/api/oauth/devin/initiate", c => {
     try {
       const user = c.get("user");
-      const { authUrl, verifier, state, sessionId } = initiateDevinAuth();
-      pendingOAuth.set(sessionId, { provider: "devin", ownerId: user.id, status: "pending" });
+      const { authUrl, verifier, state, sessionId, isHosted } = initiateDevinAuth();
+      pendingOAuth.set(sessionId, {
+        provider: "devin",
+        ownerId: user.id,
+        status: "pending",
+        devinVerifier: verifier,
+        createdAt: Date.now(),
+        consumed: false,
+      });
 
-      listenForDevinCallback(state)
-        .then(async code => {
-          const tokenResult = await exchangeDevinCode(code, verifier);
-          const initialLabel = tokenResult.email || "Devin";
-          const saved = vault.saveCredential(user.id, {
-            ownerId: user.id,
-            provider: "devin",
-            accountLabel: initialLabel,
-            credentialType: "api_key",
-            secret: tokenResult.token,
-            metadata: {
-              email: tokenResult.email,
-              source: "oauth-pkce",
-            },
+      if (!isHosted) {
+        listenForDevinCallback(state)
+          .then(async code => {
+            const session = pendingOAuth.get(sessionId);
+            if (!session || session.consumed || !session.devinVerifier) return;
+            const currentVerifier = session.devinVerifier;
+            session.consumed = true;
+            session.devinVerifier = undefined;
+            await processDevinCode(sessionId, code, currentVerifier, user.id);
+          })
+          .catch(err => {
+            pendingOAuth.set(sessionId, {
+              provider: "devin",
+              ownerId: user.id,
+              status: "error",
+              error: err instanceof Error ? err.message : "Authorization failed",
+            });
           });
-          const initialReport = await poller.pollCredential(user.id, saved.id);
-          if (initialReport?.error) {
-            vault.deleteCredential(user.id, saved.id);
-            pendingOAuth.set(sessionId, { provider: "devin", ownerId: user.id, status: "error", error: initialReport.error });
-            return;
-          }
-          const resolvedLabel = initialReport && initialReport.accountLabel && initialReport.accountLabel !== "Devin" && initialReport.accountLabel !== "Default"
-            ? initialReport.accountLabel
-            : saved.accountLabel;
-          if (resolvedLabel !== saved.accountLabel) {
-            vault.updateCredentialLabel(user.id, saved.id, resolvedLabel);
-          }
-          pendingOAuth.set(sessionId, { provider: "devin", ownerId: user.id, status: "complete", accountLabel: resolvedLabel });
-        })
-        .catch(() => {
-          pendingOAuth.set(sessionId, { provider: "devin", ownerId: user.id, status: "error", error: "Authorization failed" });
-        });
-
-      return c.json({ success: true, data: { authUrl, sessionId } });
-    } catch {
+      }
+      return c.json({
+        success: true,
+        data: {
+          authUrl,
+          sessionId,
+          redirectUri: getDevinRedirectUri(),
+          expiresIn: 600,
+        },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "";
+      if (
+        msg.includes("DEVIN_OAUTH_REDIRECT_URI is not configured") ||
+        msg.includes("Invalid DEVIN_OAUTH_REDIRECT_URI") ||
+        msg.includes("DEVIN_OAUTH_REDIRECT_URI must use HTTPS") ||
+        msg.includes("DEVIN_OAUTH_REDIRECT_URI path must be exactly") ||
+        msg.includes("Unsupported protocol")
+      ) {
+        return c.json({ success: false, error: msg }, 400);
+      }
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
+    }
+  });
+
+  // OAuth: Devin public callback (required when the app runs behind Docker/proxy)
+  app.get("/api/oauth/devin/callback", async c => {
+    const state = c.req.query("state");
+    const code = c.req.query("code");
+    const oauthError = c.req.query("error");
+    const session = state ? pendingOAuth.get(state) : undefined;
+    const successPage = (title: string, message: string, color: string) =>
+      c.html(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:system-ui,sans-serif;background:#0a0a0b;color:${color};text-align:center;padding:50px"><h2>${title}</h2><p style="color:#a1a1aa">${message}</p><script>setTimeout(()=>window.close(),1500)</script></body></html>`);
+
+    if (!session || session.provider !== "devin") {
+      return c.html("Invalid or expired authorization session.", 400);
+    }
+    if (session.consumed) {
+      return c.html("Authorization code already used.", 400);
+    }
+    if (!session.devinVerifier) {
+      return c.html("Invalid or expired authorization session.", 400);
+    }
+    const OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
+    if (session.createdAt && Date.now() - session.createdAt > OAUTH_SESSION_TTL_MS) {
+      pendingOAuth.set(state!, { ...session, status: "error", error: "Authorization session expired", devinVerifier: undefined });
+      return successPage("Devin Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
+    }
+
+    const verifier = session.devinVerifier;
+    session.consumed = true;
+    session.devinVerifier = undefined;
+
+    if (oauthError) {
+      const errorMsg = oauthError === "access_denied" ? "Authorization was denied" : oauthError;
+      pendingOAuth.set(state!, { ...session, status: "error", error: errorMsg });
+      const displayMsg = oauthError === "access_denied"
+        ? "Authorization was denied. You can close this tab."
+        : "Authorization failed. You can close this tab.";
+      return successPage("Devin Login Failed", displayMsg, "#f43f5e");
+    }
+    if (!code) {
+      pendingOAuth.set(state!, { ...session, status: "error", error: "Authorization code missing" });
+      return c.html("Authorization code missing.", 400);
+    }
+
+    try {
+      const result = await processDevinCode(state!, code, verifier, session.ownerId);
+      if (!result.success) {
+        return successPage("Devin Login Failed", "Provider validation failed. Please check your dashboard, then close this tab.", "#f43f5e");
+      }
+      return successPage("Devin Login Successful", "You can close this tab and return to useMeter.", "#10b981");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Authorization failed";
+      pendingOAuth.set(state!, { ...session, status: "error", error: msg });
+      return successPage("Devin Login Failed", "Authorization failed. You can close this tab.", "#f43f5e");
     }
   });
 
@@ -1307,6 +1727,19 @@ export function createServer(
     }
     const session = pendingOAuth.get(sessionId);
     if (!session || session.ownerId !== user.id) return c.json({ status: "not_found" }, 404);
+
+    expireGoogleOAuthSession(session, googleOAuthNow());
+
+    if (session.provider === "devin" && session.status === "pending" && session.createdAt) {
+      const OAUTH_SESSION_TTL_MS = 10 * 60 * 1000;
+      if (Date.now() - session.createdAt > OAUTH_SESSION_TTL_MS) {
+        session.status = "error";
+        session.error = "Authorization session expired";
+        session.devinVerifier = undefined;
+        session.consumed = true;
+      }
+    }
+
     return c.json({
       provider: session.provider,
       status: session.status,
@@ -1314,7 +1747,6 @@ export function createServer(
       accountLabel: session.accountLabel,
     });
   });
-
   // UI: Dashboard (React client shell)
   app.get("/", c => {
     const user = c.get("user");
@@ -1334,7 +1766,7 @@ export function createServer(
     });
     // Override CSP for dashboard (no CDN needed)
     c.header("Content-Security-Policy", DASHBOARD_CSP);
-    return c.html(renderDashboardHtml(enriched, user));
+    return c.html(renderDashboardHtml(enriched, user, assetRevision));
   });
 
   return app;
@@ -2733,38 +3165,65 @@ function renderAdminDashboardHtml(params: {
 </html>`;
 }
 
-function renderDashboardHtml(initialReports: (UsageReport & { createdAt?: number; accent?: string | null; metadata?: Record<string, unknown> })[] = [], user?: User): string {
-  // Sanitize bootstrap data — strip raw secrets and sensitive fields
-  const sanitizedReports = initialReports.map(r => {
-    const safeMetadata: Record<string, unknown> = {};
-    if (r.metadata) {
-      const allowedKeys = ["email", "login", "username", "accountId", "userId", "planType"];
-      for (const key of allowedKeys) {
-        if (key in r.metadata) {
-          safeMetadata[key] = r.metadata[key];
-        }
+export type UsageReportPresentation = {
+  accountLabel?: string;
+  createdAt?: number;
+  accent?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type PublicUsageReport = Omit<UsageReport, "ownerId" | "raw"> & Omit<UsageReportPresentation, "accountLabel">;
+
+export const PUBLIC_USAGE_METADATA_KEYS = ["email", "login", "username", "accountId", "userId", "planType"] as const;
+
+export function toPublicUsageReport(
+  report: UsageReport & { createdAt?: number; accent?: string | null; metadata?: Record<string, unknown> },
+  presentation: UsageReportPresentation = {}
+): PublicUsageReport {
+  const mergedPresentation: UsageReportPresentation = {
+    accountLabel: presentation.accountLabel || report.accountLabel,
+    createdAt: presentation.createdAt ?? report.createdAt,
+    accent: presentation.accent ?? report.accent,
+    metadata: presentation.metadata ?? report.metadata,
+  };
+
+  let safeMetadata: Record<string, unknown> | undefined;
+  if (mergedPresentation.metadata) {
+    for (const key of PUBLIC_USAGE_METADATA_KEYS) {
+      if (key in mergedPresentation.metadata) {
+        (safeMetadata ??= {})[key] = mergedPresentation.metadata[key];
       }
     }
-    return {
-      provider: r.provider,
-      credentialId: r.credentialId,
-      accountLabel: r.accountLabel,
-      health: r.health,
-      stale: r.stale,
-      source: r.source,
-      error: r.error ? String(r.error).slice(0, 200) : undefined,
-      fetchedAt: r.fetchedAt,
-      lastGoodFetchedAt: r.lastGoodFetchedAt,
-      limits: r.limits,
-      metadata: Object.keys(safeMetadata).length > 0 ? safeMetadata : undefined,
-      accent: r.accent || undefined,
-      createdAt: r.createdAt || undefined,
-    };
-  });
+  }
+
+  return {
+    provider: report.provider,
+    credentialId: report.credentialId,
+    accountLabel: mergedPresentation.accountLabel || report.accountLabel,
+    fetchedAt: report.fetchedAt,
+    limits: report.limits,
+    error: report.error ? String(report.error).slice(0, 200) : undefined,
+    health: report.health,
+    stale: report.stale,
+    lastGoodFetchedAt: report.lastGoodFetchedAt,
+    source: report.source,
+    metadata: safeMetadata,
+    accent: mergedPresentation.accent || undefined,
+    createdAt: mergedPresentation.createdAt || undefined,
+  };
+}
+
+function renderDashboardHtml(
+  initialReports: (UsageReport & { createdAt?: number; accent?: string | null; metadata?: Record<string, unknown> })[] = [],
+  user?: User,
+  assetRevision?: string
+): string {
+  const sanitizedReports = initialReports.map(report => toPublicUsageReport(report, report));
 
   const safeUser = user ? { id: user.id, email: user.email, role: user.role } : null;
   const bootstrap = JSON.stringify({ reports: sanitizedReports, user: safeUser })
     .replace(/</g, "\\u003c");
+  const assetQuery = assetRevision ? `?v=${encodeURIComponent(assetRevision)}` : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -2773,12 +3232,12 @@ function renderDashboardHtml(initialReports: (UsageReport & { createdAt?: number
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>useMeter \u2014 AI Usage Dashboard</title>
-  <link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/app.css${assetQuery}">
 </head>
 <body>
   <div id="app" data-app="usemeter-dashboard"></div>
   <script id="usemeter-bootstrap" type="application/json">${bootstrap}</script>
-  <script type="module" src="/assets/app.js"></script>
+  <script type="module" src="/assets/app.js${assetQuery}"></script>
 </body>
 </html>`;
 }

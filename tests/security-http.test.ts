@@ -468,6 +468,43 @@ describe("Security HTTP Tests", () => {
         ctx.close();
       }
     });
+    it("rate-limits invitation acceptance with the shared registration window and trusted client IP", async () => {
+      process.env["TRUST_PROXY"] = "true";
+      let now = 1_000_000;
+      const ctx = createTestContext(new RateLimiter({ now: () => now }));
+      try {
+        const token = "0000000000000000000000000000000000000000000000000000000000000000";
+        const accept = (ip: string) =>
+          ctx.app.request(`/api/invitations/${token}/accept`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Forwarded-For": ip },
+            body: JSON.stringify({ password: "Valid-Strong-Password-123!" }),
+          });
+        const clientIp = "203.0.113.88";
+
+        for (let i = 0; i < RATE_LIMIT_POLICIES.registration.max; i += 1) {
+          expect((await accept(clientIp)).status).toBe(400);
+        }
+        const blocked = await accept(clientIp);
+        expect(blocked.status).toBe(429);
+        expect(Number(blocked.headers.get("Retry-After"))).toBeGreaterThan(0);
+
+        now += RATE_LIMIT_POLICIES.registration.windowMs + 1;
+        expect((await accept(clientIp)).status).toBe(400);
+
+        for (let i = 1; i < RATE_LIMIT_POLICIES.registration.max; i += 1) {
+          await ctx.app.request("/api/auth/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Forwarded-For": clientIp },
+            body: JSON.stringify({}),
+          });
+        }
+        expect((await accept(clientIp)).status).toBe(429);
+        expect((await accept("198.51.100.42")).status).toBe(400);
+      } finally {
+        ctx.close();
+      }
+    });
 
     it("does not rate-limit static authentication pages or health checks", async () => {
       process.env["TRUST_PROXY"] = "true";

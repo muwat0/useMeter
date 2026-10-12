@@ -111,8 +111,12 @@ export async function pollXaiDeviceAuth(deviceCode: string): Promise<XaiPollResu
   };
 }
 
-export async function refreshXaiToken(refreshToken: string): Promise<{ accessToken: string; refreshToken: string }> {
-  const res = await fetch(XAI_OAUTH_TOKEN_URL, {
+export async function refreshXaiToken(
+  refreshToken: string,
+  context?: { fetch?: typeof fetch; signal?: AbortSignal },
+): Promise<{ accessToken: string; refreshToken: string }> {
+  const fetchImpl = context?.fetch ?? fetch;
+  const res = await fetchImpl(XAI_OAUTH_TOKEN_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -123,6 +127,7 @@ export async function refreshXaiToken(refreshToken: string): Promise<{ accessTok
       client_id: XAI_OAUTH_CLIENT_ID,
       refresh_token: refreshToken,
     }).toString(),
+    signal: context?.signal,
   });
 
   if (!res.ok) {

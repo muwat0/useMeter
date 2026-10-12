@@ -6,7 +6,8 @@ import { CodexAdapter } from "../src/core/providers/codex";
 import { ProviderRegistry } from "../src/core/providers/registry";
 import { PollerEngine } from "../src/core/poller/poller";
 import { StorageVault } from "../src/core/storage/vault";
-import type { StoredCredential } from "../src/types";
+import type { FetchContext, ProviderAdapter } from "../src/core/providers/adapter";
+import type { StoredCredential, UsageReport } from "../src/types";
 
 const mockCred: StoredCredential = {
   id: "test-cred-1",
@@ -191,6 +192,192 @@ describe("CodexAdapter", () => {
     expect(headerReport).not.toBeNull();
     expect(headerReport?.limits[0]?.status).toBe("exhausted");
   });
+  it("refreshes a rejected OAuth token and persists rotated tokens before retrying", async () => {
+    const adapter = new CodexAdapter();
+    const credential: StoredCredential = {
+      ...mockCred,
+      provider: "openai-codex",
+      credentialType: "oauth",
+      secret: "expired-access-token",
+      metadata: { accountId: "codex-account", refreshToken: "old-refresh-token" },
+    };
+    const signal = new AbortController().signal;
+    const events: string[] = [];
+    let persisted: { secret: string; metadata?: Record<string, unknown> } | undefined;
+    const mockFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input.toString();
+      expect(init?.signal).toBe(signal);
+
+      if (url === "https://auth.openai.com/oauth/token") {
+        events.push("refresh");
+        expect(init?.method).toBe("POST");
+        expect(new Headers(init?.headers).get("Content-Type")).toBe("application/x-www-form-urlencoded");
+        const body = new URLSearchParams(String(init?.body));
+        expect(body.get("grant_type")).toBe("refresh_token");
+        expect(body.get("client_id")).toBe("app_EMoamEEZ73f0CkXaXp7hrann");
+        expect(body.get("refresh_token")).toBe("old-refresh-token");
+        return new Response(JSON.stringify({ access_token: "fresh-access-token", refresh_token: "fresh-refresh-token" }));
+      }
+
+      if (url.endsWith("/usage")) {
+        const authorization = new Headers(init?.headers).get("Authorization");
+        events.push(`usage:${authorization}`);
+        expect(new Headers(init?.headers).get("chatgpt-account-id")).toBe("codex-account");
+        if (authorization === "Bearer expired-access-token") {
+          return new Response(null, { status: 401, statusText: "Unauthorized" });
+        }
+        return new Response(JSON.stringify({
+          plan_type: "plus",
+          rate_limit: { primary_window: { used_percent: 25 } },
+        }));
+      }
+
+      expect(url).toContain("rate-limit-reset-credits");
+      events.push("credits");
+      return new Response(JSON.stringify({ available_count: 0 }));
+    }) as unknown as typeof fetch;
+
+    const report = await adapter.fetchUsage(credential, {
+      fetch: mockFetch,
+      signal,
+      onTokenRefresh: (secret, metadata) => {
+        events.push("persist");
+        persisted = { secret, metadata };
+      },
+    });
+
+    expect(events).toEqual([
+      "usage:Bearer expired-access-token",
+      "refresh",
+      "persist",
+      "usage:Bearer fresh-access-token",
+      "credits",
+    ]);
+    expect(persisted).toEqual({ secret: "fresh-access-token", metadata: { refreshToken: "fresh-refresh-token" } });
+    expect(credential.secret).toBe("fresh-access-token");
+    expect(credential.metadata?.["refreshToken"]).toBe("fresh-refresh-token");
+    expect(report.limits.find(limit => limit.id === "primary_window")?.amount.used).toBe(25);
+  });
+
+  it("retries a refreshed token only once and retains the prior refresh token when rotation is omitted", async () => {
+    const adapter = new CodexAdapter();
+    const credential: StoredCredential = {
+      ...mockCred,
+      provider: "openai-codex",
+      credentialType: "oauth",
+      secret: "expired-access-token",
+      metadata: { refreshToken: "retained-refresh-token" },
+    };
+    let usageCalls = 0;
+    let refreshCalls = 0;
+    let persisted: { secret: string; metadata?: Record<string, unknown> } | undefined;
+    const mockFetch = (async (input: string | URL | Request) => {
+      if (input.toString() === "https://auth.openai.com/oauth/token") {
+        refreshCalls++;
+        return new Response(JSON.stringify({ access_token: "fresh-access-token" }));
+      }
+      usageCalls++;
+      return new Response(null, { status: 401 });
+    }) as unknown as typeof fetch;
+
+    await expect(adapter.fetchUsage(credential, {
+      fetch: mockFetch,
+      onTokenRefresh: (secret, metadata) => { persisted = { secret, metadata }; },
+    })).rejects.toThrow("HTTP 401");
+
+    expect(usageCalls).toBe(2);
+    expect(refreshCalls).toBe(1);
+    expect(persisted).toEqual({ secret: "fresh-access-token", metadata: { refreshToken: "retained-refresh-token" } });
+    expect(credential.secret).toBe("fresh-access-token");
+    expect(credential.metadata?.["refreshToken"]).toBe("retained-refresh-token");
+  });
+
+  it("does not refresh on a 403 or a 401 without a nonempty refresh token", async () => {
+    const adapter = new CodexAdapter();
+    for (const scenario of [
+      { status: 401, metadata: undefined },
+      { status: 401, metadata: { refreshToken: "  " } },
+      { status: 403, metadata: { refreshToken: "unused-refresh-token" } },
+    ]) {
+      let calls = 0;
+      const mockFetch = (async () => {
+        calls++;
+        return new Response(null, { status: scenario.status });
+      }) as unknown as typeof fetch;
+      const credential: StoredCredential = {
+        ...mockCred,
+        provider: "openai-codex",
+        credentialType: "oauth",
+        secret: "access-token",
+        metadata: scenario.metadata,
+      };
+
+      await expect(adapter.fetchUsage(credential, { fetch: mockFetch })).rejects.toThrow(`HTTP ${scenario.status}`);
+      expect(calls).toBe(1);
+    }
+  });
+
+  it("surfaces sanitized refresh failures without retrying the usage request", async () => {
+    const adapter = new CodexAdapter();
+    let usageCalls = 0;
+    let refreshCalls = 0;
+    const mockFetch = (async (input: string | URL | Request) => {
+      if (input.toString() === "https://auth.openai.com/oauth/token") {
+        refreshCalls++;
+        return new Response("private-refresh-response-body", { status: 400 });
+      }
+      usageCalls++;
+      return new Response(null, { status: 401 });
+    }) as unknown as typeof fetch;
+    const credential: StoredCredential = {
+      ...mockCred,
+      provider: "openai-codex",
+      credentialType: "oauth",
+      secret: "private-access-token",
+      metadata: { refreshToken: "private-refresh-token" },
+    };
+
+    const error = await adapter.fetchUsage(credential, { fetch: mockFetch }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    if (error instanceof Error) {
+      expect(error.message).toBe("Codex usage returned HTTP 401; OAuth token refresh failed.");
+      expect(error.message).not.toContain("private-refresh-response-body");
+      expect(error.message).not.toContain("private-access-token");
+      expect(error.message).not.toContain("private-refresh-token");
+    }
+    expect(usageCalls).toBe(1);
+    expect(refreshCalls).toBe(1);
+  });
+  it("passes cancellation to the refresh request and stops before retrying", async () => {
+    const adapter = new CodexAdapter();
+    const controller = new AbortController();
+    let usageCalls = 0;
+    let refreshCalls = 0;
+    const mockFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (input.toString() === "https://auth.openai.com/oauth/token") {
+        refreshCalls++;
+        expect(init?.signal).toBe(controller.signal);
+        controller.abort();
+        throw new DOMException("The operation was aborted", "AbortError");
+      }
+      usageCalls++;
+      expect(init?.signal).toBe(controller.signal);
+      return new Response(null, { status: 401 });
+    }) as unknown as typeof fetch;
+    const credential: StoredCredential = {
+      ...mockCred,
+      provider: "openai-codex",
+      credentialType: "oauth",
+      secret: "access-token",
+      metadata: { refreshToken: "refresh-token" },
+    };
+
+    const error = await adapter.fetchUsage(credential, { fetch: mockFetch, signal: controller.signal })
+      .catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ name: "AbortError" });
+    expect(usageCalls).toBe(1);
+    expect(refreshCalls).toBe(1);
+  });
 });
 describe("PollerEngine", () => {
   it("polls registered credentials and notifies listeners", async () => {
@@ -228,5 +415,145 @@ describe("PollerEngine", () => {
     expect(latest[0]?.limits[0]?.amount.remaining).toBe(50);
     expect(await poller.pollCredential("foreign-owner", saved.id)).toBeNull();
     vault.close();
+  });
+
+  it("reloads queued daemon credentials after reauthorization before provider dispatch", async () => {
+    const vault = new StorageVault(":memory:");
+    const owner = vault.createUser("queued-poll@example.com", "hash");
+    const first = vault.saveCredential(owner.id, {
+      provider: "deepseek",
+      accountLabel: "Blocker",
+      credentialType: "api_key",
+      secret: "blocker-secret",
+    });
+    const queued = vault.saveCredential(owner.id, {
+      provider: "openrouter",
+      accountLabel: "Reauthorized",
+      credentialType: "oauth",
+      secret: "old-access",
+      metadata: { refreshToken: "old-refresh" },
+    });
+    const blockerStarted = Promise.withResolvers<void>();
+    const releaseBlocker = Promise.withResolvers<void>();
+    let reauthCompleted = false;
+    const fetches: string[] = [];
+    const registry = new ProviderRegistry();
+    const adapter: ProviderAdapter = {
+      id: "queued-poll-test",
+      supports: provider => provider === "deepseek" || provider === "openrouter",
+      fetchUsage: async (credential: StoredCredential, ctx?: FetchContext): Promise<UsageReport> => {
+        if (credential.id === first.id) {
+          blockerStarted.resolve();
+          await releaseBlocker.promise;
+        } else if (reauthCompleted) {
+          fetches.push(credential.secret);
+          if (credential.secret !== "new-access") {
+            ctx?.onTokenRefresh?.("stale-access", { refreshToken: "stale-refresh" });
+          }
+        }
+        return {
+          ownerId: credential.ownerId,
+          provider: credential.provider,
+          credentialId: credential.id,
+          accountLabel: credential.accountLabel,
+          fetchedAt: Date.now(),
+          limits: [],
+          health: "healthy",
+          source: "live",
+        };
+      },
+    };
+    registry.register(adapter);
+    const poller = new PollerEngine(vault, registry);
+    let sweep: Promise<UsageReport[]> | undefined;
+
+    try {
+      sweep = poller.pollAll();
+      await blockerStarted.promise;
+      const saved = await poller.validateAndSaveCredential(owner.id, {
+        provider: "openrouter",
+        accountLabel: "Reauthorized",
+        credentialType: "oauth",
+        secret: "new-access",
+        metadata: { refreshToken: "new-refresh" },
+      }, "preserve");
+      reauthCompleted = true;
+      expect(saved.id).toBe(queued.id);
+
+      releaseBlocker.resolve();
+      const reports = await sweep;
+      expect(fetches).toEqual(["new-access"]);
+      expect(reports.map(report => report.credentialId)).toEqual([first.id, queued.id]);
+      expect(reports.some(report => report.error || report.stale)).toBe(false);
+      expect(vault.getCredential(owner.id, queued.id)).toMatchObject({
+        secret: "new-access",
+        metadata: { refreshToken: "new-refresh" },
+      });
+    } finally {
+      releaseBlocker.resolve();
+      if (sweep) await sweep;
+      poller.stop();
+      vault.close();
+    }
+  });
+
+  it("skips a queued user credential deleted before dispatch", async () => {
+    const vault = new StorageVault(":memory:");
+    const owner = vault.createUser("deleted-queued-poll@example.com", "hash");
+    const first = vault.saveCredential(owner.id, {
+      provider: "deepseek",
+      accountLabel: "Blocker",
+      credentialType: "api_key",
+      secret: "blocker-secret",
+    });
+    const queued = vault.saveCredential(owner.id, {
+      provider: "openrouter",
+      accountLabel: "Deleted",
+      credentialType: "oauth",
+      secret: "deleted-access",
+    });
+    const blockerStarted = Promise.withResolvers<void>();
+    const releaseBlocker = Promise.withResolvers<void>();
+    const fetchedIds: string[] = [];
+    const registry = new ProviderRegistry();
+    registry.register({
+      id: "deleted-queued-poll-test",
+      supports: provider => provider === "deepseek" || provider === "openrouter",
+      fetchUsage: async (credential: StoredCredential): Promise<UsageReport> => {
+        fetchedIds.push(credential.id);
+        if (credential.id === first.id) {
+          blockerStarted.resolve();
+          await releaseBlocker.promise;
+        }
+        return {
+          ownerId: credential.ownerId,
+          provider: credential.provider,
+          credentialId: credential.id,
+          accountLabel: credential.accountLabel,
+          fetchedAt: Date.now(),
+          limits: [],
+          health: "healthy",
+          source: "live",
+        };
+      },
+    });
+    const poller = new PollerEngine(vault, registry);
+    let polling: Promise<UsageReport[]> | undefined;
+
+    try {
+      polling = poller.pollUser(owner.id);
+      await blockerStarted.promise;
+      vault.deleteCredential(owner.id, queued.id);
+      releaseBlocker.resolve();
+      const reports = await polling;
+      expect(fetchedIds).toEqual([first.id]);
+      expect(reports.map(report => report.credentialId)).toEqual([first.id]);
+      expect(vault.getCredential(owner.id, queued.id)).toBeNull();
+    } finally {
+      releaseBlocker.resolve();
+      if (polling) await polling;
+      poller.stop();
+      vault.close();
+    }
   });
 });

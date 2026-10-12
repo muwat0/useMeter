@@ -370,4 +370,99 @@ describe("Admin Invitation Onboarding & Security", () => {
 
     vault.close();
   });
+  it("rejects unusable invitations before password hashing and creates no user or session", async () => {
+    const vault = new StorageVault(":memory:");
+    const auth = new AuthService(vault);
+    const originalHash = Bun.password.hash;
+    let hashCalls = 0;
+
+    try {
+      const adminReg = await auth.register("admin@example.com", "Admin-Strong-Password-123!");
+      if (!adminReg.success) throw new Error("Admin registration failed");
+      const inviteRes = await auth.createInvitation(adminReg.data.user.id, "fast-check@example.com");
+      if (!inviteRes.success) throw new Error("Invitation creation failed");
+      const revokeRes = await auth.revokeInvitation(adminReg.data.user.id, inviteRes.data.invitation.id);
+      expect(revokeRes.success).toBe(true);
+      const sessionsBefore = vault.getSystemStatsAdmin(false).activeSessions;
+
+      Bun.password.hash = async () => {
+        hashCalls += 1;
+        return "unused";
+      };
+      const result = await auth.acceptInvitation(inviteRes.data.token, "Valid-Strong-Password-123!");
+
+      expect(result).toEqual({
+        success: false,
+        error: "INVALID_INVITATION",
+        message: "Invalid, expired, or revoked invitation",
+      });
+      expect(hashCalls).toBe(0);
+      expect(vault.getUserCount()).toBe(1);
+      expect(vault.getSystemStatsAdmin(false).activeSessions).toBe(sessionsBefore);
+    } finally {
+      Bun.password.hash = originalHash;
+      vault.close();
+    }
+  });
+
+  it("allows exactly one concurrent acceptance and issues its session", async () => {
+    const vault = new StorageVault(":memory:");
+    const auth = new AuthService(vault);
+    try {
+      const adminReg = await auth.register("admin@example.com", "Admin-Strong-Password-123!");
+      if (!adminReg.success) throw new Error("Admin registration failed");
+      const inviteRes = await auth.createInvitation(adminReg.data.user.id, "concurrent@example.com");
+      if (!inviteRes.success) throw new Error("Invitation creation failed");
+      const sessionsBefore = vault.getSystemStatsAdmin(false).activeSessions;
+
+      const results = await Promise.all([
+        auth.acceptInvitation(inviteRes.data.token, "First-Strong-Password-123!"),
+        auth.acceptInvitation(inviteRes.data.token, "Second-Strong-Password-123!"),
+      ]);
+      const accepted = results.filter(result => result.success);
+      const rejected = results.filter(result => !result.success);
+
+      expect(accepted).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      if (accepted[0]?.success) {
+        expect(accepted[0].data.user.email).toBe("concurrent@example.com");
+        expect(accepted[0].data.user.role).toBe("user");
+        expect((await auth.authenticate(accepted[0].data.token)).success).toBe(true);
+      }
+      expect(vault.getUserCount()).toBe(2);
+      expect(vault.getSystemStatsAdmin(false).activeSessions).toBe(sessionsBefore + 1);
+    } finally {
+      vault.close();
+    }
+  });
+
+  it("rejects revocation between the invitation precheck and atomic account creation", async () => {
+    const vault = new StorageVault(":memory:");
+    const auth = new AuthService(vault);
+    try {
+      const adminReg = await auth.register("admin@example.com", "Admin-Strong-Password-123!");
+      if (!adminReg.success) throw new Error("Admin registration failed");
+      const inviteRes = await auth.createInvitation(adminReg.data.user.id, "race@example.com");
+      if (!inviteRes.success) throw new Error("Invitation creation failed");
+      const sessionsBefore = vault.getSystemStatsAdmin(false).activeSessions;
+
+      const acceptAtomic = vault.acceptInvitationAtomic.bind(vault);
+      vault.acceptInvitationAtomic = ((tokenHash, userToCreate) => {
+        const revoked = vault.revokeInvitation(adminReg.data.user.id, inviteRes.data.invitation.id);
+        expect(revoked).toBe(true);
+        return acceptAtomic(tokenHash, userToCreate);
+      }) as typeof vault.acceptInvitationAtomic;
+
+      const result = await auth.acceptInvitation(inviteRes.data.token, "Valid-Strong-Password-123!");
+      expect(result).toMatchObject({
+        success: false,
+        error: "INVALID_INVITATION",
+        message: "Invalid, expired, or revoked invitation",
+      });
+      expect(vault.getUserCount()).toBe(1);
+      expect(vault.getSystemStatsAdmin(false).activeSessions).toBe(sessionsBefore);
+    } finally {
+      vault.close();
+    }
+  });
 });
