@@ -527,6 +527,12 @@ export function createServer(
 
   app.post("/api/invitations/:token/accept", async c => {
     try {
+      const ip = getClientIp(c);
+      const rl = rateLimiter.check(`registration:${ip}`, RATE_LIMIT_POLICIES.registration);
+      if (!rl.allowed) {
+        return rateLimitResponse(c, rl.retryAfterSec, "Too many registration attempts. Please try again later.");
+      }
+
       const token = c.req.param("token");
       if (!token || typeof token !== "string" || !token.trim()) {
         return c.json({ success: false, error: "Invalid or expired invitation" }, 400);

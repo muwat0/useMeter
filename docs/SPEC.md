@@ -407,7 +407,8 @@ export const MINIMAL_SSR_CSP = [
 
 ### 4.4. Sınırlandırılmış Bellek-İçi Hız Sınırlayıcı (Bounded In-Memory RateLimiter)
 Bellek sızıntılarını önlemek için en fazla 10.000 benzersiz anahtar tutan (`maxKeys: 10000`), kayan pencere (sliding window) ve deterministik zaman dikişi (`now()` seam) ile çalışan hız sınırlayıcı:
-- **Kimlik Doğrulama (`auth`):** `5 istek / dakika / IP` (`POST /api/auth/login`, `POST /api/auth/register`).
+- **Kimlik Doğrulama (`auth`):** `5 istek / dakika / IP` (`POST /api/auth/login`).
+- **Kayıt/Katılım (`registration`):** `5 istek / dakika / IP`; `POST /api/auth/register` ve `POST /api/invitations/:token/accept` aynı `registration:<IP>` kovasını tüketir. Sınır, gövde ayrıştırılmadan ve parola hash'lenmeden önce uygulanır; iki endpoint arasında geçiş limit aşımını atlatmaz.
 - **Manuel Kota Yoklama (`manualPoll`):** `1 istek / 30 saniye / kullanıcı + credential` (`POST /api/refresh`).
 - **OAuth Cihaz Akışı Yoklama (`oauthDevicePoll`):** `30 istek / dakika / kullanıcı + flow`.
 - **Hata Yanıtı:** Limit aşıldığında HTTP `429 Too Many Requests` ve `Retry-After` başlığı döndürülür.
@@ -473,3 +474,7 @@ Genel kayıtların kapalı olduğu özel kurulumlarda güvenli kullanıcı katı
 6. **E-posta Gönderim Sınırı (No SMTP Boundary):**
    - useMeter bünyesinde hiçbir SMTP sunucusu veya giden e-posta iletim altyapısı bulunmaz.
    - Yönetici oluşturulan davet bağlantısını (`/invite/:token`) panodan kopyalar ve kullanıcıya harici güvenli yollarla iletir.
+7. **Sınırlı ve Ucuz Davet Kabulü:**
+   - Public kabul endpoint'i, genel kayıtla ortak `registration` hız sınırına tabidir; aşımda HTTP 429 ve `Retry-After` döner. Davet kabulü, kayıt kapatma ayarından bağımsızdır; hız sınırından bağımsız değildir.
+   - `AuthService.acceptInvitation`, token hash'iyle davetin varlığını, kabul/iptal durumunu ve süresini pahalı parola hashing'inden önce kontrol eder. Geçersiz, süresi dolmuş, iptal edilmiş veya tekrar kullanılan davetler aynı genel hatayla reddedilir.
+   - Ön kontrol yalnız maliyet optimizasyonudur. Parola hash'i üretildikten sonra `acceptInvitationAtomic` aynı geçerlilik koşullarını transaction içinde yeniden doğrular; arada iptal/expiry veya eşzamanlı kabul ikinci kullanıcı oluşturamaz.
