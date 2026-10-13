@@ -279,9 +279,9 @@ export interface PollerEngine {
   1. **Arka Plan Yoklayıcı Daemon:** Sunucu sürecinde 7/24 çalışır. `listAllCredentialsInternal()` çağırarak kayıtlı tüm kimlik bilgilerini sırayla ve jitter ile günceller.
   2. **Kullanıcı Tetiklemeli Manuel Yenileme (`POST /api/refresh`):** Yalnızca aktif oturum sahibi kullanıcının `ownerId` değerine ait kimlikleri yoklar. Bir kullanıcının diğer kullanıcıların hesaplarını yoklaması veya kotalarını tetiklemesi engellenir.
 - **Mekanizma:**
-  1. Base interval: `5 dakika`.
-  2. Her sağlayıcı/hesap için ±%25 rastgele gecikme (jitter) eklenir.
-  3. `SingleFlight` haritası ile aynı kimlik için eşzamanlı mükerrer istekler birleştirilir.
+  1. Base interval: `5 dakika`; başlangıçta da bir tam daemon yoklaması başlatılır.
+  2. Her genel daemon yoklamasında hesaplar sırayla işlenir ve her hesap öncesi `400–999 ms` rastgele gecikme uygulanır. Periyodik tetikleme devam eden yoklamayı kuyruğa almak yerine onunla birleşir; eşzamanlı genel tetiklemeler aynı yoklama raporlarını paylaşır.
+  3. Tekil hesap yoklamaları `SingleFlight` ile aynı kimlik için eşzamanlı mükerrer istekleri birleştirir. Genel yoklama kilidi hesap kilitlerinden bağımsızdır; kullanıcıya ait manuel yenilemeler kendi hesap kapsamını korur.
   4. **Yıkıcı Olmayan Hata Yönetimi ve Durum Makinesi (Non-destructive Stale State Machine):**
      Yoklama başarısız olduğunda sistem telemetriyi silmez; son başarılı durumu (`lastGood`) korur:
      - **İlk Başarılı Yoklama:** `health: "healthy"`, `stale: false`, `source: "live"`, `lastGoodFetchedAt: fetchedAt`, `limits: [...]`.
