@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import {
   getEmbeddedGoogleOAuthClientCredentials,
   getGoogleOAuthClientCredentials,
@@ -180,7 +181,7 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
         const isErrObj = typeof err === "object" && err !== null;
         const isConnReset = err instanceof Error && (err.message.includes("ECONNRESET") || (isErrObj && "code" in err && err.code === "ECONNRESET"));
         if (isConnReset && attempt === 0) {
-          await new Promise(res => setTimeout(res, 500));
+          await delay(500, undefined, { signal: ctx?.signal });
           ctx?.signal?.throwIfAborted();
           continue;
         }

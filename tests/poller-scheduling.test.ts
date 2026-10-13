@@ -109,7 +109,7 @@ describe("PollerEngine global sweep scheduling", () => {
       }
       return healthyReport(credential);
     }));
-    const poller = new PollerEngine(vault, registry, 50);
+    const poller = new PollerEngine(vault, registry, { intervalMs: 50 });
     let sweep: Promise<UsageReport[]> | undefined;
 
     try {
