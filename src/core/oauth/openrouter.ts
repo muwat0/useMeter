@@ -1,12 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { generatePKCE } from "./pkce";
-import { listenForOAuthCallback } from "./callback-server";
-
 const AUTHORIZE_URL = "https://openrouter.ai/auth";
 const KEY_EXCHANGE_URL = "https://openrouter.ai/api/v1/auth/keys";
 const KEY_INFO_URL = "https://openrouter.ai/api/v1/auth/key";
-const CALLBACK_PORT = 54549;
-const CALLBACK_PATH = "/callback";
-const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}${CALLBACK_PATH}`;
 
 export interface OpenRouterAuthInitiateResult {
   authUrl: string;
@@ -16,12 +12,12 @@ export interface OpenRouterAuthInitiateResult {
 
 export function initiateOpenRouterAuth(): OpenRouterAuthInitiateResult {
   const { verifier, challenge } = generatePKCE();
-  const sessionId = Math.random().toString(36).substring(2);
+  const sessionId = randomUUID();
 
   const params = new URLSearchParams({
-    callback_url: REDIRECT_URI,
     code_challenge: challenge,
     code_challenge_method: "S256",
+    key_label: "useMeter",
   });
 
   return {
@@ -31,18 +27,6 @@ export function initiateOpenRouterAuth(): OpenRouterAuthInitiateResult {
   };
 }
 
-export async function listenForOpenRouterCallback(
-  timeoutMs: number = 120_000,
-  signal?: AbortSignal,
-): Promise<string> {
-  return listenForOAuthCallback({
-    port: CALLBACK_PORT,
-    pathname: CALLBACK_PATH,
-    providerName: "OpenRouter",
-    timeoutMs,
-    signal,
-  });
-}
 
 export async function exchangeOpenRouterCode(
   code: string,

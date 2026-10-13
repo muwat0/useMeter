@@ -137,7 +137,7 @@ async function postManualCallback(
   sessionId: string,
   callbackInput: string,
 ) {
-  return app.request("/api/oauth/google/manual", {
+  return app.request("/api/oauth/manual", {
     method: "POST",
     headers: { Cookie: cookie, "Content-Type": "application/json" },
     body: JSON.stringify({ sessionId, callbackInput }),

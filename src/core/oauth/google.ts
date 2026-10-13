@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { generatePKCE } from "./pkce";
-import { listenForOAuthCallback } from "./callback-server";
+import { GOOGLE_EMBEDDED_REDIRECT_URI } from "./manual-callback";
 const LEGACY_CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 const LEGACY_CLIENT_SECRET = "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";
-const DEFAULT_LOCAL_REDIRECT_URI = "http://127.0.0.1:51121/oauth-callback";
+const DEFAULT_LOCAL_REDIRECT_URI = GOOGLE_EMBEDDED_REDIRECT_URI;
 const PUBLIC_CALLBACK_PATH = "/api/oauth/google/callback";
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -273,17 +273,3 @@ export async function exchangeGoogleCode(
   };
 }
 
-export async function listenForGoogleCallback(
-  expectedState: string,
-  timeoutMs: number = 120_000,
-  signal?: AbortSignal,
-): Promise<string> {
-  return listenForOAuthCallback({
-    port: 51121,
-    pathname: "/oauth-callback",
-    expectedState,
-    providerName: "Google",
-    timeoutMs,
-    signal,
-  });
-}

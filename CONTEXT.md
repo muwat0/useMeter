@@ -29,6 +29,13 @@ Kimliği doğrulanmış bir kullanıcının web paneline ve korumalı API'lere e
 - **Kalıcılık ve Güvenlik:** Veritabanında oturum belirtecinin açık hali ASLA saklanmaz; yalnızca SHA-256 hash özeti (`token_hash`) saklanır.
 - **Geçerlilik Süresi (TTL):** 30 gündür (2.592.000 saniye). Süresi dolan veya sonlandırılan (logout) oturumlar anında yetkisiz hale gelir.
 
+### Sağlayıcı Yetkilendirme Girişimi (Provider Authorization Attempt)
+Bir Uygulama Kullanıcısının belirli bir Sağlayıcı Hesabını bağlamak için başlattığı, kısa ömürlü ve tek kullanımlık yetkilendirme süreci.
+- Kullanıcının panel erişim Oturumu değildir; kalıcı Kimlik Bilgisi kaydı da değildir.
+- Tek bir Kullanıcıya ve Sağlayıcıya bağlıdır. Başarılı doğrulama sonunda Kimlik Bilgisi oluşturabilir veya aynı hesabın mevcut kimliğini güncelleyebilir; başarısız, iptal edilmiş veya süresi dolmuş girişim kalıcı hesap verisini değiştirmez.
+- **Manuel Tamamlama:** Sağlayıcının tarayıcıda döndürdüğü yetkilendirme yanıtının Kullanıcı tarafından kendi girişimine teslim edilmesi. Yanıt yalnız ilgili Kullanıcı/girişim bağında ve tek kez tüketilir; farklı bir kullanıcının girişimini tamamlayamaz.
+
+
 ### Kiracı Sınırı ve Mülkiyet İzolasyonu (Tenant Boundary & Ownership Isolation)
 Veritabanı satır düzeyinde uygulanan mülkiyet kuralı. Her kimlik bilgisi (`credential`) ve kullanım kaydı (`usage_snapshot`) bir `owner_id` yabancı anahtarına (foreign key) bağlanmak zorundadır. Kullanıcılar yalnızca kendi `ownerId` değerleriyle eşleşen kayıtları listeleyebilir, güncelleyebilir veya silebilir.
 

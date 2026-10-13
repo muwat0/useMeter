@@ -1,7 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { generatePKCE } from "./pkce";
-import { listenForOAuthCallback } from "./callback-server";
+import { CLAUDE_REDIRECT_URI } from "./manual-callback";
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const REDIRECT_URI = "http://localhost:54545/callback";
 const AUTH_URL = "https://claude.ai/oauth/authorize";
 const TOKEN_URL = "https://api.anthropic.com/v1/oauth/token";
 const SCOPES = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
@@ -10,6 +10,7 @@ export interface ClaudeAuthInitiateResult {
   authUrl: string;
   verifier: string;
   state: string;
+  redirectUri: string;
 }
 
 export interface ClaudeTokenResult {
@@ -20,12 +21,12 @@ export interface ClaudeTokenResult {
 
 export function initiateClaudeAuth(): ClaudeAuthInitiateResult {
   const pkce = generatePKCE();
-  const state = Math.random().toString(36).substring(2);
+  const state = randomUUID();
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
     response_type: "code",
-    redirect_uri: REDIRECT_URI,
+    redirect_uri: CLAUDE_REDIRECT_URI,
     scope: SCOPES,
     code_challenge: pkce.challenge,
     code_challenge_method: "S256",
@@ -36,6 +37,7 @@ export function initiateClaudeAuth(): ClaudeAuthInitiateResult {
     authUrl: `${AUTH_URL}?${params.toString()}`,
     verifier: pkce.verifier,
     state,
+    redirectUri: CLAUDE_REDIRECT_URI,
   };
 }
 
@@ -52,7 +54,7 @@ export async function exchangeClaudeCode(
       code,
       code_verifier: verifier,
       grant_type: "authorization_code",
-      redirect_uri: REDIRECT_URI,
+      redirect_uri: CLAUDE_REDIRECT_URI,
     }),
     signal,
   });
@@ -76,17 +78,3 @@ export async function exchangeClaudeCode(
   };
 }
 
-export async function listenForClaudeCallback(
-  expectedState: string,
-  timeoutMs: number = 120_000,
-  signal?: AbortSignal,
-): Promise<string> {
-  return listenForOAuthCallback({
-    port: 54545,
-    pathname: "/callback",
-    expectedState,
-    providerName: "Claude",
-    timeoutMs,
-    signal,
-  });
-}

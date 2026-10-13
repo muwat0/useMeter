@@ -103,13 +103,16 @@ const I18N: Record<string, Record<string, string>> = {
     oauthPollFailure: "Yetkilendirme durumu kontrol edilemedi",
     oauthNetworkFailure: "Bağlantı hatası",
     oauthTimeout: "Yetkilendirme isteği zaman aşımına uğradı",
-    googleManualInstructions: "Google yetkilendirmesinden sonra localhost sayfasının açılamaması barındırılan sunucularda beklenir. Hata sekmesinin adres çubuğundaki URL'nin tamamını kopyalayıp aşağıya yapıştırın.",
-    googleManualPlaceholder: "http://127.0.0.1:51121/oauth-callback?code=...&state=...",
-    googleManualLabel: "Tam callback URL'si",
-    googleManualSubmit: "Yetkilendirmeyi Tamamla",
-    googleManualSubmitting: "Tamamlanıyor...",
-    googleManualFailure: "Tam callback URL'si doğrulanamadı veya yetkilendirme tamamlanamadı. URL'nin tamamını kopyalayıp yeniden deneyin.",
-    googleManualNetworkFailure: "Callback gönderilemedi. Bağlantınızı kontrol edip yeniden deneyin.",
+    manualOAuthUrlInstructions: "{provider} yetkilendirmesinden sonra localhost sayfasının açılamaması barındırılan sunucularda beklenir. Hata sekmesinin adres çubuğundaki URL'nin tamamını kopyalayıp aşağıya yapıştırın.",
+    manualOAuthCodeInstructions: "{provider} yetkilendirmesini açılan sekmede tamamlayın, ardından gösterilen tek kullanımlık kodu kopyalayıp aşağıya yapıştırın.",
+    manualOAuthUrlPlaceholder: "Tam callback URL'sini buraya yapıştırın",
+    manualOAuthCodePlaceholder: "Tek kullanımlık yetkilendirme kodu",
+    manualOAuthUrlLabel: "Tam callback URL'si",
+    manualOAuthCodeLabel: "Tek kullanımlık kod",
+    manualOAuthSubmit: "Yetkilendirmeyi Tamamla",
+    manualOAuthSubmitting: "Tamamlanıyor...",
+    manualOAuthFailure: "Yetkilendirme girdisi doğrulanamadı veya tamamlanamadı. Kopyaladığınız değeri kontrol edip yeniden deneyin.",
+    manualOAuthNetworkFailure: "Yetkilendirme girdisi gönderilemedi. Bağlantınızı kontrol edip yeniden deneyin.",
     oauthSessionNotFound: "Yetkilendirme oturumu bulunamadı veya süresi doldu",
     oauthExpired: "Yetkilendirme süresi doldu. Yeniden başlayın.",
     oauthRetrying: "İstek hız sınırına ulaştı; {seconds} saniye sonra yeniden denenecek.",
@@ -176,13 +179,16 @@ const I18N: Record<string, Record<string, string>> = {
     oauthCapacity: "OAuth session capacity has been reached. Wait for an active session to close, then try again.",
     oauthNetworkFailure: "Network connection failed",
     oauthTimeout: "Authorization request timed out",
-    googleManualInstructions: "After Google authorization, the localhost page may fail to load on a hosted server; this is expected. Copy the entire URL from that tab's address bar and paste it below.",
-    googleManualPlaceholder: "http://127.0.0.1:51121/oauth-callback?code=...&state=...",
-    googleManualLabel: "Full callback URL",
-    googleManualSubmit: "Complete authorization",
-    googleManualSubmitting: "Completing...",
-    googleManualFailure: "The full callback URL could not be verified or authorization failed. Copy the entire URL and try again.",
-    googleManualNetworkFailure: "The callback could not be submitted. Check your connection and try again.",
+    manualOAuthUrlInstructions: "After {provider} authorization, the localhost page may fail to load on a hosted server; this is expected. Copy the entire URL from the error tab's address bar and paste it below.",
+    manualOAuthCodeInstructions: "Complete {provider} authorization in the opened tab, then copy the displayed one-time code and paste it below.",
+    manualOAuthUrlPlaceholder: "Paste the full callback URL here",
+    manualOAuthCodePlaceholder: "One-time authorization code",
+    manualOAuthUrlLabel: "Full callback URL",
+    manualOAuthCodeLabel: "One-time code",
+    manualOAuthSubmit: "Complete authorization",
+    manualOAuthSubmitting: "Completing...",
+    manualOAuthFailure: "The authorization input could not be verified or completed. Check the copied value and try again.",
+    manualOAuthNetworkFailure: "The authorization input could not be submitted. Check your connection and try again.",
     oauthRequestFailure: "Authorization request failed",
     oauthPollFailure: "Could not check authorization status",
     oauthSessionNotFound: "Authorization session was not found or has expired",
@@ -625,6 +631,8 @@ const OAUTH_PROVIDERS: { id: string; titleKey: string; descKey: string; handler:
   { id: 'cursor', titleKey: 'cursorTitle', descKey: 'cursorDesc', handler: 'cursor', svg: <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" className="text-cyan-400"><path d="M4 2l16 10-7.5 2-4.5 8L4 2z"/></svg> },
   { id: 'xai', titleKey: 'xaiTitle', descKey: 'xaiDesc', handler: 'xai-device', svg: <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" className="text-slate-100"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg> },
   { id: 'kimi', titleKey: 'kimiTitle', descKey: 'kimiDesc', handler: 'kimi-device', svg: <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" className="text-indigo-400"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 14.5v-3.2l3.4 3.2h2.6l-4.5-4.2 4.2-4.8h-2.5l-3.2 3.7V7.5H11v9h2z"/></svg> },
+  { id: 'gemini-cli', titleKey: 'geminiCliTitle', descKey: 'geminiCliDesc', handler: 'gemini-cli', svg: <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" className="text-blue-400"><path d="M12 3 2.5 8 12 13l9.5-5L12 3Z"/><path d="M5 10v6l7 4 7-4v-6M21.5 8v7"/></svg> },
+  { id: 'zai', titleKey: 'zaiTitle', descKey: 'zaiDesc', handler: 'zai', svg: <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" className="text-cyan-400"><path d="M4 6h16L4 18h16"/></svg> },
   { id: 'openrouter', titleKey: 'openrouterTitle', descKey: 'openrouterDesc', handler: 'openrouter', svg: <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" className="text-teal-400"><circle cx="12" cy="12" r="3"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="5" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 6.5l8 3M9 14.5l8 3M6.5 7v10M17.5 7v10"/></svg> },
   { id: 'devin', titleKey: 'devinTitle', descKey: 'devinDesc', handler: 'devin', svg: <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" className="text-emerald-300"><path d="M4 4h7v7H4V4zm9 0h7v7h-7V4zm-9 9h7v7H4v-7zm9 0h7v7h-7v-7z"/></svg> },
 ];
@@ -713,11 +721,14 @@ function Dashboard() {
   const [deviceAuthLink, setDeviceAuthLink] = useState('');
   const [browserAuthText, setBrowserAuthText] = useState('');
   const [browserAuthLink, setBrowserAuthLink] = useState('');
-  const [googleManualCallback, setGoogleManualCallback] = useState(false);
-  const [googleManualSessionId, setGoogleManualSessionId] = useState('');
-  const [googleCallbackInput, setGoogleCallbackInput] = useState('');
-  const [googleCallbackSubmitting, setGoogleCallbackSubmitting] = useState(false);
-  const [googleCallbackError, setGoogleCallbackError] = useState('');
+  const [manualOAuthCallback, setManualOAuthCallback] = useState(false);
+  const [manualOAuthInputType, setManualOAuthInputType] = useState<'url' | 'code' | null>(null);
+  const [manualOAuthProviderName, setManualOAuthProviderName] = useState('');
+  const [manualOAuthRedirectUri, setManualOAuthRedirectUri] = useState('');
+  const [manualOAuthSessionId, setManualOAuthSessionId] = useState('');
+  const [manualOAuthInput, setManualOAuthInput] = useState('');
+  const [manualOAuthSubmitting, setManualOAuthSubmitting] = useState(false);
+  const [manualOAuthError, setManualOAuthError] = useState('');
   const [copyBtnText, setCopyBtnText] = useState(() => t('copyCode', detectInitialLang()));
   const oauthSessionRef = useRef<string | null>(null);
   const oauthInitiateAbortRef = useRef<AbortController | null>(null);
@@ -1040,11 +1051,14 @@ function Dashboard() {
     setDeviceAuthLink('');
     setBrowserAuthText('');
     setBrowserAuthLink('');
-    setGoogleManualCallback(false);
-    setGoogleManualSessionId('');
-    setGoogleCallbackInput('');
-    setGoogleCallbackSubmitting(false);
-    setGoogleCallbackError('');
+    setManualOAuthCallback(false);
+    setManualOAuthInputType(null);
+    setManualOAuthProviderName('');
+    setManualOAuthRedirectUri('');
+    setManualOAuthSessionId('');
+    setManualOAuthInput('');
+    setManualOAuthSubmitting(false);
+    setManualOAuthError('');
   }
 
   function failOAuth(message: string, runId: number) {
@@ -1156,11 +1170,14 @@ function Dashboard() {
     setDeviceBadge('OAuth');
     setOauthFailed(false);
     setOauthNotice('');
-    setGoogleManualCallback(false);
-    setGoogleManualSessionId('');
-    setGoogleCallbackInput('');
-    setGoogleCallbackSubmitting(false);
-    setGoogleCallbackError('');
+    setManualOAuthCallback(false);
+    setManualOAuthInputType(null);
+    setManualOAuthProviderName('');
+    setManualOAuthRedirectUri('');
+    setManualOAuthSessionId('');
+    setManualOAuthInput('');
+    setManualOAuthSubmitting(false);
+    setManualOAuthError('');
 
     const initiateController = new AbortController();
     oauthInitiateAbortRef.current = initiateController;
@@ -1199,9 +1216,19 @@ function Dashboard() {
         failOAuth(t('oauthRequestFailure', lang), runId);
         return;
       }
-      const manualCallback = endpoint === 'google' && data['manualCallback'] === true;
-      setGoogleManualCallback(manualCallback);
-      setGoogleManualSessionId(manualCallback ? sessionId : '');
+      const manualCallback = data['manualCallback'] === true;
+      const manualInput = data['manualInput'] === 'url' || data['manualInput'] === 'code'
+        ? data['manualInput']
+        : null;
+      if (manualCallback && !manualInput) {
+        failOAuth(t('oauthRequestFailure', lang), runId);
+        return;
+      }
+      setManualOAuthCallback(manualCallback);
+      setManualOAuthInputType(manualCallback ? manualInput : null);
+      setManualOAuthRedirectUri(manualCallback && typeof data['redirectUri'] === 'string' ? data['redirectUri'] : '');
+      setManualOAuthSessionId(manualCallback ? sessionId : '');
+      setManualOAuthProviderName(manualCallback ? providerName : '');
       setBrowserAuthLink(authUrl);
       window.open(authUrl, '_blank');
       const expiresAt = oauthExpiry(data);
@@ -1290,15 +1317,24 @@ function Dashboard() {
     }
   }
 
-  async function submitGoogleManualCallback(event: FormEvent<HTMLFormElement>) {
+  async function submitManualOAuthCallback(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (googleCallbackSubmitting || !googleManualSessionId || !googleCallbackInput.trim()) return;
+    const sessionId = manualOAuthSessionId;
+    const callbackInput = manualOAuthInput;
+    if (
+      manualOAuthSubmitting
+      || !manualOAuthCallback
+      || !manualOAuthInputType
+      || !sessionId
+      || oauthSessionRef.current !== sessionId
+      || !callbackInput.trim()
+    ) return;
 
     const runId = oauthRunIdRef.current;
     const controller = new AbortController();
     let didTimeout = false;
-    setGoogleCallbackSubmitting(true);
-    setGoogleCallbackError('');
+    setManualOAuthSubmitting(true);
+    setManualOAuthError('');
     oauthAbortRef.current = controller;
     const timeout = window.setTimeout(() => {
       didTimeout = true;
@@ -1306,32 +1342,31 @@ function Dashboard() {
     }, OAUTH_REQUEST_TIMEOUT_MS);
 
     try {
-      const res = await fetch('/api/oauth/google/manual', {
+      const res = await fetch('/api/oauth/manual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sessionId: googleManualSessionId,
-          callbackInput: googleCallbackInput,
-        }),
+        body: JSON.stringify({ sessionId, callbackInput }),
         signal: controller.signal,
       });
       const json = await readOAuthJson(res);
-      if (runId !== oauthRunIdRef.current) return;
+      if (runId !== oauthRunIdRef.current || sessionId !== manualOAuthSessionId) return;
       if (!res.ok || !json || json['success'] !== true) {
-        setGoogleCallbackError(t('googleManualFailure', lang));
+        setManualOAuthError(t('manualOAuthFailure', lang));
         return;
       }
       finishOAuth(runId);
     } catch {
-      if (runId === oauthRunIdRef.current) {
-        setGoogleCallbackError(
-          t(didTimeout ? 'oauthTimeout' : 'googleManualNetworkFailure', lang),
+      if (runId === oauthRunIdRef.current && sessionId === manualOAuthSessionId) {
+        setManualOAuthError(
+          t(didTimeout ? 'oauthTimeout' : 'manualOAuthNetworkFailure', lang),
         );
       }
     } finally {
       window.clearTimeout(timeout);
       if (oauthAbortRef.current === controller) oauthAbortRef.current = null;
-      if (runId === oauthRunIdRef.current) setGoogleCallbackSubmitting(false);
+      if (runId === oauthRunIdRef.current && sessionId === manualOAuthSessionId) {
+        setManualOAuthSubmitting(false);
+      }
     }
   }
 
@@ -1515,10 +1550,12 @@ function Dashboard() {
   }
 
   function handleOAuthProviderClick(handler: string) {
-    if (handler === 'google') startBrowserOAuth('google', 'Google Antigravity');
-    else if (handler === 'claude') startBrowserOAuth('claude', 'Anthropic Claude');
+    if (handler === 'google') startBrowserOAuth('google', t('googleTitle', lang));
+    else if (handler === 'claude') startBrowserOAuth('claude', t('claudeTitle', lang));
+    else if (handler === 'gemini-cli') startBrowserOAuth('gemini-cli', t('geminiCliTitle', lang));
+    else if (handler === 'zai') startBrowserOAuth('zai', t('zaiTitle', lang));
     else if (handler === 'cursor') startOAuthPoll('cursor', 'Cursor', 'cursor', ['uuid', 'verifier'], 'browser');
-    else if (handler === 'openrouter') startBrowserOAuth('openrouter', 'OpenRouter');
+    else if (handler === 'openrouter') startBrowserOAuth('openrouter', t('openrouterTitle', lang));
     else if (handler === 'devin') {
       cancelOAuth();
       setManualProvider('devin');
@@ -1832,32 +1869,39 @@ function Dashboard() {
                       {!oauthFailed && <div className="w-4 h-4 border-2 border-appAccent border-t-transparent rounded-full animate-spin shrink-0" />}
                       <span className="text-xs font-semibold text-appText">{oauthFailed ? t('oauthFailed', lang) : browserAuthText}</span>
                     </div>
-                    {googleManualCallback ? (
+                    {manualOAuthCallback && manualOAuthInputType ? (
                       <>
-                        <p className="text-xs text-appTextMuted leading-relaxed">{t('googleManualInstructions', lang)}</p>
-                        <form onSubmit={submitGoogleManualCallback} className="space-y-2.5">
-                          <label htmlFor="googleManualCallbackInput" className="block text-xs font-semibold text-appTextMuted">{t('googleManualLabel', lang)}</label>
+                        <p className="text-xs text-appTextMuted leading-relaxed">
+                          {t(manualOAuthInputType === 'url' ? 'manualOAuthUrlInstructions' : 'manualOAuthCodeInstructions', lang)
+                            .replace('{provider}', manualOAuthProviderName)}
+                        </p>
+                        <form onSubmit={submitManualOAuthCallback} className="space-y-2.5">
+                          <label htmlFor="manualOAuthInput" className="block text-xs font-semibold text-appTextMuted">
+                            {manualOAuthProviderName} · {t(manualOAuthInputType === 'url' ? 'manualOAuthUrlLabel' : 'manualOAuthCodeLabel', lang)}
+                          </label>
                           <textarea
-                            id="googleManualCallbackInput"
-                            value={googleCallbackInput}
+                            id="manualOAuthInput"
+                            value={manualOAuthInput}
                             onChange={e => {
-                              setGoogleCallbackInput(e.target.value);
-                              setGoogleCallbackError('');
+                              setManualOAuthInput(e.target.value);
+                              setManualOAuthError('');
                             }}
-                            placeholder={t('googleManualPlaceholder', lang)}
+                            placeholder={manualOAuthInputType === 'url'
+                              ? manualOAuthRedirectUri || t('manualOAuthUrlPlaceholder', lang)
+                              : t('manualOAuthCodePlaceholder', lang)}
                             autoComplete="off"
                             spellCheck={false}
                             rows={2}
                             required
                             className="w-full resize-y bg-appSurface border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none"
                           />
-                          {googleCallbackError && <div role="alert" className="text-xs text-rose-400">{googleCallbackError}</div>}
+                          {manualOAuthError && <div role="alert" className="text-xs text-rose-400">{manualOAuthError}</div>}
                           <button
                             type="submit"
-                            disabled={googleCallbackSubmitting || !googleCallbackInput.trim()}
+                            disabled={manualOAuthSubmitting || !manualOAuthInput.trim()}
                             className="w-full rounded-lg bg-appAccent px-3 py-2 text-xs font-semibold text-white disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            {googleCallbackSubmitting ? t('googleManualSubmitting', lang) : t('googleManualSubmit', lang)}
+                            {manualOAuthSubmitting ? t('manualOAuthSubmitting', lang) : t('manualOAuthSubmit', lang)}
                           </button>
                         </form>
                       </>

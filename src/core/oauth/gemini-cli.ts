@@ -1,4 +1,5 @@
-import { listenForOAuthCallback } from "./callback-server";
+import { randomUUID } from "node:crypto";
+import { GEMINI_CLI_REDIRECT_URI } from "./manual-callback";
 
 const CLIENT_ID = Buffer.from(
   "NjgxMjU1ODA5Mzk1LW9vOGZ0Mm9wcmRybnA5ZTNhcWY2YXYzaG1kaWIxMzVqLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29t",
@@ -9,9 +10,7 @@ const CLIENT_SECRET = Buffer.from(
   "base64"
 ).toString("utf-8");
 
-const CALLBACK_PORT = 8085;
-const CALLBACK_PATH = "/oauth2callback";
-const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}${CALLBACK_PATH}`;
+const REDIRECT_URI = GEMINI_CLI_REDIRECT_URI;
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const CODE_ASSIST_ENDPOINT = "https://cloudcode-pa.googleapis.com";
@@ -24,6 +23,7 @@ const SCOPES = [
 export interface GeminiCliAuthInitiateResult {
   authUrl: string;
   state: string;
+  redirectUri: string;
 }
 
 export interface GeminiCliTokenResult {
@@ -34,7 +34,7 @@ export interface GeminiCliTokenResult {
 }
 
 export function initiateGeminiCliAuth(): GeminiCliAuthInitiateResult {
-  const state = Math.random().toString(36).substring(2);
+  const state = randomUUID();
 
   const params = new URLSearchParams({
     client_id: CLIENT_ID,
@@ -49,22 +49,8 @@ export function initiateGeminiCliAuth(): GeminiCliAuthInitiateResult {
   return {
     authUrl: `${AUTH_URL}?${params.toString()}`,
     state,
+    redirectUri: REDIRECT_URI,
   };
-}
-
-export async function listenForGeminiCliCallback(
-  expectedState: string,
-  timeoutMs: number = 120_000,
-  signal?: AbortSignal,
-): Promise<string> {
-  return listenForOAuthCallback({
-    port: CALLBACK_PORT,
-    pathname: CALLBACK_PATH,
-    expectedState,
-    providerName: "Gemini CLI",
-    timeoutMs,
-    signal,
-  });
 }
 
 export async function exchangeGeminiCliCode(code: string, signal?: AbortSignal): Promise<GeminiCliTokenResult> {

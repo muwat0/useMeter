@@ -162,6 +162,23 @@ sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml up -d --no-build -
 
 The deployment is live on `production-server`. Keep the production `.env` file and the named Docker volume outside Git. Do not replace the `my_webapp` application; it is unrelated static/PHP hosting. Updates should be performed by fetching a reviewed release, rebuilding the image, and restarting the Compose service while preserving the named volume.
 
+## Hosted manual OAuth callbacks
+
+Claude, Gemini CLI, and Z.ai retain their embedded clients' registered local redirect URIs, but useMeter does not open a callback listener on the remote server. After authorization, paste the final full redirect URL into the provider's manual form. The shared authenticated endpoint is `POST /api/oauth/manual`; session ownership and the stored provider select the exchange, not fields supplied by the browser.
+
+| Flow | Input |
+| --- | --- |
+| Claude | `http://localhost:54545/callback?code=...&state=...`; `code#state` is also accepted. |
+| Gemini CLI | `http://127.0.0.1:8085/oauth2callback?code=...&state=...` |
+| Z.ai | `http://127.0.0.1:9999/callback?code=...&state=...` |
+| OpenRouter | The opaque, single-use code displayed on the authorization page. |
+
+All URL inputs must match the stored attempt's exact registered URI and state. The server never fetches the pasted address. Invalid inputs do not consume a valid attempt; valid inputs are claimed before exchange, and cancellation/expiry is checked before credential persistence. This avoids same-port interference between users without changing any upstream redirect whitelist.
+
+OpenRouter uses its [official headless PKCE flow](https://openrouter.ai/docs/guides/overview/auth/oauth): `callback_url` is omitted, S256 is required, and the code expires after ten minutes. Headless mode does not return state; the owned session and stored PKCE verifier bind the code exchange. Pasted code is opaque rather than restricted to an invented alphabet.
+
+These hosted paths are exercised with synthetic accounts and injected upstream responses. Actual provider account eligibility, consent, and quota availability still require that account's verification; no fabricated quota or automatic login claim is made.
+
 ## Google OAuth in Docker
 
 Hosted useMeter can authenticate with the embedded desktop-client credentials when no `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` pair is configured. This mode always requests Google's registered loopback URI:
@@ -170,7 +187,7 @@ Hosted useMeter can authenticate with the embedded desktop-client credentials wh
 http://127.0.0.1:51121/oauth-callback
 ```
 
-Google redirects the browser to that address after authorization. In a hosted deployment, the browser's `127.0.0.1` is the user's device, not the useMeter server; a localhost connection failure is expected. Copy the **entire URL** from that tab's address bar and paste it into the Google callback field in useMeter. The dashboard submits it to the authenticated `POST /api/oauth/google/manual` endpoint. The server validates the exact loopback origin/path, state, session owner, and 10-minute expiry, then exchanges the code without fetching the pasted URL. A previously configured public `GOOGLE_OAUTH_REDIRECT_URI` with no client credentials does not block this embedded manual-paste mode in production.
+Google redirects the browser to that address after authorization. In a hosted deployment, the browser's `127.0.0.1` is the user's device, not the useMeter server; a localhost connection failure is expected. Copy the **entire URL** from that tab's address bar and paste it into the manual callback field in useMeter. The dashboard submits `{ sessionId, callbackInput }` to the authenticated `POST /api/oauth/manual` endpoint. The server validates the exact loopback origin/path, state, session owner, and 10-minute expiry, then exchanges the code without fetching the pasted URL. A previously configured public `GOOGLE_OAUTH_REDIRECT_URI` with no client credentials does not block this embedded manual-paste mode in production. The former provider-specific manual endpoint has been removed, not retained as an alias.
 
 For an automatic public HTTPS callback instead, create and manage an OAuth 2.0 Web Client:
 
