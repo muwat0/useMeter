@@ -118,9 +118,15 @@ export async function pollKimiDeviceAuth(deviceCode: string, deviceId: string, s
   };
 }
 
-export async function refreshKimiToken(refreshToken: string, deviceId?: string): Promise<{ accessToken: string; refreshToken: string }> {
+export async function refreshKimiToken(
+  refreshToken: string,
+  deviceId?: string,
+  context: { fetch?: typeof fetch; signal?: AbortSignal } = {},
+): Promise<{ accessToken: string; refreshToken: string }> {
   const did = deviceId || crypto.randomUUID().replace(/-/g, "");
-  const res = await fetch(`${DEFAULT_OAUTH_HOST}/api/oauth/token`, {
+  const fetchImpl = context.fetch ?? fetch;
+  context.signal?.throwIfAborted();
+  const res = await fetchImpl(`${DEFAULT_OAUTH_HOST}/api/oauth/token`, {
     method: "POST",
     headers: getKimiHeaders(did),
     body: new URLSearchParams({
@@ -128,7 +134,9 @@ export async function refreshKimiToken(refreshToken: string, deviceId?: string):
       refresh_token: refreshToken,
       client_id: CLIENT_ID,
     }).toString(),
+    signal: context.signal,
   });
+  context.signal?.throwIfAborted();
 
   if (!res.ok) {
     throw new Error(`Kimi token refresh failed: HTTP ${res.status}`);
@@ -138,6 +146,7 @@ export async function refreshKimiToken(refreshToken: string, deviceId?: string):
     access_token?: string;
     refresh_token?: string;
   };
+  context.signal?.throwIfAborted();
 
   if (!data.access_token) {
     throw new Error("Kimi refreshed access token missing.");

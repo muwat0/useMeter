@@ -41,15 +41,21 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
     return p === "antigravity" || p === "google-antigravity" || p === "google" || p === "gemini";
   }
 
-  async refreshAccessToken(refreshToken: string, fetchImpl: typeof fetch = fetch): Promise<string> {
-    return this.#refreshAccessToken(refreshToken, getGoogleOAuthClientCredentials(), fetchImpl);
+  async refreshAccessToken(
+    refreshToken: string,
+    fetchImpl: typeof fetch = fetch,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return this.#refreshAccessToken(refreshToken, getGoogleOAuthClientCredentials(), fetchImpl, signal);
   }
 
   async #refreshAccessToken(
     refreshToken: string,
     client: GoogleOAuthClientCredentials,
     fetchImpl: typeof fetch,
+    signal?: AbortSignal,
   ): Promise<string> {
+    signal?.throwIfAborted();
     const res = await fetchImpl("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -59,13 +65,16 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
         refresh_token: refreshToken,
         grant_type: "refresh_token",
       }).toString(),
+      signal,
     });
+    signal?.throwIfAborted();
 
     if (!res.ok) {
       throw new Error(`Google token yenileme başarısız: HTTP ${res.status}`);
     }
 
     const json = (await res.json()) as { access_token?: string };
+    signal?.throwIfAborted();
     if (!json.access_token) {
       throw new Error("Yenilenen access_token alınamadı.");
     }
@@ -73,6 +82,7 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
   }
 
   async fetchUsage(credential: StoredCredential, ctx?: FetchContext): Promise<UsageReport> {
+    ctx?.signal?.throwIfAborted();
     const fetchImpl = ctx?.fetch ?? fetch;
     const now = Date.now();
     let accessToken = credential.secret;
@@ -99,17 +109,20 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
         } else {
           client = getEmbeddedGoogleOAuthClientCredentials();
         }
-        accessToken = await this.#refreshAccessToken(refreshToken, client, fetchImpl);
+        accessToken = await this.#refreshAccessToken(refreshToken, client, fetchImpl, ctx?.signal);
+        ctx?.signal?.throwIfAborted();
         credential.secret = accessToken;
         if (ctx?.onTokenRefresh) {
           ctx.onTokenRefresh(accessToken);
         }
       } catch (err) {
+        if (ctx?.signal?.aborted) throw err;
         if (process.env["DEBUG"] === "true") {
           console.warn("[GoogleAntigravity] Token refresh fallback to current secret:", err);
         }
       }
     }
+    ctx?.signal?.throwIfAborted();
 
     // 2. Discover project
     let projectId = (credential.metadata?.["projectId"] as string | undefined) || "aicode-consumers";
@@ -131,7 +144,10 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
           projectId = loadJson.cloudaicompanionProject;
         }
       }
-    } catch {}
+    } catch (err) {
+      if (ctx?.signal?.aborted) throw err;
+    }
+    ctx?.signal?.throwIfAborted();
 
     // 3. Quota source: v1internal:retrieveUserQuotaSummary (with retry on
     // ECONNRESET). This endpoint is the exact source backing the `agy` CLI
@@ -150,6 +166,7 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
 
     let response: Response | undefined;
     for (let attempt = 0; attempt < 2; attempt++) {
+      ctx?.signal?.throwIfAborted();
       try {
         response = await fetchImpl(`${DEFAULT_ENDPOINT}/v1internal:retrieveUserQuotaSummary`, {
           method: "POST",
@@ -159,10 +176,12 @@ export class GoogleAntigravityAdapter implements ProviderAdapter {
         });
         break;
       } catch (err: unknown) {
+        if (ctx?.signal?.aborted) throw err;
         const isErrObj = typeof err === "object" && err !== null;
         const isConnReset = err instanceof Error && (err.message.includes("ECONNRESET") || (isErrObj && "code" in err && err.code === "ECONNRESET"));
         if (isConnReset && attempt === 0) {
           await new Promise(res => setTimeout(res, 500));
+          ctx?.signal?.throwIfAborted();
           continue;
         }
         throw err;
