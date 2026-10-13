@@ -38,6 +38,14 @@ export interface CredentialValidationContext {
   accountLabelMode?: "input" | "provider";
 }
 
+interface ProviderAttempt {
+  signal: AbortSignal;
+  isActive(): boolean;
+  throwIfInactive(): void;
+  commit<T>(operation: () => T): T;
+}
+
+
 export class PollerEngine {
   readonly #vault: StorageVault;
   readonly #registry: ProviderRegistry;
@@ -73,6 +81,94 @@ export class PollerEngine {
     this.#credentialEpochs.set(credentialId, next);
     this.#inFlight.delete(credentialId);
     return next;
+  }
+
+  async #runWithDeadline<T>(
+    externalSignal: AbortSignal | undefined,
+    operation: (attempt: ProviderAttempt) => Promise<T> | T,
+  ): Promise<T> {
+    externalSignal?.throwIfAborted();
+    const controller = new AbortController();
+    const deadline = performance.now() + this.#pollTimeoutMs;
+    let active = true;
+    let timedOut = false;
+    let inactiveReason: unknown;
+    let timeoutError: Error | undefined;
+    let timeoutTimer: Timer | undefined;
+    let rejectCancellation!: (reason: unknown) => void;
+    const cancellation = new Promise<never>((_resolve, reject) => {
+      rejectCancellation = reject;
+    });
+    const getTimeoutError = (): Error => timeoutError ??= new Error(`Provider poll timeout after ${this.#pollTimeoutMs} ms`);
+    const deactivate = (reason: unknown, isTimeout: boolean): void => {
+      if (!active) return;
+      active = false;
+      timedOut = isTimeout;
+      inactiveReason = reason;
+      controller.abort(reason);
+      rejectCancellation(reason);
+    };
+    const isActive = (): boolean => {
+      if (!active) return false;
+      if (externalSignal?.aborted) {
+        deactivate(externalSignal.reason, false);
+        return false;
+      }
+      if (performance.now() >= deadline) {
+        deactivate(getTimeoutError(), true);
+        return false;
+      }
+      return true;
+    };
+    const throwIfInactive = (): void => {
+      if (isActive()) return;
+      if (timedOut) throw getTimeoutError();
+      if (externalSignal?.aborted) externalSignal.throwIfAborted();
+      throw inactiveReason;
+    };
+    const onExternalAbort = (): void => {
+      deactivate(externalSignal?.reason, false);
+    };
+    if (externalSignal) {
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+      if (externalSignal.aborted) onExternalAbort();
+    }
+    if (active) {
+      timeoutTimer = setTimeout(() => deactivate(getTimeoutError(), true), this.#pollTimeoutMs);
+    }
+
+    let committed = false;
+    const commit = <T>(operation: () => T): T => {
+      throwIfInactive();
+      committed = true;
+      active = false;
+      clearTimeout(timeoutTimer);
+      externalSignal?.removeEventListener("abort", onExternalAbort);
+      return operation();
+    };
+    const attempt: ProviderAttempt = {
+      signal: controller.signal,
+      isActive,
+      throwIfInactive,
+      commit,
+    };
+    const work = Promise.resolve().then(() => {
+      attempt.throwIfInactive();
+      return operation(attempt);
+    });
+
+    try {
+      const result = await Promise.race([work, cancellation]);
+      if (!committed) attempt.throwIfInactive();
+      return result;
+    } catch (error) {
+      if (active && !isActive()) attempt.throwIfInactive();
+      throw error;
+    } finally {
+      active = false;
+      clearTimeout(timeoutTimer);
+      externalSignal?.removeEventListener("abort", onExternalAbort);
+    }
   }
 
 
@@ -136,66 +232,73 @@ export class PollerEngine {
     const useProviderAccountLabel =
       metadataMode === "preserve" && context.accountLabelMode === "provider";
     let discoveredAccountLabel: string | undefined;
-    const fetched = await adapter.fetchUsage(candidate, {
-      signal: context.signal,
-      onTokenRefresh: (newSecret, metadataUpdates, newAccountLabel) => {
-        candidate.secret = newSecret;
-        if (metadataUpdates) {
-          candidate.metadata = mergeDefinedMetadata(candidate.metadata, metadataUpdates);
-        }
-        if (useProviderAccountLabel && newAccountLabel?.trim()) {
-          discoveredAccountLabel = newAccountLabel.trim();
-          candidate.accountLabel = discoveredAccountLabel;
-        }
-      },
-    });
-    context.signal?.throwIfAborted();
-    if (fetched.error) throw new Error(fetched.error);
 
-    const fetchedAccountLabel = typeof fetched.accountLabel === "string"
-      ? fetched.accountLabel.trim()
-      : "";
-    const accountLabel = useProviderAccountLabel
-      ? discoveredAccountLabel ?? (fetchedAccountLabel || candidate.accountLabel)
-      : input.accountLabel;
-    const existingForAccountLabel = existingCredentials.find(
-      credential => credential.accountLabel === accountLabel,
-    );
-    const currentExisting = existingForAccountLabel
-      ? this.#vault.getCredential(ownerId, existingForAccountLabel.id)
-      : undefined;
-    if (existingForAccountLabel && (
-      !currentExisting ||
-      currentExisting.ownerId !== ownerId ||
-      currentExisting.provider !== input.provider.toLowerCase() ||
-      currentExisting.accountLabel !== accountLabel
-    )) {
-      throw new Error("Credential changed while validation was in progress");
-    }
-    if (!existingForAccountLabel &&
-      this.#vault.listCredentials(ownerId, input.provider).some(credential => credential.accountLabel === accountLabel)
-    ) {
-      throw new Error("Credential changed while validation was in progress");
-    }
+    return this.#runWithDeadline(context.signal, async attempt => {
+      const fetched = await adapter.fetchUsage(candidate, {
+        signal: attempt.signal,
+        onTokenRefresh: (newSecret, metadataUpdates, newAccountLabel) => {
+          if (!attempt.isActive()) return;
+          candidate.secret = newSecret;
+          if (metadataUpdates) {
+            candidate.metadata = mergeDefinedMetadata(candidate.metadata, metadataUpdates);
+          }
+          if (useProviderAccountLabel && newAccountLabel?.trim()) {
+            discoveredAccountLabel = newAccountLabel.trim();
+            candidate.accountLabel = discoveredAccountLabel;
+          }
+        },
+      });
+      context.signal?.throwIfAborted();
+      attempt.throwIfInactive();
+      if (fetched.error) throw new Error(fetched.error);
 
-    const finalMetadata = metadataMode === "replace"
-      ? candidate.metadata
-      : mergeDefinedMetadata(currentExisting?.metadata, candidate.metadata);
-    if (context.beforeCommit && !context.beforeCommit()) {
-      throw new Error("Credential validation was canceled or expired");
-    }
-    context.signal?.throwIfAborted();
-    const saved = this.#vault.saveCredential(ownerId, {
-      ...input,
-      ownerId,
-      accountLabel,
-      accent: input.accent ?? currentExisting?.accent,
-      secret: candidate.secret,
-      metadata: finalMetadata,
+      const fetchedAccountLabel = typeof fetched.accountLabel === "string"
+        ? fetched.accountLabel.trim()
+        : "";
+      const accountLabel = useProviderAccountLabel
+        ? discoveredAccountLabel ?? (fetchedAccountLabel || candidate.accountLabel)
+        : input.accountLabel;
+      const existingForAccountLabel = existingCredentials.find(
+        credential => credential.accountLabel === accountLabel,
+      );
+      const currentExisting = existingForAccountLabel
+        ? this.#vault.getCredential(ownerId, existingForAccountLabel.id)
+        : undefined;
+      if (existingForAccountLabel && (
+        !currentExisting ||
+        currentExisting.ownerId !== ownerId ||
+        currentExisting.provider !== input.provider.toLowerCase() ||
+        currentExisting.accountLabel !== accountLabel
+      )) {
+        throw new Error("Credential changed while validation was in progress");
+      }
+      if (!existingForAccountLabel &&
+        this.#vault.listCredentials(ownerId, input.provider).some(credential => credential.accountLabel === accountLabel)
+      ) {
+        throw new Error("Credential changed while validation was in progress");
+      }
+
+      const finalMetadata = metadataMode === "replace"
+        ? candidate.metadata
+        : mergeDefinedMetadata(currentExisting?.metadata, candidate.metadata);
+      if (context.beforeCommit && !context.beforeCommit()) {
+        throw new Error("Credential validation was canceled or expired");
+      }
+      context.signal?.throwIfAborted();
+      return attempt.commit(() => {
+        const saved = this.#vault.saveCredential(ownerId, {
+          ...input,
+          ownerId,
+          accountLabel,
+          accent: input.accent ?? currentExisting?.accent,
+          secret: candidate.secret,
+          metadata: finalMetadata,
+        });
+        this.#bumpEpoch(saved.id);
+        this.#saveSuccessfulReport(saved, fetched, false);
+        return saved;
+      });
     });
-    this.#bumpEpoch(saved.id);
-    this.#saveSuccessfulReport(saved, fetched, false);
-    return saved;
   }
 
   async pollUser(ownerId: string): Promise<UsageReport[]> {
@@ -223,65 +326,42 @@ export class PollerEngine {
 
     let promise!: Promise<UsageReport | null>;
     promise = Promise.resolve().then(async () => {
-      const controller = new AbortController();
-      const deadline = performance.now() + this.#pollTimeoutMs;
-      let timedOut = false;
-      let timeoutError: Error | undefined;
-      let timeoutTimer!: Timer;
-
-      const abortForTimeout = (): Error => {
-        const error = timeoutError ??= new Error(`Provider poll timeout after ${this.#pollTimeoutMs} ms`);
-        if (!timedOut) {
-          timedOut = true;
-          controller.abort(error);
-        }
-        return error;
-      };
-      const isPastDeadline = (): boolean => {
-        if (timedOut) return true;
-        if (performance.now() < deadline) return false;
-        abortForTimeout();
-        return true;
-      };
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutTimer = setTimeout(() => reject(abortForTimeout()), this.#pollTimeoutMs);
-      });
-      const ctx = {
-        signal: controller.signal,
-        onTokenRefresh: (newSecret: string, metadataUpdates?: Record<string, unknown>, newAccountLabel?: string) => {
-          if (this.#getEpoch(cred.id) !== epoch || controller.signal.aborted || isPastDeadline()) {
-            return;
-          }
-          this.#vault.updateCredentialTokens(cred.ownerId!, cred.id, newSecret, metadataUpdates);
-          if (newAccountLabel && newAccountLabel !== cred.accountLabel) {
-            if (this.#getEpoch(cred.id) !== epoch || controller.signal.aborted || isPastDeadline()) {
-              return;
-            }
-            this.#vault.updateCredentialLabel(cred.ownerId!, cred.id, newAccountLabel);
-            cred.accountLabel = newAccountLabel;
-          }
-        },
-      };
-
       try {
-        const providerPromise = Promise.resolve().then(() => {
-          if (isPastDeadline()) throw abortForTimeout();
-          return adapter.fetchUsage(cred, ctx);
+        return await this.#runWithDeadline(undefined, async attempt => {
+          const ctx = {
+            signal: attempt.signal,
+            onTokenRefresh: (
+              newSecret: string,
+              metadataUpdates?: Record<string, unknown>,
+              newAccountLabel?: string,
+            ) => {
+              if (this.#getEpoch(cred.id) !== epoch || !attempt.isActive()) {
+                return;
+              }
+              this.#vault.updateCredentialTokens(cred.ownerId!, cred.id, newSecret, metadataUpdates);
+              if (newAccountLabel && newAccountLabel !== cred.accountLabel) {
+                if (this.#getEpoch(cred.id) !== epoch || !attempt.isActive()) {
+                  return;
+                }
+                this.#vault.updateCredentialLabel(cred.ownerId!, cred.id, newAccountLabel);
+                cred.accountLabel = newAccountLabel;
+              }
+            },
+          };
+          const fetched = await adapter.fetchUsage(cred, ctx);
+          attempt.throwIfInactive();
+          if (this.#getEpoch(cred.id) !== epoch) {
+            return null;
+          }
+          if (fetched.error) {
+            throw new Error(fetched.error);
+          }
+          if (this.#getEpoch(cred.id) !== epoch) {
+            return null;
+          }
+          return attempt.commit(() => this.#saveSuccessfulReport(cred, fetched, daemon));
         });
-        const fetched = await Promise.race([providerPromise, timeoutPromise]);
-        if (this.#getEpoch(cred.id) !== epoch) {
-          return null;
-        }
-        if (fetched.error) {
-          throw new Error(fetched.error);
-        }
-        if (this.#getEpoch(cred.id) !== epoch) {
-          return null;
-        }
-        if (isPastDeadline()) throw abortForTimeout();
-        return this.#saveSuccessfulReport(cred, fetched, daemon);
       } catch (error) {
-        if (isPastDeadline()) error = abortForTimeout();
         if (this.#getEpoch(cred.id) !== epoch) {
           return null;
         }
@@ -321,7 +401,6 @@ export class PollerEngine {
         else this.#vault.saveUsageSnapshot(cred.ownerId!, fallbackReport);
         return fallbackReport;
       } finally {
-        clearTimeout(timeoutTimer);
         if (this.#inFlight.get(cred.id) === promise) {
           this.#inFlight.delete(cred.id);
         }
@@ -331,6 +410,7 @@ export class PollerEngine {
     this.#inFlight.set(cred.id, promise);
     return promise;
   }
+
 
   #saveSuccessfulReport(credential: StoredCredential, fetched: UsageReport, daemon: boolean): UsageReport {
     const fetchedAt = fetched.fetchedAt ?? Date.now();

@@ -182,4 +182,118 @@ describe("bounded OAuth sessions", () => {
     expect(store.cancel(replacement.sessionId, "owner")).toBe(true);
     expect(store.cancel(first.sessionId, "owner")).toBe(true);
   });
+
+  it("admits one current claimed session through expiry until synchronous completion", () => {
+    let now = 1_000;
+    const store = new OAuthSessionStore<SessionData>({
+      now: () => now,
+      pendingTtlMs: 100,
+      terminalTtlMs: 60_000,
+    });
+    const reservation = store.reserve("owner-a", "copilot", {});
+    expect(store.admitCommit(reservation)).toBe(false);
+    expect(store.cancel(reservation.sessionId, "owner-a")).toBe(true);
+    const session = activate(store, "owner-a", "copilot", "commit-session", "provider-binding");
+    const staleSession = { ...session };
+    const foreignSession = { ...session, ownerId: "owner-b" };
+    expect(store.admitCommit(foreignSession)).toBe(false);
+
+    expect(store.admitCommit(session)).toBe(false);
+    expect(store.admitCommit(staleSession)).toBe(false);
+    expect(store.claim(session)).toBe(true);
+    expect(store.admitCommit(staleSession)).toBe(false);
+    expect(store.admitCommit(session)).toBe(true);
+    expect(store.admitCommit(session)).toBe(false);
+    expect(store.claimDevice("copilot", "provider-binding", "owner-a")).toEqual({ status: "busy" });
+    expect(store.releaseClaim(session)).toBe(false);
+    expect(store.cancel(session.sessionId, "owner-b")).toBe(false);
+    expect(store.cancel(session.sessionId, "owner-a")).toBe(false);
+    expect(session.signal.aborted).toBe(false);
+
+    now = session.expiresAt;
+    expect(store.sweepExpired()).toBe(0);
+    expect(store.isActive(session)).toBe(true);
+    expect(session.status).toBe("pending");
+    expect(store.complete(session, "Synthetic account")).toBe(true);
+    expect(session.status).toBe("complete");
+    expect(session.terminalExpiresAt).toBe(now + 60_000);
+  });
+
+  it("rejects expired and canceled sessions before commit admission", () => {
+    let now = 2_000;
+    const store = new OAuthSessionStore<SessionData>({
+      now: () => now,
+      pendingTtlMs: 100,
+    });
+    const expired = activate(store, "owner", "google", "expired-before-commit");
+    expect(store.claim(expired)).toBe(true);
+    now = expired.expiresAt;
+    expect(store.admitCommit(expired)).toBe(false);
+    expect(expired.status).toBe("error");
+    expect(expired.signal.aborted).toBe(true);
+
+    const canceled = activate(store, "owner", "google", "canceled-before-commit");
+    expect(store.claim(canceled)).toBe(true);
+    expect(store.cancel(canceled.sessionId, "owner")).toBe(true);
+    expect(store.admitCommit(canceled)).toBe(false);
+    expect(canceled.signal.aborted).toBe(true);
+  });
+
+  it("clears admitted commit state on failure and schedules only terminal retention", () => {
+    vi.useFakeTimers();
+    let now = 3_000;
+    const ended: string[] = [];
+    try {
+      const store = new OAuthSessionStore<SessionData>({
+        now: () => now,
+        maxPerOwner: 1,
+        maxEntries: 1,
+        pendingTtlMs: 100,
+        terminalTtlMs: 60,
+        onEnd: (session, reason) => {
+          ended.push(reason);
+          session.data.verifier = undefined;
+        },
+      });
+      const session = activate(store, "owner", "devin", "failed-admitted-commit");
+      expect(store.claim(session)).toBe(true);
+      expect(store.admitCommit(session)).toBe(true);
+
+      now = session.expiresAt;
+      vi.advanceTimersByTime(100);
+      expect(session.status).toBe("pending");
+      expect(vi.getTimerCount()).toBe(0);
+      expect(store.fail(session, "Synthetic SQL failure")).toBe(true);
+      expect(session.status).toBe("error");
+      expect(session.error).toBe("Synthetic SQL failure");
+      expect(session.terminalExpiresAt).toBe(now + 60);
+      expect(session.data.verifier).toBeUndefined();
+      expect(ended).toEqual(["terminal"]);
+      expect(() => store.reserve("owner", "replacement", {})).toThrow(OAuthCapacityError);
+
+      now += 59;
+      expect(store.get(session.sessionId)?.status).toBe("error");
+      now += 1;
+      vi.advanceTimersByTime(60);
+      expect(store.get(session.sessionId)).toBeUndefined();
+      const replacement = store.reserve("owner", "replacement", {});
+      expect(store.cancel(replacement.sessionId, "owner")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases device bindings only when an admitted session reaches its terminal result", () => {
+    const store = new OAuthSessionStore<SessionData>();
+    const session = activate(store, "owner", "cursor", "cursor-session", "cursor-uuid");
+    const claim = store.claimDevice("cursor", "cursor-uuid", "owner");
+    if (!claim || claim.status !== "claimed") throw new Error("Expected the synthetic cursor session to be claimed");
+
+    expect(store.admitCommit(session)).toBe(true);
+    expect(store.claimDevice("cursor", "cursor-uuid", "owner")).toEqual({ status: "busy" });
+    expect(store.complete(session, "Synthetic Cursor")).toBe(true);
+    expect(store.claimDevice("cursor", "cursor-uuid", "owner")).toBeUndefined();
+    expect(store.get(session.sessionId)?.status).toBe("complete");
+  });
+
 });
