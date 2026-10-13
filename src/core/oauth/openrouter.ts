@@ -31,20 +31,29 @@ export function initiateOpenRouterAuth(): OpenRouterAuthInitiateResult {
   };
 }
 
-export async function listenForOpenRouterCallback(timeoutMs: number = 120_000): Promise<string> {
+export async function listenForOpenRouterCallback(
+  timeoutMs: number = 120_000,
+  signal?: AbortSignal,
+): Promise<string> {
   return listenForOAuthCallback({
     port: CALLBACK_PORT,
     pathname: CALLBACK_PATH,
     providerName: "OpenRouter",
     timeoutMs,
+    signal,
   });
 }
 
-export async function exchangeOpenRouterCode(code: string, verifier: string): Promise<{ apiKey: string; label?: string }> {
+export async function exchangeOpenRouterCode(
+  code: string,
+  verifier: string,
+  signal?: AbortSignal,
+): Promise<{ apiKey: string; label?: string }> {
   const res = await fetch(KEY_EXCHANGE_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code, code_verifier: verifier, code_challenge_method: "S256" }),
+    signal,
   });
 
   if (!res.ok) {
@@ -61,6 +70,7 @@ export async function exchangeOpenRouterCode(code: string, verifier: string): Pr
   try {
     const infoRes = await fetch(KEY_INFO_URL, {
       headers: { Authorization: `Bearer ${data.key}` },
+      signal,
     });
     if (infoRes.ok) {
       const info = (await infoRes.json()) as { data?: { label?: string } };

@@ -377,6 +377,46 @@ describe("Google OAuth configuration and validation", () => {
       restoreEnv();
     }
   });
+  it("aborts a held token refresh without mutating the credential or starting usage requests", async () => {
+    const credential: StoredCredential = {
+      id: "google-abort-credential",
+      ownerId: "test-owner",
+      provider: "antigravity",
+      accountLabel: "Google (abort@example.com)",
+      credentialType: "oauth",
+      secret: "original-google-access-token",
+      metadata: { refreshToken: "original-google-refresh-token" },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const controller = new AbortController();
+    const refreshStarted = Promise.withResolvers<void>();
+    let requests = 0;
+    let persistedRefreshes = 0;
+    const heldRefreshFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      requests++;
+      expect(init?.signal).toBe(controller.signal);
+      refreshStarted.resolve();
+      const signal = init?.signal as AbortSignal;
+      return await new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }) as typeof fetch;
+
+    const operation = new GoogleAntigravityAdapter().fetchUsage(credential, {
+      fetch: heldRefreshFetch,
+      signal: controller.signal,
+      onTokenRefresh: () => { persistedRefreshes++; },
+    });
+    await refreshStarted.promise;
+    controller.abort();
+
+    await expect(operation).rejects.toMatchObject({ name: "AbortError" });
+    expect(requests).toBe(1);
+    expect(credential.secret).toBe("original-google-access-token");
+    expect(persistedRefreshes).toBe(0);
+  });
+
   it("refreshes legacy credentials with the embedded issuer after operator client configuration changes", async () => {
     try {
       process.env["GOOGLE_OAUTH_CLIENT_ID"] = "operator-client-id.apps.googleusercontent.com";

@@ -598,7 +598,8 @@ export class KimiCodeAdapter implements ProviderAdapter {
 
     if (isExpired && refreshToken) {
       try {
-        const refreshed = await refreshKimiToken(refreshToken, deviceId);
+        const refreshed = await refreshKimiToken(refreshToken, deviceId, { fetch: ctx?.fetch, signal: ctx?.signal });
+        ctx?.signal?.throwIfAborted();
         token = refreshed.accessToken;
         credential.secret = refreshed.accessToken;
         const metaUpdates: Record<string, unknown> = {};
@@ -610,11 +611,13 @@ export class KimiCodeAdapter implements ProviderAdapter {
           ctx.onTokenRefresh(refreshed.accessToken, metaUpdates);
         }
       } catch (err) {
+        if (ctx?.signal?.aborted) throw err;
         if (process.env["DEBUG"] === "true") {
           console.warn("[KimiCode] Pre-emptive token refresh failed:", err);
         }
       }
     }
+    ctx?.signal?.throwIfAborted();
 
     const fetchImpl = ctx?.fetch ?? fetch;
     const nowMs = Date.now();
@@ -633,7 +636,8 @@ export class KimiCodeAdapter implements ProviderAdapter {
 
     if (response.status === 401 && refreshToken) {
       try {
-        const refreshed = await refreshKimiToken(refreshToken, deviceId);
+        const refreshed = await refreshKimiToken(refreshToken, deviceId, { fetch: ctx?.fetch, signal: ctx?.signal });
+        ctx?.signal?.throwIfAborted();
         token = refreshed.accessToken;
         credential.secret = refreshed.accessToken;
         const metaUpdates: Record<string, unknown> = {};
@@ -653,6 +657,7 @@ export class KimiCodeAdapter implements ProviderAdapter {
           signal: ctx?.signal,
         });
       } catch (err) {
+        if (ctx?.signal?.aborted) throw err;
         if (process.env["DEBUG"] === "true") {
           console.warn("[KimiCode] 401 token refresh retry failed:", err);
         }

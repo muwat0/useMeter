@@ -273,65 +273,79 @@ describe("Server OAuth Routes", () => {
       body: JSON.stringify({ email: "oauth-tester@example.com", password: "Password12345678!" }),
     });
     const cookie = regRes.headers.get("Set-Cookie")!.split(";")[0]!;
+    const releaseOAuthSession = async (sessionId: string) => {
+      const response = await app.request(`/api/oauth/sessions/${encodeURIComponent(sessionId)}`, {
+        method: "DELETE",
+        headers: { Cookie: cookie },
+      });
+      expect(response.status).toBe(200);
+    };
 
     const googleRes = await app.request("/api/oauth/google/initiate", {
       method: "POST",
       headers: { Cookie: cookie },
     });
     expect(googleRes.status).toBe(200);
-    const googleJson = (await googleRes.json()) as { success: boolean; data: { authUrl: string } };
+    const googleJson = (await googleRes.json()) as { success: boolean; data: { authUrl: string; sessionId: string } };
     expect(googleJson.success).toBe(true);
     expect(googleJson.data.authUrl).toContain("accounts.google.com");
+    await releaseOAuthSession(googleJson.data.sessionId);
 
     const claudeRes = await app.request("/api/oauth/claude/initiate", {
       method: "POST",
       headers: { Cookie: cookie },
     });
-    const claudeJson = (await claudeRes.json()) as { success: boolean; data: { authUrl: string } };
+    const claudeJson = (await claudeRes.json()) as { success: boolean; data: { authUrl: string; sessionId: string } };
     expect(claudeJson.success).toBe(true);
     expect(claudeJson.data.authUrl).toContain("claude.ai");
+    await releaseOAuthSession(claudeJson.data.sessionId);
 
     const geminiRes = await app.request("/api/oauth/gemini-cli/initiate", {
       method: "POST",
       headers: { Cookie: cookie },
     });
-    const geminiJson = (await geminiRes.json()) as { success: boolean; data: { authUrl: string } };
+    const geminiJson = (await geminiRes.json()) as { success: boolean; data: { authUrl: string; sessionId: string } };
     expect(geminiJson.success).toBe(true);
     expect(geminiJson.data.authUrl).toContain("accounts.google.com");
+    await releaseOAuthSession(geminiJson.data.sessionId);
 
     const openrouterRes = await app.request("/api/oauth/openrouter/initiate", {
       method: "POST",
       headers: { Cookie: cookie },
     });
-    const openrouterJson = (await openrouterRes.json()) as { success: boolean; data: { authUrl: string } };
+    const openrouterJson = (await openrouterRes.json()) as { success: boolean; data: { authUrl: string; sessionId: string } };
     expect(openrouterJson.success).toBe(true);
     expect(openrouterJson.data.authUrl).toContain("openrouter.ai");
+    await releaseOAuthSession(openrouterJson.data.sessionId);
 
     const zaiRes = await app.request("/api/oauth/zai/initiate", {
       method: "POST",
       headers: { Cookie: cookie },
     });
-    const zaiJson = (await zaiRes.json()) as { success: boolean; data: { authUrl: string } };
+    const zaiJson = (await zaiRes.json()) as { success: boolean; data: { authUrl: string; sessionId: string } };
     expect(zaiJson.success).toBe(true);
     expect(zaiJson.data.authUrl).toContain("chat.z.ai");
+    await releaseOAuthSession(zaiJson.data.sessionId);
 
     const devinRes = await app.request("/api/oauth/devin/initiate", {
       method: "POST",
       headers: { Cookie: cookie },
     });
-    const devinJson = (await devinRes.json()) as { success: boolean; data: { authUrl: string; expiresIn?: number } };
+    const devinJson = (await devinRes.json()) as { success: boolean; data: { authUrl: string; sessionId: string; expiresIn?: number } };
     expect(devinJson.success).toBe(true);
     expect(devinJson.data.authUrl).toContain("app.devin.ai");
     expect(devinJson.data.expiresIn).toBe(600);
+    await releaseOAuthSession(devinJson.data.sessionId);
 
     const cursorRes = await app.request("/api/oauth/cursor/initiate", {
       method: "POST",
       headers: { Cookie: cookie },
     });
-    const cursorJson = (await cursorRes.json()) as { success: boolean; data: { authUrl: string; expiresIn?: number } };
+    const cursorJson = (await cursorRes.json()) as { success: boolean; data: { authUrl: string; sessionId: string; expiresIn?: number } };
     expect(cursorJson.success).toBe(true);
     expect(cursorJson.data.authUrl).toContain("cursor.com");
     expect(cursorJson.data.expiresIn).toBe(600);
+    await releaseOAuthSession(cursorJson.data.sessionId);
 
     const origFetch = globalThis.fetch;
     globalThis.fetch = (async () => {
@@ -352,13 +366,14 @@ describe("Server OAuth Routes", () => {
       });
       const codexJson = (await codexRes.json()) as {
         success: boolean;
-        data: { deviceAuthId: string; userCode: string; verificationUrl: string; interval: number; expiresIn: number };
+        data: { deviceAuthId: string; sessionId: string; userCode: string; verificationUrl: string; interval: number; expiresIn: number };
       };
       expect(codexRes.status).toBe(200);
       expect(codexJson.success).toBe(true);
-      expect(codexJson.data.expiresIn).toBe(900);
+      expect(codexJson.data.expiresIn).toBe(600);
       expect(codexJson.data.verificationUrl).toBe("https://auth.openai.com/codex/device");
       expect(codexJson.data.userCode).toBe("CODEX-CODE");
+      await releaseOAuthSession(codexJson.data.sessionId);
     } finally {
       globalThis.fetch = origFetch;
     }

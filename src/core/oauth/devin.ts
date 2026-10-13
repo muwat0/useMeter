@@ -106,17 +106,26 @@ export function initiateDevinAuth(): DevinAuthInitiateResult {
   };
 }
 
-export async function listenForDevinCallback(expectedState: string, timeoutMs: number = 120_000): Promise<string> {
+export async function listenForDevinCallback(
+  expectedState: string,
+  timeoutMs: number = 120_000,
+  signal?: AbortSignal,
+): Promise<string> {
   return listenForOAuthCallback({
     port: DEVIN_CALLBACK_PORT,
     pathname: DEVIN_CALLBACK_PATH,
     expectedState,
     providerName: "Devin",
     timeoutMs,
+    signal,
   });
 }
 
-export async function exchangeDevinCode(code: string, verifier: string): Promise<{ token: string; email?: string }> {
+export async function exchangeDevinCode(
+  code: string,
+  verifier: string,
+  signal?: AbortSignal,
+): Promise<{ token: string; email?: string }> {
   const res = await fetch(`${DEVIN_API_URL}${TOKEN_PATH}`, {
     method: "POST",
     headers: {
@@ -127,6 +136,7 @@ export async function exchangeDevinCode(code: string, verifier: string): Promise
       code,
       code_verifier: verifier,
     }),
+    signal,
   });
 
   if (!res.ok) {

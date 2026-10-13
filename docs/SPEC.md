@@ -416,6 +416,21 @@ Bellek sızıntılarını önlemek için en fazla 10.000 benzersiz anahtar tutan
 - **OAuth Cihaz Akışı Yoklama (`oauthDevicePoll`):** `30 istek / dakika / kullanıcı + flow`.
 - **Hata Yanıtı:** Limit aşıldığında HTTP `429 Too Many Requests` ve `Retry-After` başlığı döndürülür.
 
+#### 4.4.1. Sınırlı OAuth Girişim Yaşam Döngüsü
+
+- `src/core/oauth/session-store.ts` içindeki ortak `OAuthSessionStore`, web/device girişimlerini ve henüz sağlayıcı yanıtı bekleyen rezervasyonları kapsar. Kullanıcı başına **5**, sunucu örneği başına toplam **1000** dolu slot; aktif girişimler kapasite için tahliye edilmez. Bu sınır istek/dakika hız sınırından ayrıdır.
+- Kapasite sağlayıcı initiate isteği veya callback listener açılmadan önce ayrılır. Dolulukta HTTP **429**, `Retry-After: 60`, `errorCode: "OAUTH_CAPACITY"` döner. Başlatma hatası/iptali rezervasyonu bırakır; istek bağlantısı yanıt gelmeden kesilirse upstream çalışma da session signal ile iptal edilir.
+- Pending süre üst sınırı **10 dakika**; device akışlarında sağlayıcının daha kısa süresi korunur, uzun süre 600 saniyeye kırpılır ve etkin `expiresIn` istemciye döner.
+- Başarı/hata sonucu frontend'in okuyabilmesi için **60 saniye** tutulur, sonra tamamen kaldırılır. Expired sonuç, orijinal deadline + 60 saniyeyi aşamaz; zaman atlaması okunmamış kayıtları sonsuza kadar tutmaz. Unref'li otomatik timer temizliği istek olmadan da çalışır ve store boşalınca durur.
+- Device binding sağlayıcı + code/UUID + sahip ile sınırlandırılır. Bilinmeyen, başka kullanıcıya ait, expired, cancelled veya replay binding upstream poll yapılmadan aynı 404 ile reddedilir. Aynı sahibin devam eden poll'una ikinci istek `pending` döner; tekrar token exchange/kayıt yapılmaz.
+- Her başarılı initiate yanıtı bir `sessionId` içerir. Sahip `DELETE /api/oauth/sessions/:sessionId` ile pending veya terminal slotu silebilir (200); yabancı/bilinmeyen slot 404. Google/Devin state, PKCE, frozen client ve tek kullanım korumaları sürer; terminal yanıtlarda veya public projeksiyonlarda verifier/token/client secret gösterilmez.
+- İptal/expiry signal'ı OAuth initiate/poll/exchange/profile isteklerine, loopback listener'a ve aday usage validation'a aktarılır. Credential yazımından hemen önce store-backed `beforeCommit` tekrar yetki/deadline kontrolü yapar; timer henüz çalışmamış olsa da expired aday credential/snapshot oluşturamaz. Eski async closure silinen slotu yeniden canlandıramaz.
+- Google/Kimi validation token yenilemeleri de aynı enjekte edilmiş `fetch`/session signal'ını kullanır. İptal, token/metadata mutasyonu veya refresh callback'i öncesi reddedilir; iptal edilmiş yenileme normal erişim token'ına fallback veya ikinci usage isteği başlatmaz.
+- Callback teardown sadece kendi captured server örneğini kapatır; eski timer/abort daha yeni aynı-port listener'ı kapatamaz. Bu, diğer loopback-only sağlayıcıların hosted callback uyumluluğunu çözmüş sayılmaz.
+- Browser modal close/back/restart/error ve unmount bilinen session'ı owner-scoped DELETE ile iptal eder. Initiate yanıtı henüz gelmediyse HTTP isteği kısa 12 saniyelik istemci deadline'ıyla devam eder: geç gelen eski-run yanıtındaki sessionId silinir, yeni akış/UI etkilenmez. Poll/manual istekleri anında abort edilir; unmount generation ve poll timer'ını temizler. EN/TR kapasite, expiry, retry ve hata mesajları yerelleştirilir.
+- Test saati tek `ServerOptions.oauthNow` seam'idir; eski Google-only clock/map'ler kaldırılmıştır. Devin/Cursor usage validation'da keşfedilen kimlik adı provider-label modu ile kalıcılaşır; manuel kullanıcı etiketleri input-bound kalır.
+
+
 
 ### 4.5. Durağan Veri Şifreleme (At-Rest Metadata Encryption) ve İki Aşamalı Dağıtım Sözleşmesi
 

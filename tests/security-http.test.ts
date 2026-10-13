@@ -611,22 +611,41 @@ describe("Security HTTP Tests", () => {
   describe("OAuth & Status Abuse Rate Limiting", () => {
     it("enforces RATE_LIMIT_POLICIES.oauthDevicePoll on OAuth device poll routes without leaking token data", async () => {
       process.env["TRUST_PROXY"] = "true";
+      const originalFetch = globalThis.fetch;
+      let providerCalls = 0;
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url === "https://auth.openai.com/api/accounts/deviceauth/usercode") {
+          providerCalls++;
+          return Response.json({ device_auth_id: "test-device-auth-uuid-9999", user_code: "WDJB-TEST" });
+        }
+        throw new Error(`Unexpected synthetic device OAuth URL: ${url}`);
+      }) as typeof fetch;
       const rateLimiter = new RateLimiter();
       const ctx = createTestContext(rateLimiter);
+      let ownerCookie = "";
+      let sessionId = "";
       try {
         const { cookie, user } = await registerTestUser(ctx.app, "oauth-tester@example.com", "Password12345678!", "198.51.100.10");
+        ownerCookie = cookie;
         expect(user?.id).toBeTruthy();
         const clientIp = "198.51.100.77";
-        const maxPolls = RATE_LIMIT_POLICIES.oauthDevicePoll.max; // 30 per min
-        const deviceAuthId = "test-device-auth-uuid-9999";
-        const userCode = "WDJB-TEST";
+        const maxPolls = RATE_LIMIT_POLICIES.oauthDevicePoll.max;
+        const initiation = await ctx.app.request("/api/oauth/codex/initiate", {
+          method: "POST",
+          headers: { Cookie: cookie },
+        });
+        expect(initiation.status).toBe(200);
+        const initiateBody = await initiation.json() as {
+          data: { deviceAuthId: string; userCode: string; sessionId: string };
+        };
+        const { deviceAuthId, userCode } = initiateBody.data;
+        sessionId = initiateBody.data.sessionId;
 
-        // Pre-consume 30 attempts on the rateLimiter to test HTTP middleware enforcement without making 30 upstream network calls
         for (let i = 1; i <= maxPolls; i++) {
           rateLimiter.check(`oauthDevicePoll:${user!.id}:codex:${deviceAuthId}`, RATE_LIMIT_POLICIES.oauthDevicePoll);
         }
 
-        // The next HTTP request must trigger rate limit 429 immediately before upstream provider calls
         const blockedRes = await ctx.app.request("/api/oauth/codex/poll", {
           method: "POST",
           headers: {
@@ -641,8 +660,6 @@ describe("Security HTTP Tests", () => {
         const retryAfter = blockedRes.headers.get("Retry-After");
         expect(retryAfter).toBeTruthy();
         expect(Number(retryAfter)).toBeGreaterThan(0);
-
-        // Security check: Verify NO tokens, client secrets, code verifiers, or hashes are leaked
         const text = await blockedRes.text();
         expect(text).not.toContain("secret");
         expect(text).not.toContain("access_token");
@@ -650,11 +667,18 @@ describe("Security HTTP Tests", () => {
         expect(text).not.toContain("code_verifier");
         expect(text).not.toContain("authorizationCode");
 
-        // Response is clean JSON error
         const json = JSON.parse(text) as { status?: string; success?: boolean; error: string };
         expect(json.status === "error" || json.success === false).toBe(true);
         expect(json.error).toMatch(/too many/i);
+        expect(providerCalls).toBe(1);
       } finally {
+        if (sessionId && ownerCookie) {
+          await ctx.app.request(`/api/oauth/sessions/${encodeURIComponent(sessionId)}`, {
+            method: "DELETE",
+            headers: { Cookie: ownerCookie },
+          });
+        }
+        globalThis.fetch = originalFetch;
         ctx.close();
       }
     });

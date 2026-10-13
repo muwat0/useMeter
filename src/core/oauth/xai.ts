@@ -19,7 +19,7 @@ export type XaiPollResult =
   | { status: "complete"; accessToken: string; refreshToken?: string; email?: string }
   | { status: "error"; message: string };
 
-export async function initiateXaiDeviceAuth(): Promise<XaiDeviceInitiateResult> {
+export async function initiateXaiDeviceAuth(signal?: AbortSignal): Promise<XaiDeviceInitiateResult> {
   const res = await fetch(XAI_OAUTH_DEVICE_CODE_URL, {
     method: "POST",
     headers: {
@@ -30,6 +30,7 @@ export async function initiateXaiDeviceAuth(): Promise<XaiDeviceInitiateResult> 
       client_id: XAI_OAUTH_CLIENT_ID,
       scope: XAI_OAUTH_SCOPE,
     }).toString(),
+    signal,
   });
 
   if (!res.ok) {
@@ -58,7 +59,7 @@ export async function initiateXaiDeviceAuth(): Promise<XaiDeviceInitiateResult> 
   };
 }
 
-export async function pollXaiDeviceAuth(deviceCode: string): Promise<XaiPollResult> {
+export async function pollXaiDeviceAuth(deviceCode: string, signal?: AbortSignal): Promise<XaiPollResult> {
   const res = await fetch(XAI_OAUTH_TOKEN_URL, {
     method: "POST",
     headers: {
@@ -70,6 +71,7 @@ export async function pollXaiDeviceAuth(deviceCode: string): Promise<XaiPollResu
       client_id: XAI_OAUTH_CLIENT_ID,
       device_code: deviceCode,
     }).toString(),
+    signal,
   });
 
   const data = (await res.json().catch(() => ({}))) as {
@@ -95,6 +97,7 @@ export async function pollXaiDeviceAuth(deviceCode: string): Promise<XaiPollResu
     try {
       const uRes = await fetch(XAI_OAUTH_USERINFO_URL, {
         headers: { Authorization: `Bearer ${data.access_token}`, Accept: "application/json" },
+        signal,
       });
       if (uRes.ok) {
         const u = (await uRes.json()) as { email?: string };

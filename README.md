@@ -155,6 +155,8 @@ Credential secrets are encrypted at rest using AES-256-GCM with a key derived fr
 | `(unset USAGE_MASTER_KEY && docker compose --env-file "$HOME/.config/usemeter/compose.env" logs -f usemeter)` | Follow service logs. |
 | `(unset USAGE_MASTER_KEY && docker compose --env-file "$HOME/.config/usemeter/compose.env" down)` | Stop and remove the Compose service/container without deleting the named data volume. |
 
+CI uses Bun 1.4.0, matching the container runtime. Validate networking regressions on that pinned version as well as your local runtime. HTTP-disconnect tests close the actual request/socket and wait for server and upstream abort events; a rejected `fetch` promise alone does not prove that the connection closed.
+
 The health endpoint is `/health`. The application is a Bun server and must run as a service; it cannot be deployed as static files alone.
 
 ## Further reading

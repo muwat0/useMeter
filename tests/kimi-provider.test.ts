@@ -88,6 +88,87 @@ describe("KimiCodeAdapter usage limits and safe diagnostic schema clues", () => 
       "Kimi Code yetkilendirme hatası: HTTP 401",
     );
   });
+  it("aborts a proactive refresh before token rotation or the usage request", async () => {
+    const credential: StoredCredential = {
+      ...mockCred,
+      secret: `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({
+        sub: "123456",
+        exp: Math.floor(Date.now() / 1000) + 30,
+        device_id: "synthetic-device-id",
+      })).toString("base64url")}.signature`,
+      metadata: { refreshToken: "original-kimi-refresh-token", deviceId: "synthetic-device-id" },
+    };
+    const originalSecret = credential.secret;
+    const originalMetadata = credential.metadata;
+    const controller = new AbortController();
+    const refreshStarted = Promise.withResolvers<void>();
+    let requests = 0;
+    let persistedRefreshes = 0;
+    const heldRefreshFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      requests++;
+      expect(init?.signal).toBe(controller.signal);
+      refreshStarted.resolve();
+      const signal = init?.signal as AbortSignal;
+      return await new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }) as typeof fetch;
+
+    const operation = new KimiCodeAdapter().fetchUsage(credential, {
+      fetch: heldRefreshFetch,
+      signal: controller.signal,
+      onTokenRefresh: () => { persistedRefreshes++; },
+    });
+    await refreshStarted.promise;
+    controller.abort();
+
+    await expect(operation).rejects.toMatchObject({ name: "AbortError" });
+    expect(requests).toBe(1);
+    expect(credential.secret).toBe(originalSecret);
+    expect(credential.metadata).toBe(originalMetadata);
+    expect(persistedRefreshes).toBe(0);
+  });
+
+  it("aborts a 401-triggered refresh without a retry request or token rotation", async () => {
+    const credential: StoredCredential = {
+      ...mockCred,
+      metadata: { refreshToken: "original-kimi-refresh-token", deviceId: "synthetic-device-id" },
+    };
+    const originalSecret = credential.secret;
+    const originalMetadata = credential.metadata;
+    const controller = new AbortController();
+    const refreshStarted = Promise.withResolvers<void>();
+    let requests = 0;
+    let persistedRefreshes = 0;
+    const heldRefreshFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      requests++;
+      if (input.toString().endsWith("/usages")) {
+        return new Response("{}", { status: 401 });
+      }
+      expect(input.toString()).toBe("https://auth.kimi.com/api/oauth/token");
+      expect(init?.signal).toBe(controller.signal);
+      refreshStarted.resolve();
+      const signal = init?.signal as AbortSignal;
+      return await new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }) as typeof fetch;
+
+    const operation = new KimiCodeAdapter().fetchUsage(credential, {
+      fetch: heldRefreshFetch,
+      signal: controller.signal,
+      onTokenRefresh: () => { persistedRefreshes++; },
+    });
+    await refreshStarted.promise;
+    controller.abort();
+
+    await expect(operation).rejects.toMatchObject({ name: "AbortError" });
+    expect(requests).toBe(2);
+    expect(credential.secret).toBe(originalSecret);
+    expect(credential.metadata).toBe(originalMetadata);
+    expect(persistedRefreshes).toBe(0);
+  });
+
 
   it("includes sanitized structural clue on HTTP 200 with zero valid limits without leaking secrets, numeric quotas, or PII", async () => {
     const adapter = new KimiCodeAdapter();
@@ -360,7 +441,6 @@ describe("KimiCodeAdapter usage limits and safe diagnostic schema clues", () => 
 
   it("sends exactly first-party minimal headers on 401 refresh retry request while preserving OAuth device headers during refresh", async () => {
     const adapter = new KimiCodeAdapter();
-    const originalFetch = globalThis.fetch;
     const initialToken = "ey-expired-token.payload.sig";
     const refreshedToken = "ey-refreshed-token.payload.sig";
     const refreshToken = "test-refresh-token-12345";
@@ -369,73 +449,64 @@ describe("KimiCodeAdapter usage limits and safe diagnostic schema clues", () => 
     let refreshCalled = false;
     let refreshHeaders: Record<string, string> = {};
 
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const usageCalls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      const headers = new Headers(init?.headers);
       if (url.includes("/api/oauth/token")) {
         refreshCalled = true;
-        const headers = new Headers(init?.headers);
         refreshHeaders = Object.fromEntries(headers.entries());
         return Response.json({
           access_token: refreshedToken,
           refresh_token: "new-refresh-token",
         });
       }
-      return originalFetch(input, init);
+      usageCalls.push({
+        url,
+        headers: Object.fromEntries(headers.entries()),
+      });
+
+      if (usageCalls.length === 1) {
+        return new Response(JSON.stringify({ error: "token_expired" }), { status: 401 });
+      }
+
+      return new Response(
+        JSON.stringify({
+          usages: {
+            limit_5h: { used_ratio: 0.1, reset_time: "2026-09-11T18:00:00Z" },
+          },
+        }),
+        { status: 200 },
+      );
     }) as unknown as typeof fetch;
 
-    try {
-      const usageCalls: Array<{ url: string; headers: Record<string, string> }> = [];
-      const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-        const headers = new Headers(init?.headers);
-        usageCalls.push({
-          url: String(input),
-          headers: Object.fromEntries(headers.entries()),
-        });
+    const cred: StoredCredential = {
+      ...mockCred,
+      secret: initialToken,
+      metadata: {
+        refreshToken,
+        deviceId,
+      },
+    };
 
-        if (usageCalls.length === 1) {
-          return new Response(JSON.stringify({ error: "token_expired" }), { status: 401 });
-        }
+    const report = await adapter.fetchUsage(cred, { fetch: mockFetch });
+    expect(report.limits.length).toBe(1);
+    expect(refreshCalled).toBe(true);
 
-        return new Response(
-          JSON.stringify({
-            usages: {
-              limit_5h: { used_ratio: 0.1, reset_time: "2026-09-11T18:00:00Z" },
-            },
-          }),
-          { status: 200 },
-        );
-      }) as unknown as typeof fetch;
+    expect(refreshHeaders["x-msh-device-id"]).toBe(deviceId);
+    expect(refreshHeaders["user-agent"]).toContain("KimiCLI");
 
-      const cred: StoredCredential = {
-        ...mockCred,
-        secret: initialToken,
-        metadata: {
-          refreshToken,
-          deviceId,
-        },
-      };
+    expect(usageCalls).toHaveLength(2);
 
-      const report = await adapter.fetchUsage(cred, { fetch: mockFetch });
-      expect(report.limits.length).toBe(1);
-      expect(refreshCalled).toBe(true);
+    expect(usageCalls[0]?.headers["authorization"]).toBe(`Bearer ${initialToken}`);
+    expect(usageCalls[0]?.headers["accept"]).toBe("application/json");
+    expect(usageCalls[0]?.headers["x-msh-device-id"]).toBeUndefined();
+    expect(usageCalls[0]?.headers["user-agent"]).toBeUndefined();
 
-      expect(refreshHeaders["x-msh-device-id"]).toBe(deviceId);
-      expect(refreshHeaders["user-agent"]).toContain("KimiCLI");
-
-      expect(usageCalls).toHaveLength(2);
-
-      expect(usageCalls[0]?.headers["authorization"]).toBe(`Bearer ${initialToken}`);
-      expect(usageCalls[0]?.headers["accept"]).toBe("application/json");
-      expect(usageCalls[0]?.headers["x-msh-device-id"]).toBeUndefined();
-      expect(usageCalls[0]?.headers["user-agent"]).toBeUndefined();
-
-      expect(usageCalls[1]?.headers["authorization"]).toBe(`Bearer ${refreshedToken}`);
-      expect(usageCalls[1]?.headers["accept"]).toBe("application/json");
-      expect(usageCalls[1]?.headers["x-msh-device-id"]).toBeUndefined();
-      expect(usageCalls[1]?.headers["user-agent"]).toBeUndefined();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    expect(usageCalls[1]?.headers["authorization"]).toBe(`Bearer ${refreshedToken}`);
+    expect(usageCalls[1]?.headers["accept"]).toBe("application/json");
+    expect(usageCalls[1]?.headers["x-msh-device-id"]).toBeUndefined();
+    expect(usageCalls[1]?.headers["user-agent"]).toBeUndefined();
   });
 
   it("parses official managed usages fixture with 5h, 7d, and monthly windows and breakdown note", async () => {

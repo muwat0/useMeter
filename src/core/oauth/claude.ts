@@ -39,7 +39,11 @@ export function initiateClaudeAuth(): ClaudeAuthInitiateResult {
   };
 }
 
-export async function exchangeClaudeCode(code: string, verifier: string): Promise<ClaudeTokenResult> {
+export async function exchangeClaudeCode(
+  code: string,
+  verifier: string,
+  signal?: AbortSignal,
+): Promise<ClaudeTokenResult> {
   const res = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -50,6 +54,7 @@ export async function exchangeClaudeCode(code: string, verifier: string): Promis
       grant_type: "authorization_code",
       redirect_uri: REDIRECT_URI,
     }),
+    signal,
   });
 
   if (!res.ok) {
@@ -74,6 +79,7 @@ export async function exchangeClaudeCode(code: string, verifier: string): Promis
 export async function listenForClaudeCallback(
   expectedState: string,
   timeoutMs: number = 120_000,
+  signal?: AbortSignal,
 ): Promise<string> {
   return listenForOAuthCallback({
     port: 54545,
@@ -81,5 +87,6 @@ export async function listenForClaudeCallback(
     expectedState,
     providerName: "Claude",
     timeoutMs,
+    signal,
   });
 }
