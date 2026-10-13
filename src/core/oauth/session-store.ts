@@ -25,6 +25,7 @@ interface StoredOAuthSession<T> extends OAuthSession<T> {
   controller: AbortController;
   reserved: boolean;
   processing: boolean;
+  commitAdmitted: boolean;
   bindingKey?: string;
   cleaned: boolean;
 }
@@ -97,6 +98,7 @@ export class OAuthSessionStore<T = Record<string, never>> {
       controller,
       reserved: true,
       processing: false,
+      commitAdmitted: false,
       cleaned: false,
     };
     this.#entries.set(session.sessionId, session);
@@ -178,7 +180,13 @@ export class OAuthSessionStore<T = Record<string, never>> {
 
   releaseClaim(session: OAuthSession<T>): boolean {
     const entry = this.#current(session);
-    if (!entry || !entry.processing || entry.status !== "pending" || entry.signal.aborted) return false;
+    if (
+      !entry ||
+      !entry.processing ||
+      entry.commitAdmitted ||
+      entry.status !== "pending" ||
+      entry.signal.aborted
+    ) return false;
     entry.processing = false;
     return true;
   }
@@ -189,6 +197,25 @@ export class OAuthSessionStore<T = Record<string, never>> {
     return !!entry && !entry.reserved && entry.status === "pending" && !entry.signal.aborted;
   }
 
+  /** Admits the claimed session to its synchronous, irreversible credential commit. */
+  admitCommit(session: OAuthSession<T>): boolean {
+    this.sweepExpired();
+    const entry = this.#current(session);
+    if (
+      !entry ||
+      entry.reserved ||
+      entry.status !== "pending" ||
+      !entry.processing ||
+      entry.signal.aborted ||
+      entry.commitAdmitted
+    ) {
+      return false;
+    }
+    entry.commitAdmitted = true;
+    this.#scheduleCleanup();
+    return true;
+  }
+
   complete(session: OAuthSession<T>, accountLabel?: string): boolean {
     return this.#finish(session, "complete", undefined, accountLabel);
   }
@@ -197,11 +224,11 @@ export class OAuthSessionStore<T = Record<string, never>> {
     return this.#finish(session, "error", error);
   }
 
-  /** Explicit cancellation is owner-scoped and removes the slot immediately. */
+  /** Cancels the owner's session unless its synchronous commit is admitted. */
   cancel(sessionId: string, ownerId: string): boolean {
     this.sweepExpired();
     const entry = this.#entries.get(sessionId);
-    if (!entry || entry.ownerId !== ownerId) return false;
+    if (!entry || entry.ownerId !== ownerId || entry.commitAdmitted) return false;
     this.#remove(entry, "cancelled");
     this.#scheduleCleanup();
     return true;
@@ -219,6 +246,7 @@ export class OAuthSessionStore<T = Record<string, never>> {
         }
         continue;
       }
+      if (entry.commitAdmitted) continue;
       if (now < entry.expiresAt) continue;
       if (entry.reserved) {
         this.#remove(entry, "expired");
@@ -255,6 +283,7 @@ export class OAuthSessionStore<T = Record<string, never>> {
     entry.accountLabel = accountLabel;
     entry.terminalExpiresAt = this.#now() + this.#terminalTtlMs;
     entry.processing = false;
+    entry.commitAdmitted = false;
     this.#removeBinding(entry);
     if (!entry.signal.aborted) entry.controller.abort(new Error(`OAuth session ${status}`));
     this.#end(entry, "terminal");
@@ -305,6 +334,7 @@ export class OAuthSessionStore<T = Record<string, never>> {
 
     let nextExpiry = Number.POSITIVE_INFINITY;
     for (const entry of this.#entries.values()) {
+      if (entry.status === "pending" && entry.commitAdmitted) continue;
       const expiry = entry.status === "pending" ? entry.expiresAt : entry.terminalExpiresAt;
       if (expiry !== undefined && expiry < nextExpiry) nextExpiry = expiry;
     }

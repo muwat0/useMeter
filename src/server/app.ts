@@ -279,7 +279,7 @@ export function createServer(
       },
     }, "preserve", {
       signal: session.signal,
-      beforeCommit: () => oauthSessions.isActive(session),
+      beforeCommit: () => oauthSessions.admitCommit(session),
     });
     return { saved, accountLabel };
   }
@@ -349,7 +349,7 @@ export function createServer(
           },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.isActive(session),
+          beforeCommit: () => oauthSessions.admitCommit(session),
         });
         return { saved, accountLabel };
       }
@@ -370,7 +370,7 @@ export function createServer(
           },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.isActive(session),
+          beforeCommit: () => oauthSessions.admitCommit(session),
         });
         return { saved, accountLabel };
       }
@@ -390,7 +390,7 @@ export function createServer(
           metadata: { source: "oauth-pkce" },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.isActive(session),
+          beforeCommit: () => oauthSessions.admitCommit(session),
         });
         return { saved, accountLabel };
       }
@@ -411,7 +411,7 @@ export function createServer(
           },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.isActive(session),
+          beforeCommit: () => oauthSessions.admitCommit(session),
         });
         return { saved, accountLabel };
       }
@@ -1097,7 +1097,7 @@ export function createServer(
           },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.isActive(session),
+          beforeCommit: () => oauthSessions.admitCommit(session),
         });
       } catch (validationError) {
         if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
@@ -1421,7 +1421,7 @@ export function createServer(
           metadata: { login: pollRes.token.login, email: pollRes.token.email },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.isActive(session),
+          beforeCommit: () => oauthSessions.admitCommit(session),
         });
       } catch (validationError) {
         if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
@@ -1509,7 +1509,7 @@ export function createServer(
           metadata: { refreshToken: pollRes.refreshToken, email: pollRes.email },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.isActive(session),
+          beforeCommit: () => oauthSessions.admitCommit(session),
           accountLabelMode: "provider",
         });
       } catch (validationError) {
@@ -1593,7 +1593,7 @@ export function createServer(
           metadata: { refreshToken: pollRes.refreshToken, email: pollRes.email },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.isActive(session),
+          beforeCommit: () => oauthSessions.admitCommit(session),
         });
       } catch (validationError) {
         if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
@@ -1676,7 +1676,7 @@ export function createServer(
           metadata: { refreshToken: pollRes.refreshToken, accountId: pollRes.accountId },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.isActive(session),
+          beforeCommit: () => oauthSessions.admitCommit(session),
         });
       } catch (validationError) {
         if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
@@ -1814,7 +1814,7 @@ export function createServer(
       metadata: { email: tokenResult.email, source: "oauth-pkce" },
     }, "preserve", {
       signal: session.signal,
-      beforeCommit: () => oauthSessions.isActive(session),
+      beforeCommit: () => oauthSessions.admitCommit(session),
       accountLabelMode: "provider",
     });
     if (!oauthSessions.complete(session, saved.accountLabel)) {
