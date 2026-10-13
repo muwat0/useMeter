@@ -13,7 +13,10 @@ const dbPath = process.env["DATABASE_PATH"] || "data/usage.db";
 
 const vault = new StorageVault(dbPath);
 const registry = createDefaultRegistry();
-const poller = new PollerEngine(vault, registry);
+const pollTimeoutMs = process.env["POLL_TIMEOUT_MS"] === undefined
+  ? undefined
+  : Number(process.env["POLL_TIMEOUT_MS"]);
+const poller = new PollerEngine(vault, registry, { pollTimeoutMs });
 
 // Start background polling daemon
 poller.start();

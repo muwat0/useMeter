@@ -191,7 +191,9 @@ export class CodexAdapter implements ProviderAdapter {
           notes: notes.length > 0 ? notes : [`${count} adet kullanılabilir reset hakkı`],
         });
       }
-    } catch {}
+    } catch (error) {
+      if (ctx?.signal?.aborted) throw error;
+    }
     return {
       provider: "openai-codex",
       credentialId: credential.id,

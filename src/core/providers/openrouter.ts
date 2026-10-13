@@ -112,7 +112,9 @@ export class OpenRouterAdapter implements ProviderAdapter {
           });
         }
       }
-    } catch {}
+    } catch (error) {
+      if (ctx?.signal?.aborted) throw error;
+    }
 
     return {
       provider: "openrouter",

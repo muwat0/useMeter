@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { randomUUID } from "node:crypto";
 import type { StorageVault } from "../storage/vault";
 import type { ProviderRegistry } from "../providers/registry";
@@ -21,6 +22,16 @@ function mergeDefinedMetadata(
 }
 export type ReportListener = (report: UsageReport) => void;
 
+export interface PollerOptions {
+  intervalMs?: number;
+  pollTimeoutMs?: number;
+}
+
+const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_POLL_TIMEOUT_MS = 30_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+
 export interface CredentialValidationContext {
   signal?: AbortSignal;
   beforeCommit?: () => boolean;
@@ -31,16 +42,27 @@ export class PollerEngine {
   readonly #vault: StorageVault;
   readonly #registry: ProviderRegistry;
   readonly #intervalMs: number;
+  readonly #pollTimeoutMs: number;
   readonly #inFlight: Map<string, Promise<UsageReport | null>> = new Map();
   readonly #credentialEpochs: Map<string, number> = new Map();
   readonly #listeners: Set<ReportListener> = new Set();
   #timer?: Timer;
   #running = false;
   #sweepInFlight?: Promise<UsageReport[]>;
-  constructor(vault: StorageVault, registry: ProviderRegistry, intervalMs: number = 5 * 60 * 1000) {
+  constructor(vault: StorageVault, registry: ProviderRegistry, options: PollerOptions = {}) {
+    const pollTimeoutMs = options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
+    if (
+      !Number.isFinite(pollTimeoutMs) ||
+      !Number.isInteger(pollTimeoutMs) ||
+      pollTimeoutMs < 1 ||
+      pollTimeoutMs > MAX_TIMER_DELAY_MS
+    ) {
+      throw new RangeError(`pollTimeoutMs must be an integer between 1 and ${MAX_TIMER_DELAY_MS}`);
+    }
     this.#vault = vault;
     this.#registry = registry;
-    this.#intervalMs = intervalMs;
+    this.#intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
+    this.#pollTimeoutMs = pollTimeoutMs;
   }
   #getEpoch(credentialId: string): number {
     return this.#credentialEpochs.get(credentialId) ?? 0;
@@ -200,29 +222,66 @@ export class PollerEngine {
     const epoch = this.#getEpoch(cred.id);
 
     let promise!: Promise<UsageReport | null>;
-    promise = (async () => {
-      try {
-        const ctx = {
-          onTokenRefresh: (newSecret: string, metadataUpdates?: Record<string, unknown>, newAccountLabel?: string) => {
-            if (this.#getEpoch(cred.id) !== epoch) {
+    promise = Promise.resolve().then(async () => {
+      const controller = new AbortController();
+      const deadline = performance.now() + this.#pollTimeoutMs;
+      let timedOut = false;
+      let timeoutError: Error | undefined;
+      let timeoutTimer!: Timer;
+
+      const abortForTimeout = (): Error => {
+        const error = timeoutError ??= new Error(`Provider poll timeout after ${this.#pollTimeoutMs} ms`);
+        if (!timedOut) {
+          timedOut = true;
+          controller.abort(error);
+        }
+        return error;
+      };
+      const isPastDeadline = (): boolean => {
+        if (timedOut) return true;
+        if (performance.now() < deadline) return false;
+        abortForTimeout();
+        return true;
+      };
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutTimer = setTimeout(() => reject(abortForTimeout()), this.#pollTimeoutMs);
+      });
+      const ctx = {
+        signal: controller.signal,
+        onTokenRefresh: (newSecret: string, metadataUpdates?: Record<string, unknown>, newAccountLabel?: string) => {
+          if (this.#getEpoch(cred.id) !== epoch || controller.signal.aborted || isPastDeadline()) {
+            return;
+          }
+          this.#vault.updateCredentialTokens(cred.ownerId!, cred.id, newSecret, metadataUpdates);
+          if (newAccountLabel && newAccountLabel !== cred.accountLabel) {
+            if (this.#getEpoch(cred.id) !== epoch || controller.signal.aborted || isPastDeadline()) {
               return;
             }
-            this.#vault.updateCredentialTokens(cred.ownerId!, cred.id, newSecret, metadataUpdates);
-            if (newAccountLabel && newAccountLabel !== cred.accountLabel) {
-              this.#vault.updateCredentialLabel(cred.ownerId!, cred.id, newAccountLabel);
-              cred.accountLabel = newAccountLabel;
-            }
-          },
-        };
-        const fetched = await adapter.fetchUsage(cred, ctx);
+            this.#vault.updateCredentialLabel(cred.ownerId!, cred.id, newAccountLabel);
+            cred.accountLabel = newAccountLabel;
+          }
+        },
+      };
+
+      try {
+        const providerPromise = Promise.resolve().then(() => {
+          if (isPastDeadline()) throw abortForTimeout();
+          return adapter.fetchUsage(cred, ctx);
+        });
+        const fetched = await Promise.race([providerPromise, timeoutPromise]);
         if (this.#getEpoch(cred.id) !== epoch) {
           return null;
         }
         if (fetched.error) {
           throw new Error(fetched.error);
         }
+        if (this.#getEpoch(cred.id) !== epoch) {
+          return null;
+        }
+        if (isPastDeadline()) throw abortForTimeout();
         return this.#saveSuccessfulReport(cred, fetched, daemon);
       } catch (error) {
+        if (isPastDeadline()) error = abortForTimeout();
         if (this.#getEpoch(cred.id) !== epoch) {
           return null;
         }
@@ -262,11 +321,12 @@ export class PollerEngine {
         else this.#vault.saveUsageSnapshot(cred.ownerId!, fallbackReport);
         return fallbackReport;
       } finally {
+        clearTimeout(timeoutTimer);
         if (this.#inFlight.get(cred.id) === promise) {
           this.#inFlight.delete(cred.id);
         }
       }
-    })();
+    });
 
     this.#inFlight.set(cred.id, promise);
     return promise;

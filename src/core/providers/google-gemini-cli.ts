@@ -176,6 +176,7 @@ export class GoogleGeminiCliAdapter implements ProviderAdapter {
         throw new Error(`Google Gemini CLI authentication failed (HTTP ${loadRes.status}): ${errText || "Invalid token or unauthorized"}`);
       }
     } catch (err) {
+      if (ctx?.signal?.aborted) throw err;
       if (err instanceof Error && err.message.includes("Google Gemini CLI authentication failed")) {
         throw err;
       }

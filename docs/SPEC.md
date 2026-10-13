@@ -266,6 +266,11 @@ Bu işlemden sonra veya sisteme sonradan kaydolan kullanıcılar için sahipsiz 
 Arka planda periyodik olarak çalışan zamanlayıcıdır.
 
 ```typescript
+export interface PollerOptions {
+  intervalMs?: number;       // Varsayılan: 300_000 ms
+  pollTimeoutMs?: number;    // Varsayılan: 30_000 ms, deneme başına
+}
+
 export interface PollerEngine {
   start(): void;
   stop(): void;
@@ -274,6 +279,8 @@ export interface PollerEngine {
   onReport(callback: (report: UsageReport, ownerId?: string) => void): void;
 }
 ```
+
+Yoklayıcı ayarları `PollerOptions` adlı nesneyle verilir. `src/index.ts`, isteğe bağlı `POLL_TIMEOUT_MS` ortam değişkenini `pollTimeoutMs` değerine aktarır (varsayılan `30000` ms). Değer sonlu pozitif tam sayı olmalı ve JavaScript timer üst sınırını (`2147483647` ms) aşmamalıdır. Deadline, daemon ve manuel yenilemelerde her sağlayıcı denemesi içindir; tüm sweep süresini sınırlamaz.
 
 - **Genel Daemon vs Kullanıcı Odaklı Manuel Tetikleme:**
   1. **Arka Plan Yoklayıcı Daemon:** Sunucu sürecinde 7/24 çalışır. `listAllCredentialsInternal()` çağırarak kayıtlı tüm kimlik bilgilerini sırayla ve jitter ile günceller.
@@ -295,6 +302,7 @@ export interface PollerEngine {
      - **Kuyrukta Bekleyen Kimliklerin Tazeliği:** Daemon ve kullanıcı yoklamaları sağlayıcı çağrısı başlamadan önce kimliği aynı sahip/id ile kasadan yeniden okur. Kuyruk oluşturulduktan sonra başarılı yeniden yetkilendirme yapılmışsa yeni token'lar kullanılır; silinmiş kimlikler atlanır. Zaten başlamış eski yoklamaların token/snapshot yazıları epoch kontrolüyle reddedilmeye devam eder.
      - **Manuel Değiştirme vs OAuth Yeniden Bağlama:** `validateAndSaveCredential(ownerId, input, metadataMode)` çağıranları açıkça `replace` veya `preserve` seçer. Manuel credential POST'u `replace` kullanır: eski hesabın refresh token, OAuth client, proje/e-posta/hesap metadata'sı yeni token'a taşınmaz; adayın doğrulama sırasında ürettiği metadata kullanılır. OAuth yeniden bağlamaları `preserve` kullanır: doğrulanmış aday metadata'sı güncel kayıtla birleştirilir ve aynı hesap akışında verilmemiş refresh bilgileri korunur. İki modda da başarısız doğrulama eski kimliği ve geçmişini değiştirmez; kart rengi ve kayıt kimliği korunur.
      - **Google Refresh İstemci Kökeni:** Credential metadata'sındaki tam client ID/secret çifti refresh token'ın kaynak istemcisidir. Bu çiftin bulunmadığı eski kayıtlar gömülü istemciye aittir; sonradan yapılandırılan operator-owned Web istemcisi bu kayıtların refresh istemcisini değiştirmez.
+     - **Sağlayıcı denemesi deadline ve iptal:** Her daemon veya manuel deneme bir `AbortSignal` alır; `POLL_TIMEOUT_MS` süresi dolunca poller sinyali iptal eder ve `Promise.race` ile tüketici bekleyişini ve credential `SingleFlight` yuvasını serbest bırakır. Adapter iptali yok sayarsa sağlayıcı işi arka planda sürebilir. İsteğe bağlı alt isteklerde olağan hatalar mevcut best-effort davranışını korur; abort bu hatalarda yutulmaz ve retry beklemesi iptale duyarlıdır. Süre aşımı mevcut stale/error durum makinesine uyar: son başarılı limitler stale raporda korunur, hiç başarılı veri yoksa boş limitli error raporu yazılır. Deadline öncesinde gerçekleşen token yenilemesi saklanır; deadline sonrasında çağrılan token callback'i veya tamamlanan sağlayıcı sonucu token/sağlıklı rapor yazamaz. Bu kontrol monotonic saatle commit noktasında yapılır; event loop bloke olduğunda JavaScript timer'ı veya AbortSignal eşzamanlı CPU işini kesemez, ancak kontrol yeniden çalıştığında deadline'ı aşmış commit'i reddeder.
   5. 429 veya geçici hata alındığında exponential backoff (15s, 30s, 60s) devreye girer.
 ---
 

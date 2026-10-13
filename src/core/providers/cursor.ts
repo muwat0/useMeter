@@ -69,7 +69,9 @@ export class CursorAdapter implements ProviderAdapter {
             }
           }
         }
-      } catch {}
+      } catch (err) {
+        if (ctx?.signal?.aborted) throw err;
+      }
     }
 
     const res = await fetchImpl("https://api2.cursor.sh/auth/usage", {
