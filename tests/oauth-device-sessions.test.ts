@@ -1,3 +1,4 @@
+import { request as httpRequest, type ClientRequest } from "node:http";
 import { describe, expect, it } from "bun:test";
 import { StorageVault } from "../src/core/storage/vault";
 import { PollerEngine } from "../src/core/poller/poller";
@@ -379,20 +380,55 @@ describe("device OAuth session routes", () => {
     const registry = new ProviderRegistry();
     const app = createServer(vault, new PollerEngine(vault, registry), registry);
     const pendingProviderResponse = Promise.withResolvers<Response>();
+    void pendingProviderResponse.promise.catch(() => {});
     const pendingProviderStarted = Promise.withResolvers<void>();
-    const providerAborted = Promise.withResolvers<void>();
+    const serverRequestAborted = Promise.withResolvers<void>();
+    const initiationHandlerFinished = Promise.withResolvers<void>();
+    const clientRequestOutcome = Promise.withResolvers<"response" | "error">();
+    const clientRequestError = Promise.withResolvers<Error>();
+    const clientRequestClosed = Promise.withResolvers<void>();
+    const clientSocketClosed = Promise.withResolvers<void>();
     const sessionIds: string[] = [];
+    let ownerId = "";
+    let ownerCookie = "";
     let providerInitiations = 0;
+    let providerAbortEvents = 0;
+    let providerResponseSettled = false;
     let blockNextInitiation = false;
     let providerSignal: AbortSignal | undefined;
+    let serverRequestSignalAborted = false;
+    let serverInitiationStarted = false;
+    let clientResponseReceived = false;
+    let clientRequest: ClientRequest | undefined;
+
+    const rejectPendingProviderResponse = (message: string) => {
+      if (providerResponseSettled) return;
+      providerResponseSettled = true;
+      pendingProviderResponse.reject(new Error(message));
+    };
+
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
-      fetch: request => app.fetch(request),
+      fetch: request => {
+        if (
+          request.method !== "POST"
+          || new URL(request.url).pathname !== "/api/oauth/codex/initiate"
+        ) {
+          return app.fetch(request);
+        }
+        serverInitiationStarted = true;
+        request.signal.addEventListener("abort", () => {
+          serverRequestSignalAborted = true;
+          serverRequestAborted.resolve();
+        }, { once: true });
+        return Promise.resolve(app.fetch(request)).finally(() => initiationHandlerFinished.resolve());
+      },
     });
     const port = server.port;
     if (port === undefined) {
       server.stop(true);
+      vault.close();
       throw new Error("Synthetic loopback server did not receive an ephemeral port");
     }
 
@@ -403,13 +439,13 @@ describe("device OAuth session routes", () => {
         if (blockNextInitiation) {
           blockNextInitiation = false;
           providerSignal = init?.signal ?? undefined;
-          pendingProviderStarted.resolve();
           const rejectProviderRequest = () => {
-            providerAborted.resolve();
-            pendingProviderResponse.reject(new Error("Synthetic provider request aborted"));
+            providerAbortEvents++;
+            rejectPendingProviderResponse("Synthetic provider request aborted");
           };
           if (providerSignal?.aborted) rejectProviderRequest();
           else providerSignal?.addEventListener("abort", rejectProviderRequest, { once: true });
+          pendingProviderStarted.resolve();
           return pendingProviderResponse.promise;
         }
         return jsonResponse({
@@ -422,10 +458,19 @@ describe("device OAuth session routes", () => {
       throw new Error(`Unexpected synthetic OAuth URL: ${url}`);
     }) as typeof fetch;
 
-    let ownerCookie = "";
-    let abortedRequest: Promise<Response> | undefined;
     try {
-      ownerCookie = await register(app, "device-oauth-http-abort@example.test");
+      const registration = await app.request("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "device-oauth-http-abort@example.test",
+          password: "Password12345678!",
+        }),
+      });
+      expect(registration.status).toBe(201);
+      const registrationBody = await registration.json() as { user: { id: string } };
+      ownerId = registrationBody.user.id;
+      ownerCookie = registration.headers.get("Set-Cookie")!.split(";")[0]!;
       for (let index = 0; index < 4; index++) {
         const response = await app.request("/api/oauth/codex/initiate", {
           method: "POST",
@@ -437,17 +482,44 @@ describe("device OAuth session routes", () => {
       }
 
       blockNextInitiation = true;
-      const controller = new AbortController();
-      abortedRequest = originalFetch(`http://127.0.0.1:${port}/api/oauth/codex/initiate`, {
+      const abortedRequest = httpRequest({
+        hostname: "127.0.0.1",
+        port,
+        path: "/api/oauth/codex/initiate",
         method: "POST",
         headers: { Cookie: ownerCookie },
-        signal: controller.signal,
+        agent: false,
       });
+      clientRequest = abortedRequest;
+      abortedRequest.once("response", response => {
+        clientResponseReceived = true;
+        response.resume();
+        clientRequestOutcome.resolve("response");
+      });
+      abortedRequest.once("error", error => {
+        clientRequestError.resolve(error);
+        clientRequestOutcome.resolve("error");
+      });
+      abortedRequest.once("close", () => clientRequestClosed.resolve());
+      abortedRequest.once("socket", socket => {
+        socket.once("close", () => clientSocketClosed.resolve());
+      });
+      abortedRequest.end();
+
       await pendingProviderStarted.promise;
-      controller.abort();
-      await expect(abortedRequest!).rejects.toThrow();
-      await providerAborted.promise;
+      abortedRequest.destroy();
+      expect(await clientRequestOutcome.promise).toBe("error");
+      await Promise.all([
+        clientRequestError.promise,
+        clientRequestClosed.promise,
+        clientSocketClosed.promise,
+        serverRequestAborted.promise,
+      ]);
+      expect(serverRequestSignalAborted).toBe(true);
       expect(providerSignal?.aborted).toBe(true);
+      expect(providerAbortEvents).toBe(1);
+      expect(clientResponseReceived).toBe(false);
+      await initiationHandlerFinished.promise;
 
       const retry = await app.request("/api/oauth/codex/initiate", {
         method: "POST",
@@ -457,20 +529,32 @@ describe("device OAuth session routes", () => {
       const retryBody = await retry.json() as { data: { sessionId: string } };
       sessionIds.push(retryBody.data.sessionId);
       expect(providerInitiations).toBe(6);
+      expect(vault.listCredentials(ownerId)).toHaveLength(0);
     } finally {
-      pendingProviderResponse.reject(new Error("Synthetic provider request test cleanup"));
-      await abortedRequest?.catch(() => {});
-      if (ownerCookie) {
-        for (const sessionId of sessionIds) {
-          await app.request(`/api/oauth/sessions/${encodeURIComponent(sessionId)}`, {
-            method: "DELETE",
-            headers: { Cookie: ownerCookie },
-          });
+      clientRequest?.destroy();
+      rejectPendingProviderResponse("Synthetic provider request test cleanup");
+      try {
+        if (clientRequest) {
+          await Promise.all([
+            clientRequestOutcome.promise,
+            clientRequestClosed.promise,
+            clientSocketClosed.promise,
+          ]);
         }
+        if (serverInitiationStarted) await initiationHandlerFinished.promise;
+        if (ownerCookie) {
+          for (const sessionId of sessionIds) {
+            await app.request(`/api/oauth/sessions/${encodeURIComponent(sessionId)}`, {
+              method: "DELETE",
+              headers: { Cookie: ownerCookie },
+            });
+          }
+        }
+      } finally {
+        globalThis.fetch = originalFetch;
+        server.stop(true);
+        vault.close();
       }
-      globalThis.fetch = originalFetch;
-      server.stop(true);
-      vault.close();
     }
   });
 
