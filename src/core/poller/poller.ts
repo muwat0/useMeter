@@ -36,7 +36,7 @@ export class PollerEngine {
   readonly #listeners: Set<ReportListener> = new Set();
   #timer?: Timer;
   #running = false;
-
+  #sweepInFlight?: Promise<UsageReport[]>;
   constructor(vault: StorageVault, registry: ProviderRegistry, intervalMs: number = 5 * 60 * 1000) {
     this.#vault = vault;
     this.#registry = registry;
@@ -65,8 +65,7 @@ export class PollerEngine {
 
     // Run initial poll
     this.pollAll().catch(() => {});
-
-    // Schedule periodic polling with jitter
+    // Schedule periodic polling; per-credential jitter is applied within each sweep.
     this.#timer = setInterval(() => {
       this.pollAll().catch(() => {});
     }, this.#intervalMs);
@@ -297,7 +296,20 @@ export class PollerEngine {
     return report;
   }
 
-  async pollAll(): Promise<UsageReport[]> {
+  pollAll(): Promise<UsageReport[]> {
+    if (this.#sweepInFlight) return this.#sweepInFlight;
+
+    let sweep!: Promise<UsageReport[]>;
+    sweep = this.#runSweep().finally(() => {
+      if (this.#sweepInFlight === sweep) {
+        this.#sweepInFlight = undefined;
+      }
+    });
+    this.#sweepInFlight = sweep;
+    return sweep;
+  }
+
+  async #runSweep(): Promise<UsageReport[]> {
     const credentials = this.#vault.listAllCredentialsInternal();
     const reports: UsageReport[] = [];
     for (const cred of credentials) {
