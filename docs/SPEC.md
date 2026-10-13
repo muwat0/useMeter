@@ -430,6 +430,15 @@ Bellek sızıntılarını önlemek için en fazla 10.000 benzersiz anahtar tutan
 - Browser modal close/back/restart/error ve unmount bilinen session'ı owner-scoped DELETE ile iptal eder. Initiate yanıtı henüz gelmediyse HTTP isteği kısa 12 saniyelik istemci deadline'ıyla devam eder: geç gelen eski-run yanıtındaki sessionId silinir, yeni akış/UI etkilenmez. Poll/manual istekleri anında abort edilir; unmount generation ve poll timer'ını temizler. EN/TR kapasite, expiry, retry ve hata mesajları yerelleştirilir.
 - Test saati tek `ServerOptions.oauthNow` seam'idir; eski Google-only clock/map'ler kaldırılmıştır. Devin/Cursor usage validation'da keşfedilen kimlik adı provider-label modu ile kalıcılaşır; manuel kullanıcı etiketleri input-bound kalır.
 
+#### 4.4.2. Hosted Manuel OAuth Tamamlama
+
+- Claude, Gemini CLI ve Z.ai embedded istemcilerinin kayıtlı loopback redirect URI'leri korunur; sunucuda fixed-port listener açılmaz. Kullanıcı tarayıcıdaki tam dönüş URL'sini kendi girişimine teslim eder. Claude ayrıca state taşıyan `code#state` girdisini kabul eder.
+- OpenRouter [birinci parti headless S256 PKCE](https://openrouter.ai/docs/guides/overview/auth/oauth) kullanır: callback_url yok, kod tek kullanımlık/10 dakika, state headless modda dönmez. Ham opaque code yalnız bu sahibi/PKCE'si bağlı OpenRouter girişimi için kabul edilir.
+- Ortak authenticated `POST /api/oauth/manual` gövdesi `{sessionId, callbackInput}`; provider/redirect/verifier session'dan seçilir. Eski Google-only manual route ve kullanılmayan provider listener export'ları kaldırılmıştır. Google embedded URL paste ve isteğe bağlı custom Web public callback davranışı korunur.
+- URL modu exact origin/path/state, code XOR error ve duplicate-param kontrolü yapar; pasted URI fetch edilmez. State üretimi CSPRNG UUID'dir. Owner/claim/replay/expiry/abort/beforeCommit ile P0-2 güvenliği devam eder; iki kullanıcının aynı provider girişimi birbirinin listener'ını kapatamaz.
+- Başarısız exchange/validation mevcut credential, metadata, accent ve snapshot geçmişini korur. EN/TR manual URL/code formu provider'a uygun yönerge sunar; başarıdan sonra terminal receipt okunabilir kalır ve dashboard güncellenir. Sentetik exchange testleri, gerçek sağlayıcı hesap veya kota uyumluluğu kanıtı değildir.
+
+
 
 
 ### 4.5. Durağan Veri Şifreleme (At-Rest Metadata Encryption) ve İki Aşamalı Dağıtım Sözleşmesi

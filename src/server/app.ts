@@ -28,7 +28,6 @@ import {
   validateGoogleOAuthConfig,
   initiateClaudeAuth,
   exchangeClaudeCode,
-  listenForClaudeCallback,
   initiateCopilotDeviceAuth,
   pollCopilotDeviceAuth,
   initiateCursorAuth,
@@ -39,22 +38,26 @@ import {
   pollKimiDeviceAuth,
   initiateGeminiCliAuth,
   exchangeGeminiCliCode,
-  listenForGeminiCliCallback,
   initiateOpenRouterAuth,
   exchangeOpenRouterCode,
-  listenForOpenRouterCallback,
   initiateZaiAuth,
   exchangeZaiCode,
-  listenForZaiCallback,
   initiateDevinAuth,
   exchangeDevinCode,
   listenForDevinCallback,
   getDevinRedirectUri,
 } from "../core/oauth";
+import {
+  CLAUDE_REDIRECT_URI,
+  GEMINI_CLI_REDIRECT_URI,
+  GOOGLE_EMBEDDED_REDIRECT_URI as GOOGLE_LOOPBACK_CALLBACK_URI,
+  ZAI_REDIRECT_URI,
+  parseOAuthCallbackParameters,
+  parseOAuthManualInput,
+  type ParsedOAuthCallback,
+} from "../core/oauth/manual-callback";
 import { OAuthCapacityError, OAuthSessionStore, type OAuthSession } from "../core/oauth/session-store";
 
-
-const GOOGLE_LOOPBACK_CALLBACK_URI = "http://127.0.0.1:51121/oauth-callback";
 const OAUTH_MAX_SESSION_TTL_MS = 10 * 60 * 1000;
 const OAUTH_MAX_SESSION_TTL_SECONDS = OAUTH_MAX_SESSION_TTL_MS / 1_000;
 const NO_OP: () => void = () => {};
@@ -65,53 +68,6 @@ function oauthExpiresInSeconds(providerExpiresIn?: number): number {
   }
   return Math.min(Math.max(providerExpiresIn, 0), OAUTH_MAX_SESSION_TTL_SECONDS);
 }
-
-interface ParsedGoogleCallback {
-  state: string;
-  code?: string;
-  providerError?: string;
-}
-
-function parseGoogleCallbackParameters(params: URLSearchParams): ParsedGoogleCallback | null {
-  const seen = new Set<string>();
-  for (const [name] of params) {
-    if (seen.has(name)) return null;
-    seen.add(name);
-  }
-
-  const state = params.get("state");
-  const code = params.get("code");
-  const providerError = params.get("error");
-  if (!state?.trim() || (code !== null && !code.trim()) || (providerError !== null && !providerError.trim())) {
-    return null;
-  }
-  if (code !== null && providerError !== null) return null;
-  if (providerError !== null) return { state, providerError };
-  if (code === null) return null;
-  return { state, code };
-}
-
-function parseGoogleManualCallbackUrl(value: unknown): ParsedGoogleCallback | null {
-  if (typeof value !== "string") return null;
-  const input = value.trim();
-  if (!input.startsWith(`${GOOGLE_LOOPBACK_CALLBACK_URI}?`) || input.includes("#")) return null;
-  try {
-    const callback = new URL(input);
-    if (
-      callback.origin !== "http://127.0.0.1:51121" ||
-      callback.pathname !== "/oauth-callback" ||
-      callback.username ||
-      callback.password ||
-      callback.hash
-    ) {
-      return null;
-    }
-    return parseGoogleCallbackParameters(callback.searchParams);
-  } catch {
-    return null;
-  }
-}
-
 
 interface PendingOAuthData {
   googleVerifier?: string;
@@ -300,6 +256,7 @@ export function createServer(
     verifier: string,
     config: { clientId: string; clientSecret: string; redirectUri: string },
   ) {
+    session.data.googleVerifier = undefined;
     const tokens = await googleOAuthExchange(code, verifier, config, session.signal);
     session.signal.throwIfAborted();
     const accountLabel = tokens.email?.trim() || "Antigravity";
@@ -325,6 +282,142 @@ export function createServer(
       beforeCommit: () => oauthSessions.isActive(session),
     });
     return { saved, accountLabel };
+  }
+
+  async function completeManualOAuthCredential(
+    session: PendingOAuthSession,
+    code: string,
+  ): Promise<{ saved: StoredCredential; accountLabel: string } | null> {
+    switch (session.provider) {
+      case "antigravity": {
+        const verifier = session.data.googleVerifier;
+        const clientId = session.data.googleClientId;
+        const clientSecret = session.data.googleClientSecret;
+        const redirectUri = session.data.googleRedirectUri;
+        if (!verifier || !clientId || !clientSecret || redirectUri !== GOOGLE_LOOPBACK_CALLBACK_URI) {
+          throw new Error("Authorization session invalid");
+        }
+        const result = await validateAndSaveGoogleCredential(session, code, verifier, {
+          clientId,
+          clientSecret,
+          redirectUri,
+        });
+        return { saved: result.saved, accountLabel: result.accountLabel };
+      }
+      case "anthropic": {
+        const verifier = session.data.callbackVerifier;
+        if (!verifier) throw new Error("Authorization session invalid");
+        session.data.callbackVerifier = undefined;
+        const tokens = await exchangeClaudeCode(code, verifier, session.signal);
+        if (!oauthSessions.isActive(session)) return null;
+        let accountLabel = "Claude Pro/Max";
+        try {
+          if (tokens.accessToken) {
+            const profileRes = await fetch("https://api.anthropic.com/api/oauth/user_profile", {
+              headers: {
+                Authorization: `Bearer ${tokens.accessToken}`,
+                Accept: "application/json",
+                "User-Agent": "claude-cli/0.2.148 (external, cli)",
+              },
+              signal: session.signal,
+            });
+            if (profileRes.ok) {
+              const profile = (await profileRes.json()) as {
+                email?: string;
+                user?: { email?: string; id?: string };
+                id?: string;
+              };
+              const discoveredEmail = profile.email || profile.user?.email;
+              const discoveredId = profile.user?.id || profile.id;
+              if (discoveredEmail?.trim()) accountLabel = discoveredEmail.trim();
+              else if (discoveredId && String(discoveredId).trim()) accountLabel = String(discoveredId).trim();
+            }
+          }
+        } catch {
+          if (!oauthSessions.isActive(session)) return null;
+        }
+        if (!oauthSessions.isActive(session)) return null;
+        const saved = await poller.validateAndSaveCredential(session.ownerId, {
+          ownerId: session.ownerId,
+          provider: "anthropic",
+          accountLabel,
+          credentialType: "oauth",
+          secret: tokens.accessToken,
+          metadata: {
+            refreshToken: tokens.refreshToken,
+            email: accountLabel !== "Claude Pro/Max" ? accountLabel : undefined,
+          },
+        }, "preserve", {
+          signal: session.signal,
+          beforeCommit: () => oauthSessions.isActive(session),
+        });
+        return { saved, accountLabel };
+      }
+      case "google-gemini-cli": {
+        const tokens = await exchangeGeminiCliCode(code, session.signal);
+        if (!oauthSessions.isActive(session)) return null;
+        const accountLabel = tokens.email || tokens.projectId || "Gemini CLI";
+        const saved = await poller.validateAndSaveCredential(session.ownerId, {
+          ownerId: session.ownerId,
+          provider: "google-gemini-cli",
+          accountLabel,
+          credentialType: "oauth",
+          secret: tokens.accessToken,
+          metadata: {
+            refreshToken: tokens.refreshToken,
+            email: tokens.email,
+            projectId: tokens.projectId,
+          },
+        }, "preserve", {
+          signal: session.signal,
+          beforeCommit: () => oauthSessions.isActive(session),
+        });
+        return { saved, accountLabel };
+      }
+      case "openrouter": {
+        const verifier = session.data.callbackVerifier;
+        if (!verifier) throw new Error("Authorization session invalid");
+        session.data.callbackVerifier = undefined;
+        const keyResult = await exchangeOpenRouterCode(code, verifier, session.signal);
+        if (!oauthSessions.isActive(session)) return null;
+        const accountLabel = keyResult.label || "OpenRouter";
+        const saved = await poller.validateAndSaveCredential(session.ownerId, {
+          ownerId: session.ownerId,
+          provider: "openrouter",
+          accountLabel,
+          credentialType: "api_key",
+          secret: keyResult.apiKey,
+          metadata: { source: "oauth-pkce" },
+        }, "preserve", {
+          signal: session.signal,
+          beforeCommit: () => oauthSessions.isActive(session),
+        });
+        return { saved, accountLabel };
+      }
+      case "zai": {
+        const keyResult = await exchangeZaiCode(code, session.sessionId, session.signal);
+        if (!oauthSessions.isActive(session)) return null;
+        const accountLabel = keyResult.email || "Zhipu AI";
+        const saved = await poller.validateAndSaveCredential(session.ownerId, {
+          ownerId: session.ownerId,
+          provider: "zai",
+          accountLabel,
+          credentialType: "api_key",
+          secret: keyResult.apiKey,
+          metadata: {
+            email: keyResult.email,
+            accountId: keyResult.accountId,
+            source: "oauth",
+          },
+        }, "preserve", {
+          signal: session.signal,
+          beforeCommit: () => oauthSessions.isActive(session),
+        });
+        return { saved, accountLabel };
+      }
+      default:
+        throw new Error("Unsupported manual authorization session");
+    }
   }
 
   const allowedOriginsEnv = process.env["CORS_ALLOWED_ORIGINS"] || process.env["USEMETER_ALLOWED_ORIGINS"];
@@ -1050,6 +1143,7 @@ export function createServer(
           sessionId,
           redirectUri: config.redirectUri,
           manualCallback: config.redirectUri === GOOGLE_LOOPBACK_CALLBACK_URI,
+          manualInput: config.redirectUri === GOOGLE_LOOPBACK_CALLBACK_URI ? "url" : undefined,
           expiresIn: OAUTH_MAX_SESSION_TTL_SECONDS,
         },
       });
@@ -1070,10 +1164,10 @@ export function createServer(
     }
   });
 
-  app.post("/api/oauth/google/manual", async c => {
+  app.post("/api/oauth/manual", async c => {
     const user = c.get("user");
     const rl = rateLimiter.check(
-      `oauthDevicePoll:${user.id}:google-manual`,
+      `oauthDevicePoll:${user.id}:manual`,
       RATE_LIMIT_POLICIES.oauthDevicePoll,
     );
     if (!rl.allowed) {
@@ -1089,7 +1183,7 @@ export function createServer(
     if (!sessionId) return c.json({ success: false, error: "Invalid callback request" }, 400);
 
     const session = oauthSessions.getOwned(sessionId, user.id);
-    if (!session || session.provider !== "antigravity") {
+    if (!session || !["antigravity", "anthropic", "google-gemini-cli", "openrouter", "zai"].includes(session.provider)) {
       return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
     }
     if (session.status !== "pending") {
@@ -1098,56 +1192,79 @@ export function createServer(
         : "Authorization response already used";
       return c.json({ success: false, error: message }, 400);
     }
-    const callback = parseGoogleManualCallbackUrl(request["callbackInput"]);
-    if (!callback || callback.state !== sessionId) {
-      return c.json({ success: false, error: "Invalid callback URL" }, 400);
-    }
-    if (!oauthSessions.claim(session)) {
-      return c.json({ success: false, error: "Authorization response already used" }, 400);
-    }
-    if (
-      !session.data.googleVerifier ||
-      !session.data.googleClientId ||
-      !session.data.googleClientSecret ||
-      session.data.googleRedirectUri !== GOOGLE_LOOPBACK_CALLBACK_URI
-    ) {
-      oauthSessions.fail(session, "Authorization session invalid");
-      return c.json({ success: false, error: "Invalid or expired authorization session" }, 400);
-    }
 
-    const verifier = session.data.googleVerifier;
-    const config = {
-      clientId: session.data.googleClientId,
-      clientSecret: session.data.googleClientSecret,
-      redirectUri: session.data.googleRedirectUri,
-    };
+    let callback: ParsedOAuthCallback | null = null;
+    switch (session.provider) {
+      case "antigravity":
+        if (session.data.googleRedirectUri === GOOGLE_LOOPBACK_CALLBACK_URI) {
+          callback = parseOAuthManualInput(request["callbackInput"], {
+            mode: "url",
+            redirectUri: GOOGLE_LOOPBACK_CALLBACK_URI,
+            expectedState: session.sessionId,
+          });
+        }
+        break;
+      case "anthropic":
+        callback = parseOAuthManualInput(request["callbackInput"], {
+          mode: "url",
+          redirectUri: CLAUDE_REDIRECT_URI,
+          expectedState: session.sessionId,
+          allowCodeHashState: true,
+        });
+        break;
+      case "google-gemini-cli":
+        callback = parseOAuthManualInput(request["callbackInput"], {
+          mode: "url",
+          redirectUri: GEMINI_CLI_REDIRECT_URI,
+          expectedState: session.sessionId,
+        });
+        break;
+      case "openrouter":
+        callback = parseOAuthManualInput(request["callbackInput"], { mode: "code" });
+        break;
+      case "zai":
+        callback = parseOAuthManualInput(request["callbackInput"], {
+          mode: "url",
+          redirectUri: ZAI_REDIRECT_URI,
+          expectedState: session.sessionId,
+        });
+        break;
+    }
+    if (!callback) return c.json({ success: false, error: "Invalid callback input" }, 400);
+    if (!oauthSessions.claim(session)) {
+      const message = session.error === "Authorization session expired"
+        ? session.error
+        : "Authorization response already used";
+      return c.json({ success: false, error: message }, 400);
+    }
     if (callback.providerError) {
       oauthSessions.fail(session, "Authorization was denied");
       return c.json({ success: false, error: "Authorization was denied" }, 400);
     }
 
     try {
-      const { saved, accountLabel } = await validateAndSaveGoogleCredential(
-        session,
-        callback.code!,
-        verifier,
-        config,
-      );
-      if (!oauthSessions.complete(session, accountLabel)) {
+      const completion = await completeManualOAuthCredential(session, callback.code!);
+      if (!completion || !oauthSessions.complete(session, completion.accountLabel)) {
         return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
       }
-      return c.json({ success: true, data: { id: saved.id, accountLabel } });
-    } catch {
+      return c.json({
+        success: true,
+        data: { id: completion.saved.id, accountLabel: completion.accountLabel },
+      });
+    } catch (error) {
       if (!oauthSessions.isActive(session)) {
         return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
       }
-      oauthSessions.fail(session, "Authorization failed");
+      const message = session.provider === "antigravity"
+        ? "Authorization failed"
+        : error instanceof Error ? error.message : "Authorization failed";
+      oauthSessions.fail(session, message);
       return c.json({ success: false, error: "Authorization failed" }, 400);
     }
   });
 
   app.get("/api/oauth/google/callback", async c => {
-    const params = parseGoogleCallbackParameters(new URL(c.req.url).searchParams);
+    const params = parseOAuthCallbackParameters(new URL(c.req.url).searchParams);
     const session = params ? oauthSessions.get(params.state) : undefined;
     const successPage = (title: string, message: string, color: string) =>
       c.html(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:system-ui,sans-serif;background:#0a0a0b;color:${color};text-align:center;padding:50px"><h2>${title}</h2><p style="color:#a1a1aa">${message}</p><script>setTimeout(()=>window.close(),1500)</script></body></html>`);
@@ -1213,68 +1330,23 @@ export function createServer(
       reservation = reserveOAuth(user.id, "anthropic");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
-      const { authUrl, verifier, state } = initiateClaudeAuth();
+      const { authUrl, verifier, state, redirectUri } = initiateClaudeAuth();
       if (!oauthSessions.activate(reservation, state, { callbackVerifier: verifier })) {
         oauthSessions.cancel(reservation.sessionId, user.id);
         return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
       }
 
-      listenForClaudeCallback(state, 120_000, reservation.signal)
-        .then(async code => {
-          if (!oauthSessions.claim(reservation!)) return;
-          try {
-            const currentVerifier = reservation!.data.callbackVerifier;
-            if (!currentVerifier) throw new Error("Authorization session invalid");
-            reservation!.data.callbackVerifier = undefined;
-            const tokens = await exchangeClaudeCode(code, currentVerifier, reservation!.signal);
-            if (!oauthSessions.isActive(reservation!)) return;
-            let label = "Claude Pro/Max";
-            try {
-              if (tokens.accessToken) {
-                const profileRes = await fetch("https://api.anthropic.com/api/oauth/user_profile", {
-                  headers: { Authorization: `Bearer ${tokens.accessToken}`, Accept: "application/json", "User-Agent": "claude-cli/0.2.148 (external, cli)" },
-                  signal: reservation!.signal,
-                });
-                if (profileRes.ok) {
-                  const profile = (await profileRes.json()) as { email?: string; user?: { email?: string; id?: string }; id?: string };
-                  const discoveredEmail = profile.email || profile.user?.email;
-                  const discoveredId = profile.user?.id || profile.id;
-                  if (discoveredEmail && discoveredEmail.trim()) label = discoveredEmail.trim();
-                  else if (discoveredId && String(discoveredId).trim()) label = String(discoveredId).trim();
-                }
-              }
-            } catch {
-              if (!oauthSessions.isActive(reservation!)) return;
-            }
-            if (!oauthSessions.isActive(reservation!)) return;
-            await poller.validateAndSaveCredential(user.id, {
-              ownerId: user.id,
-              provider: "anthropic",
-              accountLabel: label,
-              credentialType: "oauth",
-              secret: tokens.accessToken,
-              metadata: {
-                refreshToken: tokens.refreshToken,
-                email: label !== "Claude Pro/Max" ? label : undefined,
-              },
-            }, "preserve", {
-              signal: reservation!.signal,
-              beforeCommit: () => oauthSessions.isActive(reservation!),
-            });
-            oauthSessions.complete(reservation!, label);
-          } catch (error) {
-            if (oauthSessions.isActive(reservation!)) {
-              oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
-            }
-          }
-        })
-        .catch(error => {
-          if (oauthSessions.isActive(reservation!)) {
-            oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
-          }
-        });
-
-      return c.json({ success: true, data: { authUrl, sessionId: state, expiresIn: 600 } });
+      return c.json({
+        success: true,
+        data: {
+          authUrl,
+          sessionId: state,
+          expiresIn: OAUTH_MAX_SESSION_TTL_SECONDS,
+          manualCallback: true,
+          manualInput: "url",
+          redirectUri,
+        },
+      });
     } catch {
       if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
@@ -1630,44 +1702,23 @@ export function createServer(
       reservation = reserveOAuth(user.id, "google-gemini-cli");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
-      const { authUrl, state } = initiateGeminiCliAuth();
+      const { authUrl, state, redirectUri } = initiateGeminiCliAuth();
       if (!oauthSessions.activate(reservation, state, {})) {
         oauthSessions.cancel(reservation.sessionId, user.id);
         return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
       }
 
-      listenForGeminiCliCallback(state, 120_000, reservation.signal)
-        .then(async code => {
-          if (!oauthSessions.claim(reservation!)) return;
-          try {
-            const tokens = await exchangeGeminiCliCode(code, reservation!.signal);
-            if (!oauthSessions.isActive(reservation!)) return;
-            const label = tokens.email || tokens.projectId || "Gemini CLI";
-            await poller.validateAndSaveCredential(user.id, {
-              ownerId: user.id,
-              provider: "google-gemini-cli",
-              accountLabel: label,
-              credentialType: "oauth",
-              secret: tokens.accessToken,
-              metadata: { refreshToken: tokens.refreshToken, email: tokens.email, projectId: tokens.projectId },
-            }, "preserve", {
-              signal: reservation!.signal,
-              beforeCommit: () => oauthSessions.isActive(reservation!),
-            });
-            oauthSessions.complete(reservation!, label);
-          } catch (error) {
-            if (oauthSessions.isActive(reservation!)) {
-              oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
-            }
-          }
-        })
-        .catch(error => {
-          if (oauthSessions.isActive(reservation!)) {
-            oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
-          }
-        });
-
-      return c.json({ success: true, data: { authUrl, sessionId: state, expiresIn: 600 } });
+      return c.json({
+        success: true,
+        data: {
+          authUrl,
+          sessionId: state,
+          expiresIn: OAUTH_MAX_SESSION_TTL_SECONDS,
+          manualCallback: true,
+          manualInput: "url",
+          redirectUri,
+        },
+      });
     } catch {
       if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
@@ -1691,41 +1742,16 @@ export function createServer(
         return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
       }
 
-      listenForOpenRouterCallback(120_000, reservation.signal)
-        .then(async code => {
-          if (!oauthSessions.claim(reservation!)) return;
-          try {
-            const currentVerifier = reservation!.data.callbackVerifier;
-            if (!currentVerifier) throw new Error("Authorization session invalid");
-            reservation!.data.callbackVerifier = undefined;
-            const keyResult = await exchangeOpenRouterCode(code, currentVerifier, reservation!.signal);
-            if (!oauthSessions.isActive(reservation!)) return;
-            const label = keyResult.label || "OpenRouter";
-            await poller.validateAndSaveCredential(user.id, {
-              ownerId: user.id,
-              provider: "openrouter",
-              accountLabel: label,
-              credentialType: "api_key",
-              secret: keyResult.apiKey,
-              metadata: { source: "oauth-pkce" },
-            }, "preserve", {
-              signal: reservation!.signal,
-              beforeCommit: () => oauthSessions.isActive(reservation!),
-            });
-            oauthSessions.complete(reservation!, label);
-          } catch (error) {
-            if (oauthSessions.isActive(reservation!)) {
-              oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
-            }
-          }
-        })
-        .catch(error => {
-          if (oauthSessions.isActive(reservation!)) {
-            oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
-          }
-        });
-
-      return c.json({ success: true, data: { authUrl, sessionId, expiresIn: 600 } });
+      return c.json({
+        success: true,
+        data: {
+          authUrl,
+          sessionId,
+          expiresIn: OAUTH_MAX_SESSION_TTL_SECONDS,
+          manualCallback: true,
+          manualInput: "code",
+        },
+      });
     } catch {
       if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
@@ -1743,44 +1769,23 @@ export function createServer(
       reservation = reserveOAuth(user.id, "zai");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
-      const { authUrl, state, sessionId } = initiateZaiAuth();
+      const { authUrl, sessionId, redirectUri } = initiateZaiAuth();
       if (!oauthSessions.activate(reservation, sessionId, {})) {
         oauthSessions.cancel(reservation.sessionId, user.id);
         return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
       }
 
-      listenForZaiCallback(state, 120_000, reservation.signal)
-        .then(async code => {
-          if (!oauthSessions.claim(reservation!)) return;
-          try {
-            const keyResult = await exchangeZaiCode(code, state, reservation!.signal);
-            if (!oauthSessions.isActive(reservation!)) return;
-            const label = keyResult.email || "Zhipu AI";
-            await poller.validateAndSaveCredential(user.id, {
-              ownerId: user.id,
-              provider: "zai",
-              accountLabel: label,
-              credentialType: "api_key",
-              secret: keyResult.apiKey,
-              metadata: { email: keyResult.email, accountId: keyResult.accountId, source: "oauth" },
-            }, "preserve", {
-              signal: reservation!.signal,
-              beforeCommit: () => oauthSessions.isActive(reservation!),
-            });
-            oauthSessions.complete(reservation!, label);
-          } catch (error) {
-            if (oauthSessions.isActive(reservation!)) {
-              oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
-            }
-          }
-        })
-        .catch(error => {
-          if (oauthSessions.isActive(reservation!)) {
-            oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
-          }
-        });
-
-      return c.json({ success: true, data: { authUrl, sessionId, expiresIn: 600 } });
+      return c.json({
+        success: true,
+        data: {
+          authUrl,
+          sessionId,
+          expiresIn: OAUTH_MAX_SESSION_TTL_SECONDS,
+          manualCallback: true,
+          manualInput: "url",
+          redirectUri,
+        },
+      });
     } catch {
       if (reservation) oauthSessions.cancel(reservation.sessionId, user.id);
       return c.json({ success: false, error: "Failed to initiate authorization" }, 500);

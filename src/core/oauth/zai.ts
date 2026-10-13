@@ -1,4 +1,5 @@
-import { listenForOAuthCallback } from "./callback-server";
+import { randomUUID } from "node:crypto";
+import { ZAI_REDIRECT_URI } from "./manual-callback";
 
 const CLIENT_ID = process.env["ZAI_OAUTH_CLIENT_ID"] ?? "client_P8X5CMWmlaRO9gyO-KSqtg";
 const AUTHORIZE_URL = process.env["ZAI_OAUTH_AUTHORIZE_URL"] ?? "https://chat.z.ai/api/oauth/authorize";
@@ -6,46 +7,31 @@ const TOKEN_URL = process.env["ZAI_OAUTH_TOKEN_URL"] ?? "https://zcode.z.ai/api/
 const BIZ_BASE = process.env["ZAI_BIZ_BASE"] ?? "https://api.z.ai";
 const BUSINESS_LOGIN_URL = process.env["ZAI_BUSINESS_LOGIN_URL"] ?? "https://api.z.ai/api/auth/z/login";
 const KEY_NAME = "oh-my-pi";
-const CALLBACK_PORT = 9999;
-const CALLBACK_PATH = "/callback";
-const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}${CALLBACK_PATH}`;
+const REDIRECT_URI = ZAI_REDIRECT_URI;
 
 export interface ZaiAuthInitiateResult {
   authUrl: string;
   state: string;
   sessionId: string;
+  redirectUri: string;
 }
 
 export function initiateZaiAuth(): ZaiAuthInitiateResult {
-  const state = Math.random().toString(36).substring(2);
+  const state = randomUUID();
   const params = new URLSearchParams({
     redirect_uri: REDIRECT_URI,
     response_type: "code",
     client_id: CLIENT_ID,
     state,
   });
-
   return {
     authUrl: `${AUTHORIZE_URL}?${params.toString()}`,
     state,
     sessionId: state,
+    redirectUri: REDIRECT_URI,
   };
 }
 
-export async function listenForZaiCallback(
-  expectedState: string,
-  timeoutMs: number = 120_000,
-  signal?: AbortSignal,
-): Promise<string> {
-  return listenForOAuthCallback({
-    port: CALLBACK_PORT,
-    pathname: CALLBACK_PATH,
-    expectedState,
-    providerName: "Zhipu AI (GLM)",
-    timeoutMs,
-    signal,
-  });
-}
 
 function unwrapEnvelope(body: any, op: string): any {
   if (body && typeof body === "object" && ("code" in body || "success" in body)) {

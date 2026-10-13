@@ -21,15 +21,15 @@ The adapters below are implemented in the repository. That means useMeter contai
 | Provider | Implemented connection and reported data | Important limitations / verification status |
 | --- | --- | --- |
 | OpenAI Codex | Device authorization or a manually supplied token; reports usage windows when available. | Provider/account eligibility and live results depend on the credential. |
-| Anthropic Claude | OAuth or manually supplied token/API key; reports Claude Code usage windows. | The available report depends on the credential and upstream account data. |
+| Anthropic Claude | OAuth with a pasted registered callback URL (or `code#state`), or a manually supplied token/API key; reports Claude Code usage windows. | The hosted flow does not listen on the server's localhost. Report availability still depends on the credential and upstream account data. |
 | GitHub Copilot | Device authorization or manually supplied token; reports Copilot quota/seat data. | Copilot plan and seat eligibility are determined by GitHub. |
 | Cursor | Browser OAuth flow or manual session token; reports usage and request limits. | Session credentials and exposed limit data are controlled by Cursor. |
 | Google Antigravity | OAuth or manually supplied access token; parses quota-window summaries. | Hosted production login defaults to the embedded desktop client and a one-time full loopback callback URL paste; an operator-owned Web client can instead use the public HTTPS callback. Account/API compatibility must still be verified with that deployment. |
-| Google Gemini CLI | OAuth or manually supplied access token; reports the quota data available to its integration. | Separate from Antigravity; account/API compatibility is not implied by the adapter. |
-| OpenRouter | OAuth or API key; reports available balance and credit/usage data. | Values reflect the provider API response at the time of polling. |
+| Google Gemini CLI | OAuth with a pasted full callback URL, or a manually supplied access token; reports the quota data available to its integration. | Separate from Antigravity. The embedded client's registered loopback URI is retained; account/API compatibility is not implied by the adapter. |
+| OpenRouter | Headless S256 PKCE: paste the one-time code shown by OpenRouter, or use an API key; reports balance and credit/usage data. | No callback URL or server localhost listener is used. Values reflect the provider API response at polling time. |
 | DeepSeek | API key; reports balance data. | Depends on the API account and the fields returned by the provider. |
 | xAI | Device OAuth or manually supplied token; reports available usage/balance data. | Provider account eligibility and live responses are not guaranteed by adapter presence. |
-| Zhipu AI (GLM) | OAuth or manually supplied API credential; reports available quota data. | Availability depends on the account and API response. |
+| Zhipu AI (GLM) | OAuth with a pasted full registered callback URL, or a manually supplied API credential; reports available quota data. | The hosted flow does not rely on a server localhost listener; availability depends on the account and API response. |
 | MiniMax Code | Manually supplied API credential; reports plan quota data. | Plan fields and reset details depend on the provider response. |
 | Cline Pass | Manually supplied API key; reports percentage-based five-hour, weekly, and monthly usage windows with reset data. | Does not report balance or credit data. |
 | Devin | Manual CLI session token; an OAuth callback path is also present. | Hosted OAuth redirect compatibility is experimental and unconfirmed. `cog_` V3 personal access tokens are not supported by this adapter. |

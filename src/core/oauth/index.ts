@@ -1,5 +1,6 @@
 export * from "./pkce";
 export * from "./callback-server";
+export * from "./manual-callback";
 export * from "./google";
 export * from "./claude";
 export * from "./codex-device";
