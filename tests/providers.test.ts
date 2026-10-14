@@ -6,7 +6,7 @@ import { CodexAdapter } from "../src/core/providers/codex";
 import { ProviderRegistry } from "../src/core/providers/registry";
 import { PollerEngine } from "../src/core/poller/poller";
 import { StorageVault } from "../src/core/storage/vault";
-import type { FetchContext, ProviderAdapter } from "../src/core/providers/adapter";
+import type { ProviderAdapter } from "../src/core/providers/adapter";
 import type { StoredCredential, UsageReport } from "../src/types";
 
 const mockCred: StoredCredential = {
@@ -393,7 +393,7 @@ describe("PollerEngine", () => {
     const registry = new ProviderRegistry();
     const adapter = new DeepSeekAdapter();
     registry.register(adapter);
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     let notified = false;
     poller.onReport(r => {
       if (r.credentialId === saved.id && r.ownerId === owner.id) notified = true;
@@ -435,54 +435,73 @@ describe("PollerEngine", () => {
     });
     const blockerStarted = Promise.withResolvers<void>();
     const releaseBlocker = Promise.withResolvers<void>();
-    let reauthCompleted = false;
-    const fetches: string[] = [];
+    const targetRequests: Array<{ requestSecret: string; persistedSecret: string | undefined }> = [];
     const registry = new ProviderRegistry();
-    const adapter: ProviderAdapter = {
-      id: "queued-poll-test",
-      supports: provider => provider === "deepseek" || provider === "openrouter",
-      fetchUsage: async (credential: StoredCredential, ctx?: FetchContext): Promise<UsageReport> => {
-        if (credential.id === first.id) {
-          blockerStarted.resolve();
-          await releaseBlocker.promise;
-        } else if (reauthCompleted) {
-          fetches.push(credential.secret);
-          if (credential.secret !== "new-access") {
-            ctx?.onTokenRefresh?.("stale-access", { refreshToken: "stale-refresh" });
-          }
+    const fetchUsage: ProviderAdapter["fetchUsage"] = async (credential, ctx) => {
+      if (credential.id === first.id) {
+        blockerStarted.resolve();
+        await releaseBlocker.promise;
+      } else {
+        targetRequests.push({
+          requestSecret: credential.secret,
+          persistedSecret: vault.getCredential(owner.id, queued.id)?.secret,
+        });
+        if (credential.secret !== "new-access") {
+          ctx?.onTokenRefresh?.("stale-access", { refreshToken: "stale-refresh" });
         }
-        return {
-          ownerId: credential.ownerId,
-          provider: credential.provider,
-          credentialId: credential.id,
-          accountLabel: credential.accountLabel,
-          fetchedAt: Date.now(),
-          limits: [],
-          health: "healthy",
-          source: "live",
-        };
-      },
+      }
+      return {
+        ownerId: credential.ownerId,
+        provider: credential.provider,
+        credentialId: credential.id,
+        accountLabel: credential.accountLabel,
+        fetchedAt: Date.now(),
+        limits: [],
+        health: "healthy",
+        source: "live",
+      };
     };
-    registry.register(adapter);
-    const poller = new PollerEngine(vault, registry);
+    registry.register({
+      id: "queued-poll-test-deepseek",
+      supports: provider => provider === "deepseek",
+      fetchUsage,
+    });
+    registry.register({
+      id: "queued-poll-test-openrouter",
+      supports: provider => provider === "openrouter",
+      fetchUsage,
+    });
+    const poller = new PollerEngine(vault, registry, {
+      maxConcurrentGlobal: 1,
+      maxConcurrentPerProvider: 1,
+      minProviderIntervalMs: 0,
+    });
+    let blockerPoll: Promise<UsageReport | null> | undefined;
+    let validation: Promise<StoredCredential> | undefined;
     let sweep: Promise<UsageReport[]> | undefined;
 
     try {
-      sweep = poller.pollAll();
+      blockerPoll = poller.pollCredential(owner.id, first.id);
       await blockerStarted.promise;
-      const saved = await poller.validateAndSaveCredential(owner.id, {
+      validation = poller.validateAndSaveCredential(owner.id, {
         provider: "openrouter",
         accountLabel: "Reauthorized",
         credentialType: "oauth",
         secret: "new-access",
         metadata: { refreshToken: "new-refresh" },
       }, "preserve");
-      reauthCompleted = true;
-      expect(saved.id).toBe(queued.id);
+      sweep = poller.pollAll();
 
       releaseBlocker.resolve();
+      await blockerPoll;
+      const saved = await validation;
+      expect(saved.id).toBe(queued.id);
       const reports = await sweep;
-      expect(fetches).toEqual(["new-access"]);
+
+      expect(targetRequests).toEqual([
+        { requestSecret: "new-access", persistedSecret: "old-access" },
+        { requestSecret: "new-access", persistedSecret: "new-access" },
+      ]);
       expect(reports.map(report => report.credentialId)).toEqual([first.id, queued.id]);
       expect(reports.some(report => report.error || report.stale)).toBe(false);
       expect(vault.getCredential(owner.id, queued.id)).toMatchObject({
@@ -491,7 +510,9 @@ describe("PollerEngine", () => {
       });
     } finally {
       releaseBlocker.resolve();
-      if (sweep) await sweep;
+      if (blockerPoll) await blockerPoll.catch(() => {});
+      if (validation) await validation.catch(() => {});
+      if (sweep) await sweep.catch(() => {});
       poller.stop();
       vault.close();
     }
@@ -537,7 +558,7 @@ describe("PollerEngine", () => {
         };
       },
     });
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     let polling: Promise<UsageReport[]> | undefined;
 
     try {

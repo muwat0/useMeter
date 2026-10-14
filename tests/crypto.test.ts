@@ -132,5 +132,53 @@ describe("Production Master Key Enforcement (AUTH-DEFAULT-MASTER-KEY)", () => {
       const decrypted = decryptSecret(payload);
       expect(decrypted).toBe("local-dev-credential");
     });
+
+    it("uses the effective key after environment switches and restores earlier keys", () => {
+      const previousNodeEnv = process.env["NODE_ENV"];
+      const previousMasterKey = process.env["USAGE_MASTER_KEY"];
+      try {
+        process.env["NODE_ENV"] = "development";
+        process.env["USAGE_MASTER_KEY"] = "rotation-key-a";
+        const payloadA = encryptSecret("secret authenticated by key A");
+
+        process.env["USAGE_MASTER_KEY"] = "rotation-key-b";
+        const payloadB = encryptSecret("secret authenticated by key B");
+        expect(decryptSecret(payloadB)).toBe("secret authenticated by key B");
+        expect(() => decryptSecret(payloadA)).toThrow();
+
+        process.env["USAGE_MASTER_KEY"] = "  rotation-key-a  ";
+        expect(decryptSecret(payloadA)).toBe("secret authenticated by key A");
+        expect(() => decryptSecret(payloadB)).toThrow();
+      } finally {
+        if (previousNodeEnv === undefined) delete process.env["NODE_ENV"];
+        else process.env["NODE_ENV"] = previousNodeEnv;
+        if (previousMasterKey === undefined) delete process.env["USAGE_MASTER_KEY"];
+        else process.env["USAGE_MASTER_KEY"] = previousMasterKey;
+      }
+    });
+
+    it("does not let a warmed development key bypass production validation", () => {
+      const previousNodeEnv = process.env["NODE_ENV"];
+      const previousMasterKey = process.env["USAGE_MASTER_KEY"];
+      try {
+        process.env["NODE_ENV"] = "development";
+        delete process.env["USAGE_MASTER_KEY"];
+        const payload = encryptSecret("development-only secret");
+
+        process.env["NODE_ENV"] = "production";
+        process.env["USAGE_MASTER_KEY"] = "   ";
+        expect(() => encryptSecret("must not encrypt")).toThrow(
+          "USAGE_MASTER_KEY must be set to a secure, non-default secret in production"
+        );
+        expect(() => decryptSecret(payload)).toThrow(
+          "USAGE_MASTER_KEY must be set to a secure, non-default secret in production"
+        );
+      } finally {
+        if (previousNodeEnv === undefined) delete process.env["NODE_ENV"];
+        else process.env["NODE_ENV"] = previousNodeEnv;
+        if (previousMasterKey === undefined) delete process.env["USAGE_MASTER_KEY"];
+        else process.env["USAGE_MASTER_KEY"] = previousMasterKey;
+      }
+    });
   });
 });

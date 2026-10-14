@@ -117,6 +117,8 @@ const I18N: Record<string, Record<string, string>> = {
     oauthExpired: "Yetkilendirme süresi doldu. Yeniden başlayın.",
     oauthRetrying: "İstek hız sınırına ulaştı; {seconds} saniye sonra yeniden denenecek.",
     oauthCapacity: "OAuth oturum sınırına ulaşıldı. Lütfen etkin bir oturum kapanana kadar bekleyip yeniden deneyin.",
+    oauthFinalizationRestart: "Yerel sorgulama kapasitesi dolduğu için yetkilendirme tamamlanamadı. Yeni bir yetkilendirme başlatın; önceki yanıt yeniden kullanılamaz.",
+    oauthRestart: "Yeniden Başlat",
     provider: "Sağlayıcı", accountLabel: "Hesap Adı / Etiket",
     accountLabelPlaceholder: "Örn: Kişisel Pro, İş Hesabı",
     accountAccent: "Kart Vurgu Rengi", cardAccent: "Kart Vurgusu",
@@ -194,6 +196,8 @@ const I18N: Record<string, Record<string, string>> = {
     oauthSessionNotFound: "Authorization session was not found or has expired",
     oauthExpired: "Authorization expired. Start again.",
     oauthRetrying: "Polling is rate limited; retrying in {seconds} seconds.",
+    oauthFinalizationRestart: "Authorization could not be completed because local polling capacity is full. Start a new authorization; the previous response cannot be reused.",
+    oauthRestart: "Start Again",
     provider: "Provider", accountLabel: "Account Label",
     accountLabelPlaceholder: "e.g. Personal Pro, Work Key",
     accountAccent: "Card Accent Color", cardAccent: "Card Accent",
@@ -735,8 +739,10 @@ function Dashboard() {
   const oauthTimerRef = useRef<number | null>(null);
   const oauthAbortRef = useRef<AbortController | null>(null);
   const oauthRunIdRef = useRef(0);
+  const oauthRestartRef = useRef<(() => void) | null>(null);
   const [oauthNotice, setOauthNotice] = useState('');
   const [oauthFailed, setOauthFailed] = useState(false);
+  const [oauthRestartRequired, setOauthRestartRequired] = useState(false);
 
   // Manual form state
   const [manualProvider, setManualProvider] = useState('antigravity');
@@ -1043,9 +1049,11 @@ function Dashboard() {
       oauthAbortRef.current.abort();
       oauthAbortRef.current = null;
     }
+    oauthRestartRef.current = null;
     setOauthPanel('list');
     setOauthNotice('');
     setOauthFailed(false);
+    setOauthRestartRequired(false);
     setDeviceCode('');
     setDeviceBadge('OAuth');
     setDeviceAuthLink('');
@@ -1061,7 +1069,7 @@ function Dashboard() {
     setManualOAuthError('');
   }
 
-  function failOAuth(message: string, runId: number) {
+  function failOAuth(message: string, runId: number, restartRequired = false) {
     if (runId !== oauthRunIdRef.current) return;
     oauthRunIdRef.current += 1;
     cancelTrackedOAuthSession();
@@ -1071,7 +1079,16 @@ function Dashboard() {
       oauthAbortRef.current = null;
     }
     setOauthFailed(true);
+    setOauthRestartRequired(restartRequired);
     setOauthNotice(message);
+    if (restartRequired) {
+      setManualOAuthCallback(false);
+      setManualOAuthInputType(null);
+      setManualOAuthSessionId('');
+      setManualOAuthInput('');
+      setManualOAuthSubmitting(false);
+      setManualOAuthError('');
+    }
   }
 
   function finishOAuth(runId: number) {
@@ -1162,6 +1179,7 @@ function Dashboard() {
   async function startBrowserOAuth(endpoint: string, providerName: string) {
     cancelOAuth();
     const runId = oauthRunIdRef.current;
+    oauthRestartRef.current = () => { void startBrowserOAuth(endpoint, providerName); };
     setOauthPanel('browser');
     setBrowserAuthText(t('oauthWaiting', lang).replace('{provider}', providerName));
     setBrowserAuthLink('');
@@ -1169,6 +1187,7 @@ function Dashboard() {
     setDeviceCode('');
     setDeviceBadge('OAuth');
     setOauthFailed(false);
+    setOauthRestartRequired(false);
     setOauthNotice('');
     setManualOAuthCallback(false);
     setManualOAuthInputType(null);
@@ -1178,7 +1197,6 @@ function Dashboard() {
     setManualOAuthInput('');
     setManualOAuthSubmitting(false);
     setManualOAuthError('');
-
     const initiateController = new AbortController();
     oauthInitiateAbortRef.current = initiateController;
     let initiateTimedOut = false;
@@ -1271,7 +1289,12 @@ function Dashboard() {
           if (statusJson?.['status'] === 'complete') {
             finishOAuth(runId);
           } else if (statusJson?.['status'] === 'error') {
-            failOAuth(oauthResponseMessage('oauthFailed', statusJson), runId);
+            const restartRequired = statusJson['restartRequired'] === true;
+            failOAuth(
+              restartRequired ? t('oauthFinalizationRestart', lang) : oauthResponseMessage('oauthFailed', statusJson),
+              runId,
+              restartRequired,
+            );
           } else if (statusJson?.['status'] === 'pending') {
             setOauthNotice('');
             scheduleOAuthPoll(runId, pollStatus, 2000, expiresAt);
@@ -1350,6 +1373,10 @@ function Dashboard() {
       });
       const json = await readOAuthJson(res);
       if (runId !== oauthRunIdRef.current || sessionId !== manualOAuthSessionId) return;
+      if (res.status === 429 && json?.['restartRequired'] === true) {
+        failOAuth(t('oauthFinalizationRestart', lang), runId, true);
+        return;
+      }
       if (!res.ok || !json || json['success'] !== true) {
         setManualOAuthError(t('manualOAuthFailure', lang));
         return;
@@ -1379,8 +1406,10 @@ function Dashboard() {
   ) {
     cancelOAuth();
     const runId = oauthRunIdRef.current;
+    oauthRestartRef.current = () => { void startOAuthPoll(endpoint, badgeName, pollEndpoint, bodyKeys, panel); };
     setOauthPanel(panel);
     setOauthFailed(false);
+    setOauthRestartRequired(false);
     setOauthNotice('');
     setBrowserAuthLink('');
     setDeviceAuthLink('');
@@ -1391,6 +1420,13 @@ function Dashboard() {
       setDeviceBadge('OAuth');
       setBrowserAuthText(t('oauthWaiting', lang).replace('{provider}', badgeName));
     }
+    setManualOAuthInputType(null);
+    setManualOAuthProviderName('');
+    setManualOAuthRedirectUri('');
+    setManualOAuthSessionId('');
+    setManualOAuthInput('');
+    setManualOAuthSubmitting(false);
+    setManualOAuthError('');
 
     const initiateController = new AbortController();
     oauthInitiateAbortRef.current = initiateController;
@@ -1480,6 +1516,10 @@ function Dashboard() {
           });
           const pollJson = await readOAuthJson(pollRes);
           if (runId !== oauthRunIdRef.current) return;
+          if (pollRes.status === 429 && pollJson?.['restartRequired'] === true) {
+            failOAuth(t('oauthFinalizationRestart', lang), runId, true);
+            return;
+          }
           if (pollRes.status === 429) {
             const retryMs = retryDelayMs(pollRes, pollJson);
             if (retryMs !== null) {
@@ -1859,6 +1899,9 @@ function Dashboard() {
                       {Boolean(deviceAuthLink && deviceAuthLink !== '#') ? (
                         <a href={deviceAuthLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-appAccent hover:underline">{t('reopenLink', lang)}</a>
                       ) : <span />}
+                      {oauthRestartRequired && oauthRestartRef.current && (
+                        <button type="button" onClick={() => oauthRestartRef.current?.()} className="text-xs font-semibold text-appAccent hover:underline">{t('oauthRestart', lang)}</button>
+                      )}
                       <button type="button" onClick={cancelOAuth} className="text-xs text-appTextMuted hover:text-appText transition font-medium">{t('cancel', lang)}</button>
                     </div>
                   </div>
@@ -1917,6 +1960,9 @@ function Dashboard() {
                       {Boolean(browserAuthLink && browserAuthLink !== '#') ? (
                         <a href={browserAuthLink} target="_blank" rel="noreferrer" className="text-xs font-semibold text-appAccent hover:underline">{t('reopenLink', lang)}</a>
                       ) : <span />}
+                      {oauthRestartRequired && oauthRestartRef.current && (
+                        <button type="button" onClick={() => oauthRestartRef.current?.()} className="text-xs font-semibold text-appAccent hover:underline">{t('oauthRestart', lang)}</button>
+                      )}
                       <button type="button" onClick={cancelOAuth} className="text-xs text-appTextMuted hover:text-appText transition font-medium">{t('cancel', lang)}</button>
                     </div>
                   </div>

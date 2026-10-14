@@ -4,6 +4,7 @@ import { decryptSecret, encryptSecret } from "../crypto";
 import type {
   AdminSystemStats,
   AdminUserView,
+  CredentialRef,
   CardAccent,
   InputCredential,
   Invitation,
@@ -38,6 +39,21 @@ interface CredentialRow {
   metadata: string | null;
   created_at: number;
   updated_at: number;
+}
+interface CredentialRefRow {
+  id: string;
+  owner_id: string | null;
+  provider: string;
+  account_label: string;
+}
+
+function rowToCredentialRef(row: CredentialRefRow): CredentialRef {
+  return {
+    id: row.id,
+    ownerId: row.owner_id ?? "",
+    provider: row.provider,
+    accountLabel: row.account_label,
+  };
 }
 const CREDENTIAL_METADATA_ENCRYPTION_ENV = "CREDENTIAL_METADATA_ENCRYPTION";
 const ENCRYPTED_METADATA_VERSION = 1;
@@ -1121,6 +1137,41 @@ export class StorageVault {
   }
 
   /**
+   * Explicit internal lightweight enumeration across all owners for the background daemon.
+   * It deliberately reads neither ciphertext nor metadata, avoiding bulk decryption during sweep setup.
+   */
+  listAllCredentialRefsInternal(): CredentialRef[] {
+    const rows = this.#db.prepare(
+      "SELECT id, owner_id, provider, account_label FROM credentials ORDER BY provider ASC, created_at ASC",
+    ).all() as CredentialRefRow[];
+    return rows.map(rowToCredentialRef);
+  }
+
+  listCredentialRefs(ownerId: string): CredentialRef[] {
+    if (!ownerId) return [];
+    const rows = this.#db.prepare(
+      "SELECT id, owner_id, provider, account_label FROM credentials WHERE owner_id = ? ORDER BY provider ASC, created_at ASC",
+    ).all(ownerId) as CredentialRefRow[];
+    return rows.map(rowToCredentialRef);
+  }
+
+  getCredentialRef(ownerId: string, id: string): CredentialRef | null {
+    if (!ownerId) return null;
+    const row = this.#db.prepare(
+      "SELECT id, owner_id, provider, account_label FROM credentials WHERE owner_id = ? AND id = ?",
+    ).get(ownerId, id) as CredentialRefRow | undefined;
+    return row ? rowToCredentialRef(row) : null;
+  }
+  /** Rechecks current ownership without decrypting the credential secret. */
+  getCredentialRefInternal(id: string): CredentialRef | null {
+    const row = this.#db.prepare(
+      "SELECT id, owner_id, provider, account_label FROM credentials WHERE id = ?",
+    ).get(id) as CredentialRefRow | undefined;
+    return row ? rowToCredentialRef(row) : null;
+  }
+
+
+  /**
    * Explicit internal enumeration across all owners for the background daemon.
    */
   listAllCredentialsInternal(): StoredCredential[] {
@@ -1347,6 +1398,7 @@ export class StorageVault {
         GROUP BY credential_id
       ) latest ON s.credential_id = latest.credential_id AND s.fetched_at = latest.max_time
       WHERE s.owner_id = ?
+      ORDER BY s.id DESC
     `).all(ownerId, ownerId, ownerId) as { report_json: string }[];
     const result: UsageReport[] = [];
     const seenCreds = new Set<string>();
@@ -1370,6 +1422,7 @@ export class StorageVault {
         FROM usage_snapshots
         GROUP BY credential_id
       ) latest ON s.credential_id = latest.credential_id AND s.fetched_at = latest.max_time
+      ORDER BY s.id DESC
     `).all() as { report_json: string; owner_id: string | null }[];
 
     const result: UsageReport[] = [];
@@ -1416,7 +1469,7 @@ export class StorageVault {
       SELECT s.report_json, s.owner_id FROM usage_snapshots s
       INNER JOIN credentials c ON c.id = s.credential_id AND c.owner_id = ?
       WHERE s.owner_id = ? AND s.credential_id = ?
-      ORDER BY s.fetched_at DESC
+      ORDER BY s.fetched_at DESC, s.id DESC
     `).all(ownerId, ownerId, credentialId) as { report_json: string; owner_id: string | null }[];
 
     for (const row of rows) {
@@ -1446,7 +1499,7 @@ export class StorageVault {
     const rows = this.#db.prepare(`
       SELECT s.report_json, s.owner_id FROM usage_snapshots s
       WHERE s.credential_id = ?
-      ORDER BY s.fetched_at DESC
+      ORDER BY s.fetched_at DESC, s.id DESC
     `).all(credentialId) as { report_json: string; owner_id: string | null }[];
 
     for (const row of rows) {

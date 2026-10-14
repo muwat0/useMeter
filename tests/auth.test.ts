@@ -9,7 +9,7 @@ describe("Authentication & Multi-Tenant Isolation", () => {
   it("registers users, rejects duplicates, and enforces password rules", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const auth = new AuthService(vault);
     const app = createServer(vault, poller, registry, auth);
 
@@ -58,7 +58,7 @@ describe("Authentication & Multi-Tenant Isolation", () => {
   it("handles login, generic error messages (no enumeration), and session lifecycle", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const auth = new AuthService(vault);
     const app = createServer(vault, poller, registry, auth);
 
@@ -132,7 +132,7 @@ describe("Authentication & Multi-Tenant Isolation", () => {
   it("protects routes: anonymous users redirected or rejected with 401", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // 1. Health check is public
@@ -177,7 +177,7 @@ describe("Authentication & Multi-Tenant Isolation", () => {
   it("enforces origin validation on mutating authenticated routes (CSRF protection)", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // Register user to obtain session
@@ -230,7 +230,7 @@ describe("Authentication & Multi-Tenant Isolation", () => {
   it("isolates credentials, usage, and OAuth flows across tenants", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // User A registers

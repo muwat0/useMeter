@@ -259,7 +259,7 @@ describe("Server OAuth Routes", () => {
   it("handles OAuth initiate endpoints", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // Anonymous attempt must be rejected with 401

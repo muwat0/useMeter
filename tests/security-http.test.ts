@@ -25,7 +25,7 @@ interface TestContext {
 function createTestContext(rateLimiter?: RateLimiter): TestContext {
   const vault = new StorageVault(":memory:");
   const registry = createDefaultRegistry();
-  const poller = new PollerEngine(vault, registry);
+  const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
   const auth = new AuthService(vault);
   const app = createServer(vault, poller, registry, auth, rateLimiter ? { rateLimiter } : undefined);
 

@@ -12,7 +12,7 @@ describe("Server API Endpoints", () => {
   it("serves health, usage, credentials, and dashboard HTML", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // 1. Health check
@@ -102,7 +102,7 @@ describe("Server API Endpoints", () => {
   it("deletes an owner's credential and cascades usage history while rejecting other callers", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const app = createServer(vault, new PollerEngine(vault, registry), registry);
+    const app = createServer(vault, new PollerEngine(vault, registry, { minProviderIntervalMs: 0 }), registry);
 
     const register = async (email: string) => {
       const response = await app.request("/api/auth/register", {
@@ -161,7 +161,7 @@ describe("Server API Endpoints", () => {
 
   it("enforces security headers and rejects unverified cross-origin requests", async () => {
     const vault = new StorageVault(":memory:");
-    const poller = new PollerEngine(vault, createDefaultRegistry());
+    const poller = new PollerEngine(vault, createDefaultRegistry(), { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, createDefaultRegistry());
 
     // Security headers on health
@@ -184,7 +184,7 @@ describe("Server API Endpoints", () => {
 
   it("handles rate limiting on authentication and polling endpoints", async () => {
     const vault = new StorageVault(":memory:");
-    const poller = new PollerEngine(vault, createDefaultRegistry());
+    const poller = new PollerEngine(vault, createDefaultRegistry(), { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, createDefaultRegistry());
 
     // Register an admin user first
@@ -232,7 +232,7 @@ describe("Server API Endpoints", () => {
 
   it("manages invitations via admin API and allows user onboarding when registration is disabled", async () => {
     const vault = new StorageVault(":memory:");
-    const poller = new PollerEngine(vault, createDefaultRegistry());
+    const poller = new PollerEngine(vault, createDefaultRegistry(), { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, createDefaultRegistry());
 
     // 1. Create first user (admin)
@@ -346,7 +346,7 @@ describe("Server API Endpoints", () => {
 describe("Server Asset Revision & Static Contract", () => {
   it("includes content digest in HTML asset URLs and serves immutable assets", async () => {
     const vault = new StorageVault(":memory:");
-    const poller = new PollerEngine(vault, createDefaultRegistry());
+    const poller = new PollerEngine(vault, createDefaultRegistry(), { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, createDefaultRegistry());
 
     // Register user to access dashboard HTML
@@ -442,7 +442,7 @@ describe("Server Asset Revision & Static Contract", () => {
       writeFileSync(join(tempDist, "app.css"), "body { color: blue; }");
 
       const vault1 = new StorageVault(":memory:");
-      const poller1 = new PollerEngine(vault1, createDefaultRegistry());
+      const poller1 = new PollerEngine(vault1, createDefaultRegistry(), { minProviderIntervalMs: 0 });
       const app1 = createServer(vault1, poller1, createDefaultRegistry(), undefined, { distDir: tempDist });
 
       const reg1 = await app1.request("/api/auth/register", {
@@ -462,7 +462,7 @@ describe("Server Asset Revision & Static Contract", () => {
       writeFileSync(join(tempDist, "app.js"), "console.log('build-v2-new-ui');");
 
       const vault2 = new StorageVault(":memory:");
-      const poller2 = new PollerEngine(vault2, createDefaultRegistry());
+      const poller2 = new PollerEngine(vault2, createDefaultRegistry(), { minProviderIntervalMs: 0 });
       const app2 = createServer(vault2, poller2, createDefaultRegistry(), undefined, { distDir: tempDist });
 
       const reg2 = await app2.request("/api/auth/register", {
@@ -497,7 +497,7 @@ describe("Server Asset Revision & Static Contract", () => {
   it("handles missing dist gracefully as 404 without crashing and blocks path traversal", async () => {
     const nonexistentDist = join(tmpdir(), "usemeter-nonexistent-dist-" + Date.now());
     const vault = new StorageVault(":memory:");
-    const poller = new PollerEngine(vault, createDefaultRegistry());
+    const poller = new PollerEngine(vault, createDefaultRegistry(), { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, createDefaultRegistry(), undefined, { distDir: nonexistentDist });
 
     const reg = await app.request("/api/auth/register", {
@@ -535,7 +535,7 @@ describe("Manual Credential Route Safe Validation & Isolation", () => {
   it("rejects invalid new manual credential, saving nothing to vault and recording zero snapshots", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     const regRes = await app.request("/api/auth/register", {
@@ -597,7 +597,7 @@ describe("Manual Credential Route Safe Validation & Isolation", () => {
     };
     registry.register(mockAdapter);
 
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     const regRes = await app.request("/api/auth/register", {
@@ -675,7 +675,7 @@ describe("Manual Credential Route Safe Validation & Isolation", () => {
   it("protects anonymous callers, ignores spoofed ownerId, and isolates credentials between tenants", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // Anonymous rejected
@@ -785,7 +785,7 @@ describe("Manual Credential Route Safe Validation & Isolation", () => {
     };
     registry.register(mockAdapter);
 
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     const regRes = await app.request("/api/auth/register", {
@@ -901,7 +901,7 @@ describe("Manual Credential Route Safe Validation & Isolation", () => {
     };
     registry.register(mockAdapter);
 
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     const regRes = await app.request("/api/auth/register", {

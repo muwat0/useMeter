@@ -107,7 +107,7 @@ function createHarness(provider: ProviderCase) {
     },
   };
   registry.register(adapter);
-  const poller = new PollerEngine(vault, registry);
+  const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
   const app = createServer(vault, poller, registry);
   const oauth = installOAuthMock(provider);
   return { app, vault, oauth, getUsageFetches: () => usageFetches };

@@ -52,7 +52,7 @@ describe("Admin Panel & Role-Based Access Control", () => {
   it("guards admin routes against unauthenticated and non-admin callers", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // 1. Unauthenticated requests
@@ -128,7 +128,7 @@ describe("Admin Panel & Role-Based Access Control", () => {
   it("allows admin user to access dashboard, inspect stats, and view admin link on main dashboard", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // Register admin (1st user)
@@ -195,7 +195,7 @@ describe("Admin Panel & Role-Based Access Control", () => {
   it("lists all users with statistics via GET /api/admin/users", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // Register admin (1st user)
@@ -239,7 +239,7 @@ describe("Admin Panel & Role-Based Access Control", () => {
   it("updates user role via PATCH /api/admin/users/:id/role with last admin safeguards", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // Register admin (1st user)
@@ -312,7 +312,7 @@ describe("Admin Panel & Role-Based Access Control", () => {
   it("deletes user via DELETE /api/admin/users/:id with self & last admin safeguards", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // Register admin (1st user)
@@ -387,7 +387,7 @@ describe("Admin Panel & Role-Based Access Control", () => {
   it("manages public registration policy via admin API and enforces registration restrictions", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // 1. Zero users: GET /register is open even if setting is false in DB

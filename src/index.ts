@@ -2,6 +2,7 @@ import { assertMasterKeyConfigured } from "./core/crypto";
 import { StorageVault } from "./core/storage/vault";
 import { createDefaultRegistry } from "./core/providers/registry";
 import { PollerEngine } from "./core/poller/poller";
+import type { PollerOptions } from "./core/poller/poller";
 import { AuthService } from "./core/auth/auth";
 import { createServer } from "./server/app";
 
@@ -16,7 +17,24 @@ const registry = createDefaultRegistry();
 const pollTimeoutMs = process.env["POLL_TIMEOUT_MS"] === undefined
   ? undefined
   : Number(process.env["POLL_TIMEOUT_MS"]);
-const poller = new PollerEngine(vault, registry, { pollTimeoutMs });
+const poller = new PollerEngine(vault, registry, {
+  pollTimeoutMs,
+  maxConcurrentGlobal: process.env["POLL_MAX_CONCURRENT_GLOBAL"] === undefined
+    ? undefined
+    : Number(process.env["POLL_MAX_CONCURRENT_GLOBAL"]),
+  maxConcurrentPerProvider: process.env["POLL_MAX_CONCURRENT_PER_PROVIDER"] === undefined
+    ? undefined
+    : Number(process.env["POLL_MAX_CONCURRENT_PER_PROVIDER"]),
+  minProviderIntervalMs: process.env["POLL_MIN_PROVIDER_INTERVAL_MS"] === undefined
+    ? undefined
+    : Number(process.env["POLL_MIN_PROVIDER_INTERVAL_MS"]),
+  maxQueuedJobs: process.env["POLL_MAX_QUEUED_JOBS"] === undefined
+    ? undefined
+    : Number(process.env["POLL_MAX_QUEUED_JOBS"]),
+  admissionTimeoutMs: process.env["POLL_ADMISSION_TIMEOUT_MS"] === undefined
+    ? undefined
+    : Number(process.env["POLL_ADMISSION_TIMEOUT_MS"]),
+} satisfies PollerOptions);
 
 // Start background polling daemon
 poller.start();

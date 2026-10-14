@@ -2,7 +2,7 @@ import { performance } from "node:perf_hooks";
 import { randomUUID } from "node:crypto";
 import type { StorageVault } from "../storage/vault";
 import type { ProviderRegistry } from "../providers/registry";
-import type { InputCredential, StoredCredential, UsageReport } from "../../types";
+import type { CredentialRef, InputCredential, StoredCredential, UsageReport } from "../../types";
 
 
 function mergeDefinedMetadata(
@@ -25,11 +25,331 @@ export type ReportListener = (report: UsageReport) => void;
 export interface PollerOptions {
   intervalMs?: number;
   pollTimeoutMs?: number;
+  maxConcurrentGlobal?: number;
+  maxConcurrentPerProvider?: number;
+  minProviderIntervalMs?: number;
+  maxQueuedJobs?: number;
+  admissionTimeoutMs?: number;
+}
+
+export type PollerAdmissionErrorCode = "QUEUE_FULL" | "ADMISSION_TIMEOUT";
+
+export class PollerAdmissionError extends Error {
+  readonly code: PollerAdmissionErrorCode;
+
+  constructor(code: PollerAdmissionErrorCode, message: string) {
+    super(message);
+    this.name = "PollerAdmissionError";
+    this.code = code;
+  }
 }
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_POLL_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_CONCURRENT_GLOBAL = 4;
+const DEFAULT_MAX_CONCURRENT_PER_PROVIDER = 1;
+const DEFAULT_MIN_PROVIDER_INTERVAL_MS = 4_000;
+const DEFAULT_MAX_QUEUED_JOBS = 256;
+const DEFAULT_ADMISSION_TIMEOUT_MS = 30_000;
+// Bound sweep producers to the default registry size; workers also drain custom provider groups.
+const MAX_PROVIDER_GROUP_WORKERS = 17;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+type ProviderDispatch = <T>(
+  operation: (markDispatched: () => void, skipDispatch: () => void) => Promise<T> | T,
+  signal?: AbortSignal,
+) => Promise<T>;
+
+type CredentialPollScope = Pick<CredentialRef, "id" | "ownerId">;
+
+interface ProviderPoolJob {
+  providerId: string;
+  credentialScope?: CredentialPollScope;
+  signal?: AbortSignal;
+  operation: (dispatch: ProviderDispatch) => Promise<unknown> | unknown;
+  promise: Promise<unknown>;
+  resolve(value: unknown): void;
+  reject(reason: unknown): void;
+  admissionDeadlineAt: number;
+  state: "queued" | "admitted" | "dispatched" | "finished";
+  onAbort?: () => void;
+}
+
+class ProviderRequestPool {
+  readonly #maxConcurrentGlobal: number;
+  readonly #maxConcurrentPerProvider: number;
+  readonly #minProviderIntervalMs: number;
+  readonly #maxQueuedJobs: number;
+  readonly #admissionTimeoutMs: number;
+  readonly #queue: ProviderPoolJob[] = [];
+  readonly #credentialJobs = new Map<string, Map<string, ProviderPoolJob>>();
+  readonly #activeByProvider = new Map<string, number>();
+  readonly #pendingProviders = new Map<string, ProviderPoolJob>();
+  readonly #lastDispatchAt = new Map<string, number>();
+  #activeGlobal = 0;
+  #wakeTimer?: Timer;
+
+  constructor(
+    maxConcurrentGlobal: number,
+    maxConcurrentPerProvider: number,
+    minProviderIntervalMs: number,
+    maxQueuedJobs: number,
+    admissionTimeoutMs: number,
+  ) {
+    this.#maxConcurrentGlobal = maxConcurrentGlobal;
+    this.#maxConcurrentPerProvider = maxConcurrentPerProvider;
+    this.#minProviderIntervalMs = minProviderIntervalMs;
+    this.#maxQueuedJobs = maxQueuedJobs;
+    this.#admissionTimeoutMs = admissionTimeoutMs;
+  }
+
+  run<T>(
+    providerId: string,
+    signal: AbortSignal | undefined,
+    operation: (dispatch: ProviderDispatch) => Promise<T> | T,
+    credentialScope?: CredentialPollScope,
+  ): Promise<T> {
+    try {
+      signal?.throwIfAborted();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    this.#expireQueued(performance.now());
+
+    if (credentialScope) {
+      const existing = this.#credentialJobs.get(credentialScope.id)?.get(credentialScope.ownerId);
+      if (existing) return existing.promise as Promise<T>;
+    }
+    if (this.#queue.length >= this.#maxQueuedJobs) {
+      return Promise.reject(new PollerAdmissionError(
+        "QUEUE_FULL",
+        "Poller queue is full; retry the request later.",
+      ));
+    }
+
+    const { promise, resolve, reject } = Promise.withResolvers<T>();
+    const job: ProviderPoolJob = {
+      providerId,
+      credentialScope,
+      signal,
+      operation: dispatch => operation(dispatch),
+      promise,
+      resolve: value => resolve(value as T),
+      reject,
+      admissionDeadlineAt: performance.now() + this.#admissionTimeoutMs,
+      state: "queued",
+    };
+    if (credentialScope) {
+      let jobsByOwner = this.#credentialJobs.get(credentialScope.id);
+      if (!jobsByOwner) {
+        jobsByOwner = new Map<string, ProviderPoolJob>();
+        this.#credentialJobs.set(credentialScope.id, jobsByOwner);
+      }
+      jobsByOwner.set(credentialScope.ownerId, job);
+    }
+    if (signal) {
+      job.onAbort = () => {
+        if (job.state !== "queued") return;
+        this.#removeQueued(job);
+        job.state = "finished";
+        this.#forgetCredentialJob(job);
+        signal.removeEventListener("abort", job.onAbort!);
+        reject(signal.reason ?? new Error("Provider request canceled"));
+        this.#drain();
+      };
+      signal.addEventListener("abort", job.onAbort, { once: true });
+    }
+    this.#queue.push(job);
+    if (signal?.aborted) {
+      job.onAbort?.();
+      return promise;
+    }
+    this.#drain();
+    return promise;
+  }
+
+  invalidateCredential(credentialId: string): void {
+    const jobsByOwner = this.#credentialJobs.get(credentialId);
+    if (!jobsByOwner) return;
+    for (const [ownerId, job] of jobsByOwner) {
+      if (job.state === "dispatched") jobsByOwner.delete(ownerId);
+    }
+    if (jobsByOwner.size === 0) this.#credentialJobs.delete(credentialId);
+  }
+
+  #removeQueued(job: ProviderPoolJob): void {
+    const index = this.#queue.indexOf(job);
+    if (index !== -1) this.#queue.splice(index, 1);
+  }
+
+  #forgetCredentialJob(job: ProviderPoolJob): void {
+    const scope = job.credentialScope;
+    if (!scope) return;
+    const jobsByOwner = this.#credentialJobs.get(scope.id);
+    if (jobsByOwner?.get(scope.ownerId) !== job) return;
+    jobsByOwner.delete(scope.ownerId);
+    if (jobsByOwner.size === 0) this.#credentialJobs.delete(scope.id);
+  }
+
+  #isReady(job: ProviderPoolJob, now: number): boolean {
+    if (this.#pendingProviders.has(job.providerId)) return false;
+    if ((this.#activeByProvider.get(job.providerId) ?? 0) >= this.#maxConcurrentPerProvider) {
+      return false;
+    }
+    const lastDispatchAt = this.#lastDispatchAt.get(job.providerId);
+    return lastDispatchAt === undefined ||
+      lastDispatchAt + this.#minProviderIntervalMs <= now;
+  }
+
+  #dispatch<T>(
+    job: ProviderPoolJob,
+    operation: (markDispatched: () => void, skipDispatch: () => void) => Promise<T> | T,
+    signal: AbortSignal | undefined,
+  ): Promise<T> {
+    if (signal?.aborted) {
+      this.#skipDispatch(job);
+      return Promise.reject(signal.reason ?? new Error("Provider request canceled"));
+    }
+
+    let admissionPending = true;
+    const markDispatched = (): void => {
+      if (!admissionPending) return;
+      admissionPending = false;
+      job.state = "dispatched";
+      if (this.#pendingProviders.get(job.providerId) === job) {
+        this.#pendingProviders.delete(job.providerId);
+      }
+      this.#lastDispatchAt.set(job.providerId, performance.now());
+      this.#activeByProvider.set(
+        job.providerId,
+        (this.#activeByProvider.get(job.providerId) ?? 0) + 1,
+      );
+      this.#drain();
+    };
+    const skipDispatch = (): void => {
+      if (!admissionPending) return;
+      admissionPending = false;
+      this.#skipDispatch(job);
+    };
+
+    let result: Promise<T> | T;
+    try {
+      result = operation(markDispatched, skipDispatch);
+    } catch (error) {
+      result = Promise.reject(error);
+    }
+    return Promise.resolve(result).finally(() => {
+      if (admissionPending) skipDispatch();
+    });
+  }
+
+  #skipDispatch(job: ProviderPoolJob): void {
+    if (this.#pendingProviders.get(job.providerId) === job) {
+      this.#pendingProviders.delete(job.providerId);
+    }
+    this.#drain();
+  }
+
+  #drain(): void {
+    let now = performance.now();
+    this.#expireQueued(now);
+    while (this.#activeGlobal < this.#maxConcurrentGlobal) {
+      const index = this.#queue.findIndex(job => this.#isReady(job, now));
+      if (index === -1) break;
+      const [job] = this.#queue.splice(index, 1);
+      if (!job) break;
+      if (job.signal?.aborted) {
+        job.state = "finished";
+        if (job.onAbort) job.signal.removeEventListener("abort", job.onAbort);
+        this.#forgetCredentialJob(job);
+        job.reject(job.signal.reason ?? new Error("Provider request canceled"));
+        continue;
+      }
+
+      job.state = "admitted";
+      if (job.signal && job.onAbort) {
+        job.signal.removeEventListener("abort", job.onAbort);
+      }
+      this.#activeGlobal++;
+      this.#pendingProviders.set(job.providerId, job);
+      const dispatch: ProviderDispatch = (operation, signal = job.signal) =>
+        this.#dispatch(job, operation, signal);
+      let result: Promise<unknown> | unknown;
+      try {
+        result = job.operation(dispatch);
+      } catch (error) {
+        result = Promise.reject(error);
+      }
+      Promise.resolve(result)
+        .then(job.resolve, job.reject)
+        .finally(() => this.#finish(job));
+      now = performance.now();
+    }
+    this.#scheduleWake(now);
+  }
+
+  #expireQueued(now: number): void {
+    for (let index = this.#queue.length - 1; index >= 0; index--) {
+      const job = this.#queue[index];
+      if (!job || job.admissionDeadlineAt > now) continue;
+      this.#queue.splice(index, 1);
+      job.state = "finished";
+      if (job.signal && job.onAbort) {
+        job.signal.removeEventListener("abort", job.onAbort);
+      }
+      this.#forgetCredentialJob(job);
+      job.reject(new PollerAdmissionError(
+        "ADMISSION_TIMEOUT",
+        "Provider admission timed out before dispatch.",
+      ));
+    }
+  }
+
+  #scheduleWake(now: number): void {
+    if (this.#wakeTimer) {
+      clearTimeout(this.#wakeTimer);
+      this.#wakeTimer = undefined;
+    }
+    if (this.#queue.length === 0) return;
+
+    let wakeAt = Number.POSITIVE_INFINITY;
+    for (const job of this.#queue) {
+      wakeAt = Math.min(wakeAt, job.admissionDeadlineAt);
+      if (this.#pendingProviders.has(job.providerId)) continue;
+      if ((this.#activeByProvider.get(job.providerId) ?? 0) >= this.#maxConcurrentPerProvider) {
+        continue;
+      }
+      const lastDispatchAt = this.#lastDispatchAt.get(job.providerId);
+      if (lastDispatchAt !== undefined) {
+        const providerReadyAt = lastDispatchAt + this.#minProviderIntervalMs;
+        if (providerReadyAt > now) wakeAt = Math.min(wakeAt, providerReadyAt);
+      }
+    }
+    if (!Number.isFinite(wakeAt)) return;
+    const delayMs = Math.max(1, Math.min(MAX_TIMER_DELAY_MS, Math.ceil(wakeAt - now)));
+    this.#wakeTimer = setTimeout(() => {
+      this.#wakeTimer = undefined;
+      this.#drain();
+    }, delayMs);
+  }
+
+  #finish(job: ProviderPoolJob): void {
+    if (job.state === "finished" || job.state === "queued") return;
+    if (job.state === "dispatched") {
+      const activeForProvider = (this.#activeByProvider.get(job.providerId) ?? 1) - 1;
+      if (activeForProvider === 0) this.#activeByProvider.delete(job.providerId);
+      else this.#activeByProvider.set(job.providerId, activeForProvider);
+    } else {
+      if (this.#pendingProviders.get(job.providerId) === job) {
+        this.#pendingProviders.delete(job.providerId);
+      }
+    }
+    job.state = "finished";
+    this.#activeGlobal--;
+    this.#forgetCredentialJob(job);
+    this.#drain();
+  }
+}
 
 
 export interface CredentialValidationContext {
@@ -49,9 +369,9 @@ interface ProviderAttempt {
 export class PollerEngine {
   readonly #vault: StorageVault;
   readonly #registry: ProviderRegistry;
+  readonly #providerPool: ProviderRequestPool;
   readonly #intervalMs: number;
   readonly #pollTimeoutMs: number;
-  readonly #inFlight: Map<string, Promise<UsageReport | null>> = new Map();
   readonly #credentialEpochs: Map<string, number> = new Map();
   readonly #listeners: Set<ReportListener> = new Set();
   #timer?: Timer;
@@ -67,10 +387,54 @@ export class PollerEngine {
     ) {
       throw new RangeError(`pollTimeoutMs must be an integer between 1 and ${MAX_TIMER_DELAY_MS}`);
     }
+    const maxConcurrentGlobal = options.maxConcurrentGlobal ?? DEFAULT_MAX_CONCURRENT_GLOBAL;
+    if (!Number.isSafeInteger(maxConcurrentGlobal) || maxConcurrentGlobal < 1) {
+      throw new RangeError("maxConcurrentGlobal must be a positive integer");
+    }
+    const maxConcurrentPerProvider =
+      options.maxConcurrentPerProvider ?? DEFAULT_MAX_CONCURRENT_PER_PROVIDER;
+    if (!Number.isSafeInteger(maxConcurrentPerProvider) || maxConcurrentPerProvider < 1) {
+      throw new RangeError("maxConcurrentPerProvider must be a positive integer");
+    }
+    const minProviderIntervalMs =
+      options.minProviderIntervalMs ?? DEFAULT_MIN_PROVIDER_INTERVAL_MS;
+    if (
+      !Number.isInteger(minProviderIntervalMs) ||
+      minProviderIntervalMs < 0 ||
+      minProviderIntervalMs > MAX_TIMER_DELAY_MS
+    ) {
+      throw new RangeError(`minProviderIntervalMs must be an integer between 0 and ${MAX_TIMER_DELAY_MS}`);
+    }
+    const maxQueuedJobs = options.maxQueuedJobs ?? DEFAULT_MAX_QUEUED_JOBS;
+    if (!Number.isSafeInteger(maxQueuedJobs) || maxQueuedJobs < 1) {
+      throw new RangeError("maxQueuedJobs must be a positive integer");
+    }
+    const admissionTimeoutMs = options.admissionTimeoutMs ?? DEFAULT_ADMISSION_TIMEOUT_MS;
+    if (
+      !Number.isInteger(admissionTimeoutMs) ||
+      admissionTimeoutMs < 1 ||
+      admissionTimeoutMs > MAX_TIMER_DELAY_MS
+    ) {
+      throw new RangeError(`admissionTimeoutMs must be an integer between 1 and ${MAX_TIMER_DELAY_MS}`);
+    }
     this.#vault = vault;
     this.#registry = registry;
+    this.#providerPool = new ProviderRequestPool(
+      maxConcurrentGlobal,
+      maxConcurrentPerProvider,
+      minProviderIntervalMs,
+      maxQueuedJobs,
+      admissionTimeoutMs,
+    );
     this.#intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.#pollTimeoutMs = pollTimeoutMs;
+  }
+  #canonicalProviderId(provider: string): string {
+    return this.#registry.find(provider)?.id ?? provider.toLowerCase();
+  }
+  #credentialStillOwnedBy(ref: CredentialRef): boolean {
+    const current = this.#vault.getCredentialRefInternal(ref.id);
+    return current !== null && current.ownerId === ref.ownerId;
   }
   #getEpoch(credentialId: string): number {
     return this.#credentialEpochs.get(credentialId) ?? 0;
@@ -79,7 +443,7 @@ export class PollerEngine {
   #bumpEpoch(credentialId: string): number {
     const next = this.#getEpoch(credentialId) + 1;
     this.#credentialEpochs.set(credentialId, next);
-    this.#inFlight.delete(credentialId);
+    this.#providerPool.invalidateCredential(credentialId);
     return next;
   }
 
@@ -183,7 +547,7 @@ export class PollerEngine {
 
     // Run initial poll
     this.pollAll().catch(() => {});
-    // Schedule periodic polling; per-credential jitter is applied within each sweep.
+    // Periodic sweeps share bounded provider dispatch with manual polling.
     this.#timer = setInterval(() => {
       this.pollAll().catch(() => {});
     }, this.#intervalMs);
@@ -198,9 +562,9 @@ export class PollerEngine {
   }
 
   async pollCredential(ownerId: string, credentialId: string): Promise<UsageReport | null> {
-    const credential = this.#vault.getCredential(ownerId, credentialId);
-    if (!credential || credential.ownerId !== ownerId) return null;
-    return this.#pollCredentialInternal(credential, false);
+    const ref = this.#vault.getCredentialRef(ownerId, credentialId);
+    if (!ref || ref.ownerId !== ownerId) return null;
+    return this.#scheduleCredentialPoll(ref, false);
   }
 
   async validateAndSaveCredential(
@@ -233,21 +597,25 @@ export class PollerEngine {
       metadataMode === "preserve" && context.accountLabelMode === "provider";
     let discoveredAccountLabel: string | undefined;
 
-    return this.#runWithDeadline(context.signal, async attempt => {
-      const fetched = await adapter.fetchUsage(candidate, {
-        signal: attempt.signal,
-        onTokenRefresh: (newSecret, metadataUpdates, newAccountLabel) => {
-          if (!attempt.isActive()) return;
-          candidate.secret = newSecret;
-          if (metadataUpdates) {
-            candidate.metadata = mergeDefinedMetadata(candidate.metadata, metadataUpdates);
-          }
-          if (useProviderAccountLabel && newAccountLabel?.trim()) {
-            discoveredAccountLabel = newAccountLabel.trim();
-            candidate.accountLabel = discoveredAccountLabel;
-          }
-        },
-      });
+    return this.#providerPool.run(
+      this.#canonicalProviderId(input.provider),
+      context.signal,
+      dispatch => dispatch(markDispatched => this.#runWithDeadline(context.signal, async attempt => {
+        markDispatched();
+        const fetched = await adapter.fetchUsage(candidate, {
+          signal: attempt.signal,
+          onTokenRefresh: (newSecret, metadataUpdates, newAccountLabel) => {
+            if (!attempt.isActive()) return;
+            candidate.secret = newSecret;
+            if (metadataUpdates) {
+              candidate.metadata = mergeDefinedMetadata(candidate.metadata, metadataUpdates);
+            }
+            if (useProviderAccountLabel && newAccountLabel?.trim()) {
+              discoveredAccountLabel = newAccountLabel.trim();
+              candidate.accountLabel = discoveredAccountLabel;
+            }
+          },
+        });
       context.signal?.throwIfAborted();
       attempt.throwIfInactive();
       if (fetched.error) throw new Error(fetched.error);
@@ -298,36 +666,61 @@ export class PollerEngine {
         this.#saveSuccessfulReport(saved, fetched, false);
         return saved;
       });
-    });
+      }), context.signal),
+    );
   }
 
   async pollUser(ownerId: string): Promise<UsageReport[]> {
-    const credentials = this.#vault.listCredentials(ownerId);
-    const reports: UsageReport[] = [];
-    for (const credential of credentials) {
-      const report = await this.#pollCredentialInternal(credential, false);
-      if (report) reports.push(report);
-    }
-    return reports;
+    return this.#pollCredentialRefs(this.#vault.listCredentialRefs(ownerId), false);
   }
 
-  async #pollCredentialInternal(queuedCredential: StoredCredential, daemon: boolean): Promise<UsageReport | null> {
-    const cred = queuedCredential.ownerId
-      ? this.#vault.getCredential(queuedCredential.ownerId, queuedCredential.id)
-      : this.#vault.getCredentialInternal(queuedCredential.id);
-    if (!cred || (queuedCredential.ownerId && cred.ownerId !== queuedCredential.ownerId)) return null;
+  #scheduleCredentialPoll(
+    ref: CredentialRef,
+    daemon: boolean,
+  ): Promise<UsageReport | null> {
+    return this.#providerPool.run(
+      this.#canonicalProviderId(ref.provider),
+      undefined,
+      dispatch => dispatch((markDispatched, skipDispatch) =>
+        this.#pollCredentialInternal(ref, daemon, markDispatched, skipDispatch),
+      ),
+      ref,
+    );
+  }
 
-    const adapter = this.#registry.find(cred.provider);
-    if (!adapter) return null;
-
-    const existing = this.#inFlight.get(cred.id);
-    if (existing) return existing;
-    const epoch = this.#getEpoch(cred.id);
-
+  async #pollCredentialInternal(
+    ref: CredentialRef,
+    daemon: boolean,
+    markDispatched: () => void,
+    skipDispatch: () => void,
+  ): Promise<UsageReport | null> {
+    let dispatchedCredential: StoredCredential | undefined;
+    let dispatchedEpoch: number | undefined;
+    let credentialReadFailed = false;
     let promise!: Promise<UsageReport | null>;
     promise = Promise.resolve().then(async () => {
       try {
         return await this.#runWithDeadline(undefined, async attempt => {
+          let credential: StoredCredential | null;
+          try {
+            credential = this.#vault.getCredentialInternal(ref.id);
+          } catch (error) {
+            credentialReadFailed = true;
+            throw error;
+          }
+          if (!credential || (credential.ownerId ?? "") !== ref.ownerId) {
+            skipDispatch();
+            return null;
+          }
+          const adapter = this.#registry.find(credential.provider);
+          if (!adapter) {
+            skipDispatch();
+            return null;
+          }
+          attempt.throwIfInactive();
+          const epoch = this.#getEpoch(credential.id);
+          dispatchedCredential = credential;
+          dispatchedEpoch = epoch;
           const ctx = {
             signal: attempt.signal,
             onTokenRefresh: (
@@ -335,48 +728,65 @@ export class PollerEngine {
               metadataUpdates?: Record<string, unknown>,
               newAccountLabel?: string,
             ) => {
-              if (this.#getEpoch(cred.id) !== epoch || !attempt.isActive()) {
+              if (
+                !this.#credentialStillOwnedBy(ref) ||
+                this.#getEpoch(credential.id) !== epoch ||
+                !attempt.isActive()
+              ) {
                 return;
               }
-              this.#vault.updateCredentialTokens(cred.ownerId!, cred.id, newSecret, metadataUpdates);
-              if (newAccountLabel && newAccountLabel !== cred.accountLabel) {
-                if (this.#getEpoch(cred.id) !== epoch || !attempt.isActive()) {
+              this.#vault.updateCredentialTokens(
+                credential.ownerId!,
+                credential.id,
+                newSecret,
+                metadataUpdates,
+              );
+              if (newAccountLabel && newAccountLabel !== credential.accountLabel) {
+                if (
+                  !this.#credentialStillOwnedBy(ref) ||
+                  this.#getEpoch(credential.id) !== epoch ||
+                  !attempt.isActive()
+                ) {
                   return;
                 }
-                this.#vault.updateCredentialLabel(cred.ownerId!, cred.id, newAccountLabel);
-                cred.accountLabel = newAccountLabel;
+                this.#vault.updateCredentialLabel(
+                  credential.ownerId!,
+                  credential.id,
+                  newAccountLabel,
+                );
+                credential.accountLabel = newAccountLabel;
               }
             },
           };
-          const fetched = await adapter.fetchUsage(cred, ctx);
+          markDispatched();
+          const fetched = await adapter.fetchUsage(credential, ctx);
           attempt.throwIfInactive();
-          if (this.#getEpoch(cred.id) !== epoch) {
-            return null;
-          }
-          if (fetched.error) {
-            throw new Error(fetched.error);
-          }
-          if (this.#getEpoch(cred.id) !== epoch) {
-            return null;
-          }
-          return attempt.commit(() => this.#saveSuccessfulReport(cred, fetched, daemon));
+          if (!this.#credentialStillOwnedBy(ref)) return null;
+          if (this.#getEpoch(credential.id) !== epoch) return null;
+          if (fetched.error) throw new Error(fetched.error);
+          if (this.#getEpoch(credential.id) !== epoch) return null;
+          return attempt.commit(() => this.#saveSuccessfulReport(credential, fetched, daemon));
         });
       } catch (error) {
-        if (this.#getEpoch(cred.id) !== epoch) {
+        if (credentialReadFailed) throw error;
+        if (!this.#credentialStillOwnedBy(ref)) return null;
+        const credential = dispatchedCredential;
+        const epoch = dispatchedEpoch;
+        if (!credential || epoch === undefined || this.#getEpoch(ref.id) !== epoch) {
           return null;
         }
         const errorMessage = error instanceof Error ? error.message : String(error);
-        const lastGood = (cred.ownerId && !daemon)
-          ? this.#vault.getLastSuccessfulUsage(cred.ownerId, cred.id)
-          : this.#vault.getLastSuccessfulUsageInternal(cred.id);
+        const lastGood = (credential.ownerId && !daemon)
+          ? this.#vault.getLastSuccessfulUsage(credential.ownerId, credential.id)
+          : this.#vault.getLastSuccessfulUsageInternal(credential.id);
 
         const now = Date.now();
         const fallbackReport: UsageReport = lastGood
           ? {
-              ownerId: cred.ownerId ?? lastGood.ownerId,
-              provider: cred.provider || lastGood.provider,
-              credentialId: cred.id,
-              accountLabel: cred.accountLabel || lastGood.accountLabel,
+              ownerId: credential.ownerId ?? lastGood.ownerId,
+              provider: credential.provider || lastGood.provider,
+              credentialId: credential.id,
+              accountLabel: credential.accountLabel || lastGood.accountLabel,
               fetchedAt: now,
               limits: lastGood.limits || [],
               error: errorMessage,
@@ -386,10 +796,10 @@ export class PollerEngine {
               lastGoodFetchedAt: lastGood.lastGoodFetchedAt ?? lastGood.fetchedAt,
             }
           : {
-              ownerId: cred.ownerId,
-              provider: cred.provider,
-              credentialId: cred.id,
-              accountLabel: cred.accountLabel,
+              ownerId: credential.ownerId,
+              provider: credential.provider,
+              credentialId: credential.id,
+              accountLabel: credential.accountLabel,
               fetchedAt: now,
               limits: [],
               error: errorMessage,
@@ -398,17 +808,56 @@ export class PollerEngine {
               source: "error",
             };
         if (daemon) this.#vault.saveUsageSnapshotInternal(fallbackReport);
-        else this.#vault.saveUsageSnapshot(cred.ownerId!, fallbackReport);
+        else this.#vault.saveUsageSnapshot(credential.ownerId!, fallbackReport);
         return fallbackReport;
-      } finally {
-        if (this.#inFlight.get(cred.id) === promise) {
-          this.#inFlight.delete(cred.id);
-        }
       }
     });
-
-    this.#inFlight.set(cred.id, promise);
     return promise;
+  }
+
+  async #pollCredentialRefs(refs: CredentialRef[], daemon: boolean): Promise<UsageReport[]> {
+    const groupsByProvider = new Map<string, number[]>();
+    for (let index = 0; index < refs.length; index++) {
+      const ref = refs[index]!;
+      const providerId = this.#canonicalProviderId(ref.provider);
+      let group = groupsByProvider.get(providerId);
+      if (!group) {
+        group = [];
+        groupsByProvider.set(providerId, group);
+      }
+      group.push(index);
+    }
+
+    const groups = [...groupsByProvider.values()];
+    const reportsByRef: Array<UsageReport | null> = new Array(refs.length).fill(null);
+    const errors: unknown[] = [];
+    let nextGroupIndex = 0;
+    const runProducer = async (): Promise<void> => {
+      while (nextGroupIndex < groups.length) {
+        const group = groups[nextGroupIndex++]!;
+        for (const refIndex of group) {
+          try {
+            const report = await this.#scheduleCredentialPoll(refs[refIndex]!, daemon);
+            if (report) reportsByRef[refIndex] = report;
+          } catch (error) {
+            errors.push(error);
+            break;
+          }
+        }
+      }
+    };
+
+    const producerCount = Math.min(MAX_PROVIDER_GROUP_WORKERS, groups.length);
+    const producers: Promise<void>[] = [];
+    for (let index = 0; index < producerCount; index++) {
+      producers.push(runProducer());
+    }
+    const settled = await Promise.allSettled(producers);
+    for (const result of settled) {
+      if (result.status === "rejected") errors.push(result.reason);
+    }
+    if (errors.length > 0) throw errors[0];
+    return reportsByRef.filter((report): report is UsageReport => report !== null);
   }
 
 
@@ -450,17 +899,7 @@ export class PollerEngine {
   }
 
   async #runSweep(): Promise<UsageReport[]> {
-    const credentials = this.#vault.listAllCredentialsInternal();
-    const reports: UsageReport[] = [];
-    for (const cred of credentials) {
-      const staggerMs = 400 + Math.floor(Math.random() * 600);
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, staggerMs);
-      await promise;
-      const report = await this.#pollCredentialInternal(cred, true);
-      if (report) reports.push(report);
-    }
-    return reports;
+    return this.#pollCredentialRefs(this.#vault.listAllCredentialRefsInternal(), true);
   }
 
   isRunning(): boolean {

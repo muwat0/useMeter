@@ -162,6 +162,23 @@ sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml up -d --no-build -
 
 The deployment is live on `production-server`. Keep the production `.env` file and the named Docker volume outside Git. Do not replace the `my_webapp` application; it is unrelated static/PHP hosting. Updates should be performed by fetching a reviewed release, rebuilding the image, and restarting the Compose service while preserving the named volume.
 
+## Bounded polling configuration (source, not a live-release claim)
+
+The bounded provider-admission implementation and its environment settings are present in the local source change; they are **not evidence that the currently deployed image has these controls**. The table documents defaults for a release containing that implementation. Do not use it to infer that the running service uses these values until a reviewed release is explicitly deployed and its effective configuration is confirmed.
+
+| Environment variable | Default | Effect |
+| --- | ---: | --- |
+| `POLL_TIMEOUT_MS` | `30000` | Per-provider-attempt deadline from dispatch, not a sweep/request deadline. |
+| `POLL_MAX_CONCURRENT_GLOBAL` | `4` | Maximum active provider attempts per server process, shared by daemon, manual refresh, and staged validation. |
+| `POLL_MAX_CONCURRENT_PER_PROVIDER` | `1` | Maximum active attempts per canonical provider ID. |
+| `POLL_MIN_PROVIDER_INTERVAL_MS` | `4000` | Minimum spacing between provider attempt dispatch starts; not a limit on every HTTP request inside an adapter. |
+| `POLL_MAX_QUEUED_JOBS` | `256` | Maximum jobs waiting in the shared pool. |
+| `POLL_ADMISSION_TIMEOUT_MS` | `30000` | Maximum wait for dispatch before local admission rejection; separate from attempt timeout. |
+
+The limits are process-local. Queue-full or admission-timeout responses use HTTP `429`, `Retry-After: 30`, and `errorCode: "POLLER_CAPACITY"`; a staged OAuth attempt that already redeemed a code is terminal and must restart with a fresh session. This local rejection does not represent an upstream provider 429. Provider rate limits, IP challenges, and multi-process coordination have not been established by these settings.
+
+The documented measurements are local synthetic fake-adapter runs, not tests against this VM, the deployed service, real provider APIs, or real users. See the README and specification for the measured scenarios and their limitations. They do not establish production freshness, free-tier safety, or readiness for paid advertising/mass signup. No source/configuration changes, deployment, or live provider calls are part of this documentation update.
+
 ## Hosted manual OAuth callbacks
 
 Claude, Gemini CLI, and Z.ai retain their embedded clients' registered local redirect URIs, but useMeter does not open a callback listener on the remote server. After authorization, paste the final full redirect URL into the provider's manual form. The shared authenticated endpoint is `POST /api/oauth/manual`; session ownership and the stored provider select the exchange, not fields supplied by the browser.
