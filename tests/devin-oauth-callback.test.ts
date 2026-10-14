@@ -44,7 +44,7 @@ function context(
   const vault = new StorageVault(":memory:");
   const registry = new ProviderRegistry();
   registry.register(customAdapter);
-  const poller = new PollerEngine(vault, registry);
+  const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
   const app = createServer(vault, poller, registry, undefined, options);
   return { vault, app, poller, registry };
 }

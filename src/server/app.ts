@@ -2,7 +2,8 @@ import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { getCookie } from "hono/cookie";
 import type { StorageVault } from "../core/storage/vault";
-import type { PollerEngine } from "../core/poller/poller";
+import { PollerAdmissionError } from "../core/poller/poller";
+import type { PollerAdmissionErrorCode, PollerEngine } from "../core/poller/poller";
 import type { ProviderRegistry } from "../core/providers/registry";
 import type { AdminSystemStats, AdminUserView, InputCredential, InvitationView, StoredCredential, UsageReport, User, UserRole } from "../types";
 import { AuthService } from "../core/auth/auth";
@@ -61,6 +62,27 @@ import { OAuthCapacityError, OAuthSessionStore, type OAuthSession } from "../cor
 const OAUTH_MAX_SESSION_TTL_MS = 10 * 60 * 1000;
 const OAUTH_MAX_SESSION_TTL_SECONDS = OAUTH_MAX_SESSION_TTL_MS / 1_000;
 const NO_OP: () => void = () => {};
+
+const POLLER_ADMISSION_RETRY_AFTER_SECONDS = 30;
+const POLLER_ADMISSION_MESSAGE = "Rate limit exceeded. Please wait before polling again.";
+
+const POLLER_ADMISSION_CALLBACK_COPY = {
+  en: {
+    title: "Authorization Not Completed",
+    message: `${POLLER_ADMISSION_MESSAGE} Start a new authorization; this authorization response cannot be reused.`,
+  },
+  tr: {
+    title: "Yetkilendirme Tamamlanamadı",
+    message: "Sorgulama hız sınırına ulaşıldı. Lütfen tekrar deneyin. Yeni bir yetkilendirme başlatın; bu yetkilendirme yanıtı yeniden kullanılamaz.",
+  },
+} as const;
+
+interface RateLimitResponseDetails {
+  errorCode?: "POLLER_CAPACITY";
+  admissionCode?: PollerAdmissionErrorCode;
+  restartRequired?: true;
+  status?: "error";
+}
 
 function oauthExpiresInSeconds(providerExpiresIn?: number): number {
   if (typeof providerExpiresIn !== "number" || !Number.isFinite(providerExpiresIn)) {
@@ -204,16 +226,60 @@ export function createServer(
     });
   }
 
-  function rateLimitResponse(c: AppContext, retryAfterSec = 60, message = "Too many requests. Please try again later.") {
+  function rateLimitResponse(
+    c: AppContext,
+    retryAfterSec = 60,
+    message = "Too many requests. Please try again later.",
+    details?: RateLimitResponseDetails,
+  ) {
     c.header("Retry-After", String(retryAfterSec));
     return c.json(
       {
         success: false,
         error: message,
         retryAfter: retryAfterSec,
+        ...details,
       },
       429
     );
+  }
+
+  function pollerAdmissionResponse(
+    c: AppContext,
+    error: PollerAdmissionError,
+    details?: Pick<RateLimitResponseDetails, "restartRequired" | "status">,
+  ) {
+    return rateLimitResponse(
+      c,
+      POLLER_ADMISSION_RETRY_AFTER_SECONDS,
+      POLLER_ADMISSION_MESSAGE,
+      { errorCode: "POLLER_CAPACITY", admissionCode: error.code, ...details },
+    );
+  }
+
+  function pollerAdmissionHtmlResponse(c: AppContext, error: PollerAdmissionError) {
+    c.header("Retry-After", String(POLLER_ADMISSION_RETRY_AFTER_SECONDS));
+    const preferredLanguage = c.req.header("Accept-Language")
+      ?.split(",")
+      .map((part, index) => {
+        const [tag, ...parameters] = part.trim().split(";");
+        const qualityParameter = parameters.find(parameter => parameter.trim().startsWith("q="));
+        const quality = qualityParameter === undefined ? 1 : Number(qualityParameter.trim().slice(2));
+        return { tag: tag?.trim().toLowerCase() ?? "", quality, index };
+      })
+      .filter(language => Number.isFinite(language.quality) && language.quality > 0)
+      .sort((left, right) => right.quality - left.quality || left.index - right.index)[0]?.tag ?? "";
+    const isTurkish = preferredLanguage.startsWith("tr");
+    const language = isTurkish ? "tr" : "en";
+    const copy = isTurkish ? POLLER_ADMISSION_CALLBACK_COPY.tr : POLLER_ADMISSION_CALLBACK_COPY.en;
+    return c.html(
+      `<!doctype html><html lang="${language}"><head><meta charset="utf-8"><title>${copy.title}</title></head><body style="font-family:system-ui,sans-serif;background:#0a0a0b;color:#f43f5e;text-align:center;padding:50px"><main data-error-code="POLLER_CAPACITY" data-admission-code="${error.code}" data-restart-required="true"><h2>${copy.title}</h2><p style="color:#a1a1aa">${copy.message}</p></main></body></html>`,
+      429,
+    );
+  }
+
+  function failPollerAdmission(session: PendingOAuthSession) {
+    oauthSessions.fail(session, POLLER_ADMISSION_MESSAGE);
   }
 
   function reserveOAuth(ownerId: string, provider: string): PendingOAuthSession | undefined {
@@ -874,7 +940,7 @@ export function createServer(
   app.get("/api/usage", handleUsage);
   app.get("/api/data", handleUsage);
 
-  // API: Trigger poll now for authenticated user's credentials
+  // API: Trigger a bounded provider-scheduled poll for authenticated user's credentials
   app.post("/api/poll", async c => {
     try {
       const user = c.get("user");
@@ -882,23 +948,20 @@ export function createServer(
       if (!rl.allowed) {
         return rateLimitResponse(c, rl.retryAfterSec, "Rate limit exceeded. Please wait before polling again.");
       }
-      const credentials = vault.listCredentials(user.id);
-      const reports: PublicUsageReport[] = [];
-      for (const cred of credentials) {
-        const report = await poller.pollCredential(user.id, cred.id);
-        if (report) {
-          reports.push(
-            toPublicUsageReport(report, {
-              accountLabel: cred.accountLabel,
-              createdAt: cred.createdAt,
-              accent: cred.accent || "default",
-              metadata: cred.metadata,
-            })
-          );
-        }
-      }
-      return c.json({ success: true, count: reports.length, data: reports });
-    } catch {
+      const reports = await poller.pollUser(user.id);
+      const credentials = new Map(vault.listCredentials(user.id).map(credential => [credential.id, credential]));
+      const data = reports.map(report => {
+        const credential = report.credentialId ? credentials.get(report.credentialId) : undefined;
+        return toPublicUsageReport(report, {
+          accountLabel: credential?.accountLabel || report.accountLabel,
+          createdAt: credential?.createdAt,
+          accent: credential?.accent || "default",
+          metadata: credential?.metadata,
+        });
+      });
+      return c.json({ success: true, count: data.length, data });
+    } catch (error) {
+      if (error instanceof PollerAdmissionError) return pollerAdmissionResponse(c, error);
       return c.json({ success: false, error: "Failed to poll credentials" }, 500);
     }
   });
@@ -928,10 +991,12 @@ export function createServer(
             })
           : null,
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof PollerAdmissionError) return pollerAdmissionResponse(c, error);
       return c.json({ success: false, error: "Failed to poll credential" }, 500);
     }
   });
+
 
   // API: List credentials (masked) for authenticated user
   app.get("/api/credentials", c => {
@@ -975,6 +1040,9 @@ export function createServer(
           metadata,
         }, "replace");
       } catch (validationError) {
+        if (validationError instanceof PollerAdmissionError) {
+          return pollerAdmissionResponse(c, validationError);
+        }
         const message = validationError instanceof Error ? validationError.message : String(validationError);
         return c.json({ success: false, error: message }, 400);
       }
@@ -1101,6 +1169,10 @@ export function createServer(
         });
       } catch (validationError) {
         if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        if (validationError instanceof PollerAdmissionError) {
+          failPollerAdmission(session);
+          return pollerAdmissionResponse(c, validationError, { status: "error", restartRequired: true });
+        }
         const message = validationError instanceof Error ? validationError.message : String(validationError);
         oauthSessions.fail(session, message);
         return c.json({ status: "error", error: message });
@@ -1255,6 +1327,10 @@ export function createServer(
       if (!oauthSessions.isActive(session)) {
         return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
       }
+      if (error instanceof PollerAdmissionError) {
+        failPollerAdmission(session);
+        return pollerAdmissionResponse(c, error, { restartRequired: true });
+      }
       const message = session.provider === "antigravity"
         ? "Authorization failed"
         : error instanceof Error ? error.message : "Authorization failed";
@@ -1313,9 +1389,13 @@ export function createServer(
         return successPage("Google Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
       }
       return successPage("Google Login Successful", "You can close this tab and return to useMeter.", "#10b981");
-    } catch {
+    } catch (error) {
       if (!oauthSessions.isActive(session)) {
         return successPage("Google Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
+      }
+      if (error instanceof PollerAdmissionError) {
+        failPollerAdmission(session);
+        return pollerAdmissionHtmlResponse(c, error);
       }
       oauthSessions.fail(session, "Authorization failed");
       return successPage("Google Login Failed", "Authorization failed. You can close this tab.", "#f43f5e");
@@ -1425,6 +1505,10 @@ export function createServer(
         });
       } catch (validationError) {
         if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        if (validationError instanceof PollerAdmissionError) {
+          failPollerAdmission(session);
+          return pollerAdmissionResponse(c, validationError, { status: "error", restartRequired: true });
+        }
         const message = validationError instanceof Error ? validationError.message : String(validationError);
         oauthSessions.fail(session, message);
         return c.json({ status: "error", error: message });
@@ -1514,6 +1598,10 @@ export function createServer(
         });
       } catch (validationError) {
         if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        if (validationError instanceof PollerAdmissionError) {
+          failPollerAdmission(session);
+          return pollerAdmissionResponse(c, validationError, { status: "error", restartRequired: true });
+        }
         const message = validationError instanceof Error ? validationError.message : String(validationError);
         oauthSessions.fail(session, message);
         return c.json({ status: "error", error: message });
@@ -1597,6 +1685,10 @@ export function createServer(
         });
       } catch (validationError) {
         if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        if (validationError instanceof PollerAdmissionError) {
+          failPollerAdmission(session);
+          return pollerAdmissionResponse(c, validationError, { status: "error", restartRequired: true });
+        }
         const message = validationError instanceof Error ? validationError.message : String(validationError);
         oauthSessions.fail(session, message);
         return c.json({ status: "error", error: message });
@@ -1680,6 +1772,10 @@ export function createServer(
         });
       } catch (validationError) {
         if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        if (validationError instanceof PollerAdmissionError) {
+          failPollerAdmission(session);
+          return pollerAdmissionResponse(c, validationError, { status: "error", restartRequired: true });
+        }
         const message = validationError instanceof Error ? validationError.message : String(validationError);
         oauthSessions.fail(session, message);
         return c.json({ status: "error", error: message });
@@ -1845,7 +1941,12 @@ export function createServer(
               await processDevinCode(reservation!, code);
             } catch (error) {
               if (oauthSessions.isActive(reservation!)) {
-                oauthSessions.fail(reservation!, error instanceof Error ? error.message : "Authorization failed");
+                oauthSessions.fail(
+                  reservation!,
+                  error instanceof PollerAdmissionError
+                    ? POLLER_ADMISSION_MESSAGE
+                    : error instanceof Error ? error.message : "Authorization failed",
+                );
               }
             }
           })
@@ -1924,6 +2025,10 @@ export function createServer(
       if (!oauthSessions.isActive(session)) {
         return successPage("Devin Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
       }
+      if (error instanceof PollerAdmissionError) {
+        failPollerAdmission(session);
+        return pollerAdmissionHtmlResponse(c, error);
+      }
       const message = error instanceof Error ? error.message : "Authorization failed";
       oauthSessions.fail(session, message);
       return successPage("Devin Login Failed", "Authorization failed. You can close this tab.", "#f43f5e");
@@ -1953,6 +2058,9 @@ export function createServer(
       provider: session.provider,
       status: session.status,
       error: session.error,
+      ...(session.status === "error" && session.error === POLLER_ADMISSION_MESSAGE
+        ? { restartRequired: true }
+        : {}),
       accountLabel: session.accountLabel,
     });
   });

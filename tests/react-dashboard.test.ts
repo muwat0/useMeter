@@ -17,7 +17,7 @@ function extractBootstrap(html: string): { reports: BootstrapReport[]; user: { i
 describe("React dashboard shell", () => {
   it("serves built assets with immutable caching and HEAD support", async () => {
     const vault = new StorageVault(":memory:");
-    const poller = new PollerEngine(vault, createDefaultRegistry());
+    const poller = new PollerEngine(vault, createDefaultRegistry(), { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller);
     try {
       const css = await app.request("/assets/app.css");
@@ -41,7 +41,7 @@ describe("React dashboard shell", () => {
 
   it("keeps dashboard CSP local-only while secondary SSR pages retain CDN compatibility", async () => {
     const vault = new StorageVault(":memory:");
-    const poller = new PollerEngine(vault, createDefaultRegistry());
+    const poller = new PollerEngine(vault, createDefaultRegistry(), { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller);
     try {
       const login = await app.request("/login");
@@ -65,7 +65,7 @@ describe("React dashboard shell", () => {
 
   it("sanitizes bootstrap metadata and excludes raw report payloads", async () => {
     const vault = new StorageVault(":memory:");
-    const poller = new PollerEngine(vault, createDefaultRegistry());
+    const poller = new PollerEngine(vault, createDefaultRegistry(), { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller);
     try {
       const register = await app.request("/api/auth/register", {

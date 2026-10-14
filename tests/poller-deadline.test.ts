@@ -117,7 +117,7 @@ describe("PollerEngine provider deadlines", () => {
         return report(credential, 23);
       },
     });
-    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 150 });
+    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 150, minProviderIntervalMs: 0 });
     let listening = false;
 
     try {
@@ -168,7 +168,7 @@ describe("PollerEngine provider deadlines", () => {
       }
       return Promise.resolve(report(current, 38));
     }));
-    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 50 });
+    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 50, minProviderIntervalMs: 0 });
 
     try {
       const firstPoll = poller.pollCredential(owner.id, credential.id);
@@ -215,7 +215,7 @@ describe("PollerEngine provider deadlines", () => {
       }
       return Promise.resolve(report(current, 36));
     }));
-    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 50 });
+    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 50, minProviderIntervalMs: 0 });
 
     try {
       const failed = await poller.pollCredential(owner.id, credential.id);
@@ -280,7 +280,7 @@ describe("PollerEngine provider deadlines", () => {
       const response = await fetch(`${baseUrl}/validation`, { signal: context?.signal });
       return report(candidate, response.status);
     }));
-    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 100 });
+    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 100, minProviderIntervalMs: 0 });
     let listening = false;
 
     try {
@@ -336,7 +336,7 @@ describe("PollerEngine provider deadlines", () => {
       fetchStarted.resolve();
       return lateFetch.promise;
     }));
-    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 40 });
+    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 40, minProviderIntervalMs: 0 });
 
     try {
       const validation = poller.validateAndSaveCredential(owner.id, {
@@ -374,7 +374,7 @@ describe("PollerEngine provider deadlines", () => {
       calls++;
       return report(credential, 9);
     }));
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const controller = new AbortController();
     controller.abort(new Error("caller canceled before validation"));
 
@@ -418,7 +418,7 @@ describe("PollerEngine provider deadlines", () => {
       const response = await fetch(`${baseUrl}/validation`, { signal: context?.signal });
       return report(candidate, response.status);
     }));
-    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 1_000 });
+    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 1_000, minProviderIntervalMs: 0 });
     const controller = new AbortController();
     let listening = false;
 
@@ -460,7 +460,7 @@ describe("PollerEngine provider deadlines", () => {
     });
     const registry = new ProviderRegistry();
     registry.register(adapter(async candidate => report(candidate, 11)));
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
 
     try {
       await expect(poller.validateAndSaveCredential(owner.id, {
@@ -505,7 +505,7 @@ describe("PollerEngine provider deadlines", () => {
     };
     const registry = new ProviderRegistry();
     registry.register(adapter(async current => report(current, 7)));
-    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 100 });
+    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 100, minProviderIntervalMs: 0 });
 
     try {
       const result = await poller.pollCredential(owner.id, credential.id);
@@ -538,7 +538,7 @@ describe("PollerEngine provider deadlines", () => {
     };
     const registry = new ProviderRegistry();
     registry.register(adapter(async candidate => report(candidate, 19)));
-    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 100 });
+    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 100, minProviderIntervalMs: 0 });
 
     try {
       const saved = await poller.validateAndSaveCredential(owner.id, {
@@ -571,7 +571,7 @@ describe("PollerEngine provider deadlines", () => {
     const owner = vault.createUser("deadline-commit-abort@example.com", "hash");
     const registry = new ProviderRegistry();
     registry.register(adapter(async current => report(current, 13)));
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const controller = new AbortController();
     const unsubscribe = poller.onReport(() => {
       controller.abort(new Error("caller canceled after committed report"));
@@ -616,7 +616,7 @@ describe("PollerEngine provider deadlines", () => {
       signalWasAbortedAfterCallback = context?.signal?.aborted === true;
       return Promise.resolve(report(current, 17));
     }));
-    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 10 });
+    const poller = new PollerEngine(vault, registry, { pollTimeoutMs: 10, minProviderIntervalMs: 0 });
 
     try {
       const result = await poller.pollCredential(owner.id, credential.id);

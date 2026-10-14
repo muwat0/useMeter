@@ -64,7 +64,7 @@ type TestApp = {
 function createTestApp(rateLimiter?: RateLimiter) {
   const vault = new StorageVault(":memory:");
   const registry = createDefaultRegistry();
-  const poller = new PollerEngine(vault, registry);
+  const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
   const authService = new AuthService(vault);
   const app = createServer(vault, poller, registry, authService, rateLimiter ? { rateLimiter } : undefined) as unknown as TestApp;
   return { vault, registry, poller, authService, app };

@@ -47,7 +47,7 @@ describe("device OAuth session routes", () => {
     const vault = new StorageVault(":memory:");
     const registry = new ProviderRegistry();
     registry.register(copilotAdapter);
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
     let tokenPollCalls = 0;
     let userInfoCalls = 0;
@@ -197,7 +197,7 @@ describe("device OAuth session routes", () => {
     const originalFetch = globalThis.fetch;
     const vault = new StorageVault(":memory:");
     const registry = new ProviderRegistry();
-    const app = createServer(vault, new PollerEngine(vault, registry), registry);
+    const app = createServer(vault, new PollerEngine(vault, registry, { minProviderIntervalMs: 0 }), registry);
     const pollResponse = Promise.withResolvers<Response>();
     const pollStarted = Promise.withResolvers<void>();
     let pollSignal: AbortSignal | undefined;
@@ -280,7 +280,7 @@ describe("device OAuth session routes", () => {
         return usageResult.promise;
       },
     });
-    const app = createServer(vault, new PollerEngine(vault, registry), registry);
+    const app = createServer(vault, new PollerEngine(vault, registry, { minProviderIntervalMs: 0 }), registry);
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = input instanceof Request ? input.url : String(input);
       if (url === "https://github.com/login/device/code") {
@@ -378,7 +378,7 @@ describe("device OAuth session routes", () => {
     const originalFetch = globalThis.fetch;
     const vault = new StorageVault(":memory:");
     const registry = new ProviderRegistry();
-    const app = createServer(vault, new PollerEngine(vault, registry), registry);
+    const app = createServer(vault, new PollerEngine(vault, registry, { minProviderIntervalMs: 0 }), registry);
     const pendingProviderResponse = Promise.withResolvers<Response>();
     void pendingProviderResponse.promise.catch(() => {});
     const pendingProviderStarted = Promise.withResolvers<void>();
@@ -562,7 +562,7 @@ describe("device OAuth session routes", () => {
     const originalFetch = globalThis.fetch;
     const vault = new StorageVault(":memory:");
     const registry = new ProviderRegistry();
-    const app = createServer(vault, new PollerEngine(vault, registry), registry);
+    const app = createServer(vault, new PollerEngine(vault, registry, { minProviderIntervalMs: 0 }), registry);
     const providerStarted = Promise.withResolvers<void>();
     const providerCleanup: Array<() => void> = [];
     const requestControllers: AbortController[] = [];
@@ -689,7 +689,7 @@ describe("device OAuth session routes", () => {
         };
       },
     });
-    const app = createServer(vault, new PollerEngine(vault, registry), registry);
+    const app = createServer(vault, new PollerEngine(vault, registry, { minProviderIntervalMs: 0 }), registry);
     let pollCalls = 0;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = input instanceof Request ? input.url : String(input);

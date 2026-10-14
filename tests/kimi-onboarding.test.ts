@@ -141,7 +141,10 @@ function createHarness(usagePayload: unknown, deviceCode: string, usageStatus = 
   vault.setRegistrationAllowed(true);
   cleanups.push(() => vault.close());
   const registry = createDefaultRegistry();
-  const poller = new PollerEngine(vault, registry);
+  const poller = new PollerEngine(vault, registry, {
+    maxConcurrentPerProvider: 2,
+    minProviderIntervalMs: 0,
+  });
   const app = createServer(vault, poller, registry);
   const fetchMock = installKimiFetch(usagePayload, deviceCode, usageStatus);
   return { app, vault, poller, registry, fetchMock };

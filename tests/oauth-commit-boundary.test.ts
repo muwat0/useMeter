@@ -58,7 +58,7 @@ describe("OAuth credential commit boundary", () => {
     const session = createClaimedSession(store, owner.id);
     const registry = new ProviderRegistry();
     registry.register(createAdapter());
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const originalSaveCredential = vault.saveCredential;
     let realCredentialWriteCompleted = false;
 
@@ -120,7 +120,7 @@ describe("OAuth credential commit boundary", () => {
       now = session.expiresAt;
       return healthyReport(credential);
     }));
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
 
     try {
       await expect(poller.validateAndSaveCredential(owner.id, {
@@ -159,7 +159,7 @@ describe("OAuth credential commit boundary", () => {
       expect(store.cancel(session.sessionId, owner.id)).toBe(true);
       return healthyReport(credential);
     }));
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
 
     try {
       await expect(poller.validateAndSaveCredential(owner.id, {

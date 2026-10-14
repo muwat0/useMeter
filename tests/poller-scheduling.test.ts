@@ -28,8 +28,6 @@ function fakeAdapter(fetch: ProviderAdapter["fetchUsage"]): ProviderAdapter {
 
 describe("PollerEngine global sweep scheduling", () => {
   it("coalesces concurrent global sweeps across different owners", async () => {
-    const originalRandom = Math.random;
-    Math.random = () => 0;
     const vault = new StorageVault(":memory:");
     const firstOwner = vault.createUser("sweep-first@example.com", "hash");
     const secondOwner = vault.createUser("sweep-second@example.com", "hash");
@@ -57,7 +55,7 @@ describe("PollerEngine global sweep scheduling", () => {
       }
       return healthyReport(credential);
     }));
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     let firstSweep: Promise<UsageReport[]> | undefined;
 
     try {
@@ -72,7 +70,6 @@ describe("PollerEngine global sweep scheduling", () => {
       expect(reports.every(report => report.health === "healthy" && !report.error)).toBe(true);
       expect(joinedReports.every(report => report.health === "healthy" && !report.error)).toBe(true);
     } finally {
-      Math.random = originalRandom;
       releaseFirstFetch.resolve();
       if (firstSweep) await firstSweep;
       poller.stop();
@@ -80,18 +77,16 @@ describe("PollerEngine global sweep scheduling", () => {
     }
   });
 
-  it("coalesces timer-triggered sweeps while a started sweep is held", async () => {
-    const originalRandom = Math.random;
-    Math.random = () => 0;
+  it("coalesces timer-triggered sweeps and keeps mid-sweep credentials for the next pass", async () => {
     const vault = new StorageVault(":memory:");
     const owner = vault.createUser("sweep-timer@example.com", "hash");
-    vault.saveCredential(owner.id, {
+    const first = vault.saveCredential(owner.id, {
       provider: "deepseek",
       accountLabel: "Timer blocker",
       credentialType: "api_key",
       secret: "first-secret",
     });
-    vault.saveCredential(owner.id, {
+    const second = vault.saveCredential(owner.id, {
       provider: "deepseek",
       accountLabel: "Second credential",
       credentialType: "api_key",
@@ -99,32 +94,59 @@ describe("PollerEngine global sweep scheduling", () => {
     });
     const firstFetchStarted = Promise.withResolvers<void>();
     const releaseFirstFetch = Promise.withResolvers<void>();
+    const timerPollAll = Promise.withResolvers<void>();
+    const initialSweep = Promise.withResolvers<{ sweep: Promise<UsageReport[]> }>();
     const calls: string[] = [];
     const registry = new ProviderRegistry();
     registry.register(fakeAdapter(async credential => {
       calls.push(credential.id);
-      if (calls.length === 1) {
+      if (credential.id === first.id) {
         firstFetchStarted.resolve();
         await releaseFirstFetch.promise;
       }
       return healthyReport(credential);
     }));
-    const poller = new PollerEngine(vault, registry, { intervalMs: 50 });
+    const poller = new PollerEngine(vault, registry, {
+      intervalMs: 250,
+      minProviderIntervalMs: 0,
+    });
+    const originalPollAll = poller.pollAll;
+    let pollAllCalls = 0;
+    poller.pollAll = () => {
+      pollAllCalls++;
+      const sweep = originalPollAll.call(poller);
+      if (pollAllCalls === 1) initialSweep.resolve({ sweep });
+      else timerPollAll.resolve();
+      return sweep;
+    };
+    // A real interval tick is the observable barrier for overlapping sweep coalescing.
+    const timerGuard = setTimeout(
+      () => timerPollAll.reject(new Error("The poller interval did not trigger a sweep")),
+      2_000,
+    );
     let sweep: Promise<UsageReport[]> | undefined;
 
     try {
       poller.start();
-      sweep = poller.pollAll();
+      sweep = (await initialSweep.promise).sweep;
       await firstFetchStarted.promise;
+      const addedMidSweep = vault.saveCredential(owner.id, {
+        provider: "deepseek",
+        accountLabel: "Added during sweep",
+        credentialType: "api_key",
+        secret: "late-secret",
+      });
+      await timerPollAll.promise;
       poller.stop();
       releaseFirstFetch.resolve();
       const reports = await sweep;
-      expect(calls).toHaveLength(2);
-      expect(new Set(calls).size).toBe(2);
-      expect(reports).toHaveLength(2);
+      expect(calls.sort()).toEqual([first.id, second.id].sort());
+      expect(calls).not.toContain(addedMidSweep.id);
+      expect(reports.map(report => report.credentialId)).toEqual([first.id, second.id]);
       expect(reports.every(report => report.ownerId === owner.id && report.health === "healthy")).toBe(true);
     } finally {
-      Math.random = originalRandom;
+      clearTimeout(timerGuard);
+      poller.pollAll = originalPollAll;
       poller.stop();
       releaseFirstFetch.resolve();
       if (sweep) await sweep;
@@ -143,20 +165,20 @@ describe("PollerEngine global sweep scheduling", () => {
     });
     const registry = new ProviderRegistry();
     registry.register(fakeAdapter(async credential => healthyReport(credential)));
-    const poller = new PollerEngine(vault, registry);
-    const listCredentials = vault.listAllCredentialsInternal;
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
+    const listCredentialRefs = vault.listAllCredentialRefsInternal;
 
     try {
-      vault.listAllCredentialsInternal = () => {
+      vault.listAllCredentialRefsInternal = () => {
         throw new Error("injected enumeration failure");
       };
       await expect(poller.pollAll()).rejects.toThrow("injected enumeration failure");
-      vault.listAllCredentialsInternal = listCredentials;
+      vault.listAllCredentialRefsInternal = listCredentialRefs;
       const reports = await poller.pollAll();
       expect(reports).toHaveLength(1);
       expect(reports[0]).toMatchObject({ ownerId: owner.id, health: "healthy", source: "live" });
     } finally {
-      vault.listAllCredentialsInternal = listCredentials;
+      vault.listAllCredentialRefsInternal = listCredentialRefs;
       poller.stop();
       vault.close();
     }

@@ -19,7 +19,7 @@ describe("Stale / Degraded / Last-Good Usage Contract", () => {
     const registry = new ProviderRegistry();
     const adapter = new DeepSeekAdapter();
     registry.register(adapter);
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
 
     const t1 = 1700000000000;
     adapter.fetchUsage = async () => ({
@@ -70,7 +70,7 @@ describe("Stale / Degraded / Last-Good Usage Contract", () => {
     const registry = new ProviderRegistry();
     const adapter = new DeepSeekAdapter();
     registry.register(adapter);
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
 
     const t1 = 1700000000000;
     adapter.fetchUsage = async () => ({
@@ -143,7 +143,7 @@ describe("Stale / Degraded / Last-Good Usage Contract", () => {
     const registry = new ProviderRegistry();
     const adapter = new DeepSeekAdapter();
     registry.register(adapter);
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
 
     adapter.fetchUsage = async () => {
       throw new Error("401 Invalid API Key");
@@ -183,7 +183,7 @@ describe("Stale / Degraded / Last-Good Usage Contract", () => {
     const registry = new ProviderRegistry();
     const adapter = new DeepSeekAdapter();
     registry.register(adapter);
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
 
     const t1 = 1700000000000;
     adapter.fetchUsage = async () => ({
@@ -290,7 +290,7 @@ describe("Stale / Degraded / Last-Good Usage Contract", () => {
     const registry = new ProviderRegistry();
     const adapter = new DeepSeekAdapter();
     registry.register(adapter);
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
 
     adapter.fetchUsage = async () => {
       throw new Error("Upstream gateway error");

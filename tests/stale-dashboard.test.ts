@@ -10,7 +10,7 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
   it("renders dashboard HTML preserving stale indicators, cached limits, error states, and exhausted quota without fabrication", async () => {
     const vault = new StorageVault(":memory:");
     const registry = new ProviderRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // Register authenticated owner
@@ -165,7 +165,7 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
   it("serves /api/data and /api/usage retaining stale metadata while strictly stripping raw payloads", async () => {
     const vault = new StorageVault(":memory:");
     const registry = new ProviderRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     // Register authenticated owner
@@ -281,7 +281,7 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
   it("embeds complete TR and EN localization dictionaries for stale, error, and cached states in dashboard scripts", async () => {
     const vault = new StorageVault(":memory:");
     const registry = new ProviderRegistry();
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
 
     const regRes = await app.request("/api/auth/register", {
@@ -329,7 +329,7 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
       },
     };
     registry.register(mockAdapter);
-    const poller = new PollerEngine(vault, registry);
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
     const app = createServer(vault, poller, registry);
     const regRes = await app.request("/api/auth/register", {
       method: "POST",

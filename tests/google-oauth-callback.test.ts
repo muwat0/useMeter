@@ -89,7 +89,7 @@ function context(
   const vault = new StorageVault(dbPath);
   const registry = new ProviderRegistry();
   registry.register(adapter);
-  const poller = new PollerEngine(vault, registry);
+  const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
   const auth = new AuthService(vault);
   const app = createServer(vault, poller, registry, auth, options);
   return { vault, app, auth };

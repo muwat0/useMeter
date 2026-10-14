@@ -107,7 +107,7 @@ function context(options: ServerOptions = {}, onValidate?: ValidationHook) {
   for (const provider of VALIDATION_PROVIDERS) {
     registry.register(makeValidationAdapter(provider, onValidate));
   }
-  const poller = new PollerEngine(vault, registry);
+  const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
   const auth = new AuthService(vault);
   const app = createServer(vault, poller, registry, auth, options);
   return { vault, registry, poller, auth, app };

@@ -133,6 +133,13 @@ export interface UsageReport {
   source?: UsageReportSource;
 }
 
+export interface CredentialRef {
+  id: string;
+  ownerId: string;
+  provider: string;
+  accountLabel: string;
+}
+
 export type CardAccent = "default" | "amber" | "emerald" | "cyan" | "violet" | "slate";
 
 export interface StoredCredential {

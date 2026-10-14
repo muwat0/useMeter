@@ -20,11 +20,19 @@ export function assertMasterKeyConfigured(env: NodeJS.ProcessEnv = process.env):
   }
 }
 
-// Resolve 32-byte key from environment or fallback machine seed in non-production
+// Keep only the key for the currently effective secret. The key material stays
+// private to this module and is never returned to callers.
+let cachedMasterSecret: string | undefined;
+let cachedMasterKey: Buffer | undefined;
+
 function getMasterKey(): Buffer {
   assertMasterKeyConfigured();
   const masterSecret = process.env["USAGE_MASTER_KEY"]?.trim() || LEGACY_DEV_MASTER_KEY;
-  return scryptSync(masterSecret, SALT, 32);
+  if (cachedMasterSecret !== masterSecret || !cachedMasterKey) {
+    cachedMasterKey = scryptSync(masterSecret, SALT, 32);
+    cachedMasterSecret = masterSecret;
+  }
+  return cachedMasterKey;
 }
 export interface EncryptedPayload {
   ciphertext: string;
