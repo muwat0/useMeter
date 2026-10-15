@@ -85,6 +85,11 @@ Reset token'ın sahibi hedef kullanıcıyı belirler; istekle birlikte başka ku
 
 Yeni public sayfalar `GET /forgot-password` ve `GET /reset-password`'dır. Reset token URL fragment'inden yüklenir ve sayfa geçmişi hemen temizler; reset sayfasında harici script, stylesheet, font veya görsel yoktur ve `Referrer-Policy: no-referrer` uygulanır. API mutasyonları aynı-köken denetiminden geçer. Başarılı olmayan hesap yaşam döngüsü yanıtları `{success:false,error,errorCode}` biçimindedir; istemci yerelleştirmeyi `errorCode` üzerinden yapar.
 
+### Genel kullanıma açık bilgilendirme sayfaları
+
+Giriş gerektirmeyen `/privacy`, `/terms`, `/security` ve `/support` sayfaları gizlilik, kullanım koşulları, güvenlik bildirimi ve topluluk desteği bilgilerini sunar. Sayfalar Türkçe ve İngilizce gösterilebilir (`?lang=tr` veya `?lang=en`); kendi iç stilleri dışında harici kaynak yüklemez ve `no-referrer` ile kısıtlayıcı bir içerik güvenliği ilkesi kullanır.
+
+
 
 ### Yerel hesap yaşam döngüsü yüzey doğrulaması (canlı teslimat kanıtı değildir)
 

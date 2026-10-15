@@ -2086,6 +2086,17 @@ function Dashboard() {
           )}
         </div>
       </main>
+      <footer className="mt-auto border-t border-appBorder px-4 sm:px-6 py-4">
+        <div className="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-3">
+          <span className="text-[11px] text-appTextMuted">{lang === 'tr' ? 'Bilgi ve destek' : 'Information & support'}</span>
+          <nav aria-label={lang === 'tr' ? 'Yasal ve destek bağlantıları' : 'Legal and support links'} className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-appTextMuted">
+            <a href="/privacy" className="hover:text-appText transition">{lang === 'tr' ? 'Gizlilik' : 'Privacy'}</a>
+            <a href="/terms" className="hover:text-appText transition">{lang === 'tr' ? 'Kullanım Koşulları' : 'Terms'}</a>
+            <a href="/security" className="hover:text-appText transition">{lang === 'tr' ? 'Güvenlik' : 'Security'}</a>
+            <a href="/support" className="hover:text-appText transition">{lang === 'tr' ? 'Destek' : 'Support'}</a>
+          </nav>
+        </div>
+      </footer>
 
       {/* Settings Modal */}
       {showSettings && (

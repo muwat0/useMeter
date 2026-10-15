@@ -21,6 +21,7 @@ import {
 import { getProviderCatalog } from "../core/providers/catalog";
 import { join } from "path";
 import { renderAccountRecoveryPageHtml } from "./account-pages";
+import { renderLegalPageHtml } from "./legal-pages";
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
 import { createHash, randomUUID } from "crypto";
 import {
@@ -76,6 +77,18 @@ const ACCOUNT_RECOVERY_CSP = [
   "object-src 'none'",
   "base-uri 'none'",
   "form-action 'self'",
+  "frame-ancestors 'none'",
+].join("; ");
+const LEGAL_PAGE_CSP = [
+  "default-src 'none'",
+  "script-src 'none'",
+  "style-src 'unsafe-inline'",
+  "connect-src 'none'",
+  "img-src 'none'",
+  "font-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
   "frame-ancestors 'none'",
 ].join("; ");
 
@@ -613,14 +626,17 @@ export function createServer(
     const secure = requestIsSecure(c);
     const requestPath = new URL(c.req.url).pathname;
     const recoveryPage = requestPath === "/forgot-password" || requestPath === "/reset-password";
+    const legalPage = requestPath === "/privacy" || requestPath === "/terms" || requestPath === "/security" || requestPath === "/support";
     const csp = requestPath === "/"
       ? DASHBOARD_CSP
       : recoveryPage
         ? ACCOUNT_RECOVERY_CSP
-        : undefined;
+        : legalPage
+          ? LEGAL_PAGE_CSP
+          : undefined;
     const securityOptions = {
       contentSecurityPolicy: csp,
-      referrerPolicy: recoveryPage ? "no-referrer" : undefined,
+      referrerPolicy: recoveryPage || legalPage ? "no-referrer" : undefined,
     };
     const secHeaders = getSecurityHeaders(secure, securityOptions);
     for (const [k, v] of Object.entries(secHeaders)) {
@@ -654,6 +670,7 @@ export function createServer(
       path === "/api/oauth/google/callback" ||
       path === "/api/oauth/devin/callback" ||
       ((path === "/login" || path === "/register" || path === "/forgot-password" || path === "/reset-password") && c.req.method === "GET") ||
+      ((path === "/privacy" || path === "/terms" || path === "/security" || path === "/support") && c.req.method === "GET") ||
       ((path === "/invite" || path.startsWith("/invite/")) && c.req.method === "GET") ||
       (path.startsWith("/api/invitations/") && c.req.method === "POST" && path.endsWith("/accept")) ||
       path === "/api/auth/login" ||
@@ -713,6 +730,12 @@ export function createServer(
   app.get("/api/providers/catalog", c => {
     return c.json({ success: true, providers: getProviderCatalog() });
   });
+
+  // Public legal and support pages.
+  app.get("/privacy", c => c.html(renderLegalPageHtml({ page: "privacy", lang: c.req.query("lang") === "en" ? "en" : "tr" })));
+  app.get("/terms", c => c.html(renderLegalPageHtml({ page: "terms", lang: c.req.query("lang") === "en" ? "en" : "tr" })));
+  app.get("/security", c => c.html(renderLegalPageHtml({ page: "security", lang: c.req.query("lang") === "en" ? "en" : "tr" })));
+  app.get("/support", c => c.html(renderLegalPageHtml({ page: "support", lang: c.req.query("lang") === "en" ? "en" : "tr" })));
 
   // Static asset serving for React client build
   const ASSET_MIME: Record<string, string> = {
@@ -2646,6 +2669,15 @@ function renderAuthPageHtml(options: { mode: "login" | "register"; registrationD
       </div>
       `}
   </main>
+  <footer class="w-full border-t border-appBorder px-4 sm:px-6 py-4 mt-auto">
+    <nav aria-label="Information and support" class="max-w-7xl mx-auto flex flex-wrap justify-center gap-x-5 gap-y-2 text-xs text-appTextMuted">
+      <a href="/privacy" class="hover:text-appText transition" data-i18n="authLegalPrivacy">Gizlilik</a>
+      <a href="/terms" class="hover:text-appText transition" data-i18n="authLegalTerms">Kullanım Koşulları</a>
+      <a href="/security" class="hover:text-appText transition" data-i18n="authLegalSecurity">Güvenlik</a>
+      <a href="/support" class="hover:text-appText transition" data-i18n="authLegalSupport">Destek</a>
+    </nav>
+  </footer>
+
 
   <script>
     const I18N_AUTH = {
@@ -2672,6 +2704,10 @@ function renderAuthPageHtml(options: { mode: "login" | "register"; registrationD
         authRegDisabledTitle: "Kayıtlar Kapalı",
         authRegDisabledDesc: "Yeni kullanıcı kayıtları sistem yöneticisi tarafından kapatılmıştır. Registration is disabled by administrator.",
         authToLoginBtn: "Giriş Yap",
+        authLegalPrivacy: "Gizlilik",
+        authLegalTerms: "Kullanım Koşulları",
+        authLegalSecurity: "Güvenlik",
+        authLegalSupport: "Destek",
         flag: "🇹🇷"
       },
       en: {
@@ -2697,6 +2733,10 @@ function renderAuthPageHtml(options: { mode: "login" | "register"; registrationD
         authRegDisabledTitle: "Registration Disabled",
         authRegDisabledDesc: "Registration is disabled by administrator. If you already have an account, please sign in.",
         authToLoginBtn: "Sign In",
+        authLegalPrivacy: "Privacy",
+        authLegalTerms: "Terms",
+        authLegalSecurity: "Security",
+        authLegalSupport: "Support",
         flag: "🇬🇧"
       }
     };
