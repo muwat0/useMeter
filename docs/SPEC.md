@@ -8,9 +8,37 @@
 
 ## 1. Sisteme Genel Bakış
 
-Bu sistem; geliştiricilerin ve yetkili kullanıcıların birden fazla AI sağlayıcısı üzerindeki (OpenRouter, DeepSeek, OpenAI Codex, Anthropic Claude, Google Antigravity, Cursor vb.) anlık bakiyelerini ($), kalan kullanım kotalarını (%) ve sıfırlanma sayaçlarını (`resetsAt`) izlemelerini sağlayan **özel çok kullanıcılı (private multi-user SaaS)** bir servis katmanıdır.
+Sistem, birden fazla AI sağlayıcısının anlık bakiyelerini, kota pencerelerini ve sıfırlanma zamanlarını izler. Depoda **17 kanonik sağlayıcı adaptörü** bulunur; bunların gerçek dünyadaki kanıt düzeyleri birbirinden ayrıdır.
 
 Sistem, tek bir kullanıcının yerel masaüstü paneli olmaktan çıkarak kullanıcı bazlı kimlik doğrulama, satır düzeyinde kiracı izolasyonu (`ownerId`), oturum güvenliği ve yetkilendirilmiş API erişimi ilkeleriyle çalışır.
+
+### 1.1 Sağlayıcı desteği, kanıt düzeyi ve telemetri türü
+
+`live_verified`, gerçek sağlayıcıdan geçerli telemetri gözlendiğini; `connection_verified`, gerçek hesap bağlantısının başarılı olduğunu ancak kota telemetrisinin gözlenmediğini; `synthetic_only`, yalnızca adaptör/sentetik davranışın mevcut olduğunu belirtir. Hiçbiri her plan, bölge veya yetkilendirme yolunun desteklendiği garantisi değildir.
+
+| Sağlayıcı (kanonik ID) | Kanıt düzeyi | Kimlik doğrulama modları | Telemetri türü |
+| --- | --- | --- | --- |
+| OpenRouter (`openrouter`) | `synthetic_only` | `oauth_loopback_paste`, `api_key` | `balance_usd` |
+| DeepSeek (`deepseek`) | `synthetic_only` | `api_key` | `balance_usd` |
+| Anthropic Claude (`anthropic`) | `synthetic_only` | `oauth_loopback_paste` | `window_percent` |
+| OpenAI ChatGPT / Codex (`openai-codex`) | `live_verified` | `oauth_device` | `window_percent` |
+| Antigravity (`antigravity`) | `synthetic_only` | `oauth_loopback_paste`, `oauth_callback` | `window_percent` |
+| GitHub Copilot (`github-copilot`) | `live_verified` | `oauth_device` | `window_percent` |
+| Cursor (`cursor`) | `live_verified` | `oauth_device`, `session_cookie` | `window_percent` |
+| xAI Grok (`xai-oauth`) | `live_verified` | `oauth_device` | `window_percent` |
+| Zhipu AI / GLM / Z.ai (`zai`) | `synthetic_only` | `oauth_loopback_paste`, `api_key` | `window_percent` |
+| MiniMax Code (`minimax-code`) | `synthetic_only` | `api_key` | `window_percent` |
+| Cline Pass (`cline-pass`) | `synthetic_only` | `api_key` | `window_percent` |
+| Devin (`devin`) | `synthetic_only` | `oauth_callback`, `session_cookie` | `token_credits` |
+| Umans (`umans`) | `synthetic_only` | `api_key` | `token_credits` |
+| Google Gemini CLI (`google-gemini-cli`) | `synthetic_only` | `oauth_loopback_paste` | `window_percent` |
+| Kimi Code (`kimi-code`) | `connection_verified` | `oauth_device` | `window_percent` |
+| OpenCode Go (`opencode-go`) | `synthetic_only` | `api_key` | `window_percent` |
+| Alibaba Qwen (`alibaba-token-plan`) | `synthetic_only` | `api_key`, `session_cookie` | `window_percent` |
+
+`window_percent` yüzde tabanlı kota pencerelerini, `balance_usd` parasal bakiyeyi, `token_credits` ise sağlayıcının bildirdiği token/kredi/istek sayaçlarını belirtir. Kimi için bilinen nötr sonuç **“Hesap bağlandı; sağlayıcı kota bildirmiyor”** biçimindedir; bu, ücretli plan veya bölge hakkında çıkarım değildir. Devin `cog_` V3 PAT'lerini desteklemez ve barındırılan OAuth yönlendirmesi deneysel/doğrulanmamıştır. Antigravity'nin gömülü masaüstü OAuth istemcisi tam loopback callback URL'sinin elle yapıştırılmasını gerektirir; otomatik barındırılan callback için operatörün kendi Google OAuth Web istemcisi ve eşleşen HTTPS URI'si gerekir.
+
+Kanonik katalog `GET /api/providers/catalog` üzerinden kimlik doğrulama olmadan okunabilir; yanıt yalnızca sağlayıcı metadata'sı içerir, sır veya token içermez. İstemci bağlantıdan önce kanıt düzeyini ve telemetri türünü gösterir.
 
 ---
 
@@ -84,8 +112,7 @@ Sistem, John Ousterhout'un *"Derin Modül (Deep Module)"* felsefesine uygun olar
 │                     4. Provider Adapters Seam                          │
 │                     fetchUsage(credential) -> Report                   │
 ├───────────────────┬───────────────────┬────────────────────────────────┤
-│ • DeepSeek        │ • OpenRouter      │ • Anthropic Claude             │
-│ • OpenAI Codex    │ • Antigravity     │ • Cursor                       │
+│ • 17 canonical providers; see evidence matrix in §1.1                     │
 ├───────────────────┴───────────────────┴────────────────────────────────┤
 │ 5. Notification Engine (Telegram / ntfy / Discord)                     │
 ├────────────────────────────────────────────────────────────────────────┤

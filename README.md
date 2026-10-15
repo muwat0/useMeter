@@ -16,29 +16,31 @@ Usage is limited to what each provider exposes and what the configured credentia
 
 ## Provider support and verification
 
-The adapters below are implemented in the repository. That means useMeter contains integration code for the listed authentication/data paths. Not that every provider, account tier, region, or OAuth flow has been independently verified for your deployment. Availability and returned fields can change upstream.
+The catalog contains the repository's 17 canonical provider adapters. Its tier describes evidence, not an availability promise: `live_verified` means real-provider telemetry has been observed for the listed provider; `connection_verified` means a real connection succeeded but quota telemetry has not been observed; `synthetic_only` means implementation/tests exist without live verification. This does not establish support for every account, plan, region, or authorization path.
 
-| Provider | Implemented connection and reported data | Important limitations / verification status |
-| --- | --- | --- |
-| OpenAI Codex | Device authorization or a manually supplied token; reports usage windows when available. | Provider/account eligibility and live results depend on the credential. |
-| Anthropic Claude | OAuth with a pasted registered callback URL (or `code#state`), or a manually supplied token/API key; reports Claude Code usage windows. | The hosted flow does not listen on the server's localhost. Report availability still depends on the credential and upstream account data. |
-| GitHub Copilot | Device authorization or manually supplied token; reports Copilot quota/seat data. | Copilot plan and seat eligibility are determined by GitHub. |
-| Cursor | Browser OAuth flow or manual session token; reports usage and request limits. | Session credentials and exposed limit data are controlled by Cursor. |
-| Google Antigravity | OAuth or manually supplied access token; parses quota-window summaries. | Hosted production login defaults to the embedded desktop client and a one-time full loopback callback URL paste; an operator-owned Web client can instead use the public HTTPS callback. Account/API compatibility must still be verified with that deployment. |
-| Google Gemini CLI | OAuth with a pasted full callback URL, or a manually supplied access token; reports the quota data available to its integration. | Separate from Antigravity. The embedded client's registered loopback URI is retained; account/API compatibility is not implied by the adapter. |
-| OpenRouter | Headless S256 PKCE: paste the one-time code shown by OpenRouter, or use an API key; reports balance and credit/usage data. | No callback URL or server localhost listener is used. Values reflect the provider API response at polling time. |
-| DeepSeek | API key; reports balance data. | Depends on the API account and the fields returned by the provider. |
-| xAI | Device OAuth or manually supplied token; reports available usage/balance data. | Provider account eligibility and live responses are not guaranteed by adapter presence. |
-| Zhipu AI (GLM) | OAuth with a pasted full registered callback URL, or a manually supplied API credential; reports available quota data. | The hosted flow does not rely on a server localhost listener; availability depends on the account and API response. |
-| MiniMax Code | Manually supplied API credential; reports plan quota data. | Plan fields and reset details depend on the provider response. |
-| Cline Pass | Manually supplied API key; reports percentage-based five-hour, weekly, and monthly usage windows with reset data. | Does not report balance or credit data. |
-| Devin | Manual CLI session token; an OAuth callback path is also present. | Hosted OAuth redirect compatibility is experimental and unconfirmed. `cog_` V3 personal access tokens are not supported by this adapter. |
-| Umans | Manually supplied API key; reports available usage/plan data. | Depends on the API account and returned fields. |
-| Kimi Code | Kimi OAuth credential; parses recognized coding usage windows. | HTTP 200 with `{}` is treated as a valid connected/no-quota-data response. It does not establish an account's membership, tier, or region; no quota percentage is invented. Standard API keys are not accepted for this usage endpoint. |
-| OpenCode Go | Manually supplied API key; reports available plan/quota data. | Depends on the provider account and response. |
-| Alibaba Qwen | API key or supported console-cookie credential; reports available token-plan data. | Plan and expiry fields depend on the provider response. |
+| Provider (canonical ID) | Evidence tier | Auth modes | Telemetry kind | Onboarding notes |
+| --- | --- | --- | --- | --- |
+| OpenRouter (`openrouter`) | `synthetic_only` | `oauth_loopback_paste`, `api_key` | `balance_usd` | OAuth uses PKCE and requires pasting the one-time code; an API key is also accepted. |
+| DeepSeek (`deepseek`) | `synthetic_only` | `api_key` | `balance_usd` | DeepSeek Platform API key; returned balance fields depend on the account. |
+| Anthropic Claude (`anthropic`) | `synthetic_only` | `oauth_loopback_paste` | `window_percent` | Use a compatible Claude Code OAuth token or paste the callback response. Anthropic API keys are not accepted by the usage endpoint. |
+| OpenAI ChatGPT / Codex (`openai-codex`) | `live_verified` | `oauth_device` | `window_percent` | Live verification covers observed Codex usage-window telemetry, not every plan or quota surface. |
+| Antigravity (`antigravity`) | `synthetic_only` | `oauth_loopback_paste`, `oauth_callback` | `window_percent` | Hosted setup without operator-owned Google Web OAuth credentials uses the embedded desktop client and requires pasting the full loopback callback URL. An operator-owned Web client with its exact public HTTPS callback enables hosted callback completion. |
+| GitHub Copilot (`github-copilot`) | `live_verified` | `oauth_device` | `window_percent` | Live verification covers observed Copilot quota telemetry; plan/seat eligibility remains provider-controlled. |
+| Cursor (`cursor`) | `live_verified` | `oauth_device`, `session_cookie` | `window_percent` | Browser OAuth or a compatible Cursor session token/cookie; live verification covers observed usage-window telemetry. |
+| xAI Grok (`xai-oauth`) | `live_verified` | `oauth_device` | `window_percent` | Live verification covers observed OAuth usage-percentage telemetry. An xAI API key is not a substitute for the OAuth credential. |
+| Zhipu AI / GLM / Z.ai (`zai`) | `synthetic_only` | `oauth_loopback_paste`, `api_key` | `window_percent` | OAuth requires pasting the registered callback URL, or provide a compatible bearer credential. |
+| MiniMax Code (`minimax-code`) | `synthetic_only` | `api_key` | `window_percent` | Requires a MiniMax Code token-plan access key; returned windows and resets depend on provider data. |
+| Cline Pass (`cline-pass`) | `synthetic_only` | `api_key` | `window_percent` | Reports percentage-based usage windows, not a monetary balance or token-credit balance. |
+| Devin (`devin`) | `synthetic_only` | `oauth_callback`, `session_cookie` | `token_credits` | Only a compatible existing Devin CLI session token is supported; `cog_` V3 PATs are unsupported. Hosted OAuth redirect compatibility is experimental and unverified. |
+| Umans (`umans`) | `synthetic_only` | `api_key` | `token_credits` | Reports provider request counters and available plan data, not a USD balance. |
+| Google Gemini CLI (`google-gemini-cli`) | `synthetic_only` | `oauth_loopback_paste` | `window_percent` | Separate from Antigravity; OAuth completion requires pasting the registered loopback callback URL. |
+| Kimi Code (`kimi-code`) | `connection_verified` | `oauth_device` | `window_percent` | Account connected; provider reports no quota data. This neutral result does not establish membership, plan, or region; standard API keys are not accepted. |
+| OpenCode Go (`opencode-go`) | `synthetic_only` | `api_key` | `window_percent` | Requires an API key for an active OpenCode Go subscription. |
+| Alibaba Qwen (`alibaba-token-plan`) | `synthetic_only` | `api_key`, `session_cookie` | `window_percent` | Requires a supported token-plan API key and console session cookie; OAuth credentials are not supported. |
 
-The project contains provider adapters and local tests; real-world compatibility must be evaluated with the intended provider account and deployment. In particular, a successful OAuth exchange alone does not guarantee the provider will return quota data.
+`window_percent` describes percentage-based quota windows; `balance_usd` describes monetary balance; `token_credits` groups provider-reported token, credit, or request counters. The canonical, bilingual matrix is also exposed without authentication at `GET /api/providers/catalog`; it contains provider metadata only and no credentials or secrets. The client displays the evidence tier and telemetry kind before connection.
+
+Provider values and behavior can change upstream. A successful OAuth exchange alone does not guarantee that a provider returns quota data. The Kimi neutral no-quota state is not evidence that an account lacks a paid plan or uses the wrong region.
 
 ## Run locally
 

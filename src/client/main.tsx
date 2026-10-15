@@ -1,6 +1,13 @@
 import './styles.css';
 import { StrictMode, useState, useEffect, useCallback, useRef, useMemo, type FormEvent, type DragEvent } from 'react';
 import { createRoot } from 'react-dom/client';
+import {
+  findCatalogEntry,
+  getProviderCatalog,
+  type ProviderCatalogEntry,
+  type ProviderQuotaKind,
+  type ProviderSupportTier,
+} from '../core/providers/catalog';
 
 // ── Types ──
 interface UsageAmount {
@@ -100,7 +107,7 @@ const I18N: Record<string, Record<string, string>> = {
     modalTitle: "AI Hesabı Bağla", modalSubtitle: "OAuth veya doğrudan API anahtarıyla kota takibi kurun.",
     tabOAuth: "OAuth ile Oturum Aç", tabManual: "Manuel API Key",
     oauthDesc: "Resmi sağlayıcı girişine yönlendirilirsiniz. Token\u2019lar yerel veritabanında AES-256-GCM ile şifrelenir.",
-    googleTitle: "Antigravity (Google AI Pro)", googleDesc: "Gemini ve Claude & GPT model havuzu kotaları",
+    googleTitle: "Antigravity (Google AI Pro)", googleDesc: "Loopback URL yapıştırma veya yöneticiye ait Web OAuth istemcisiyle barındırılan callback",
     codexTitle: "OpenAI ChatGPT / Codex", codexDesc: "Plus / Pro 5 saatlik ve haftalık kotalar",
     claudeTitle: "Anthropic Claude Pro/Max", claudeDesc: "5h oturum ve haftalık Opus/Sonnet kotaları",
     loginBtn: "Oturum Aç →", deviceWait: "OpenAI Onayı Bekleniyor:",
@@ -108,12 +115,12 @@ const I18N: Record<string, Record<string, string>> = {
     reopenLink: "Onay Sayfasını Yeniden Aç ↗",
     copilotTitle: "GitHub Copilot", copilotDesc: "Completions ve Chat kotaları",
     cursorTitle: "Cursor (Pro/Ultra)", cursorDesc: "Hızlı istekler ve on-demand kullanım",
-    xaiTitle: "xAI Grok", xaiDesc: "Grok-2/3 model kotaları",
-    kimiTitle: "Kimi Code (Moonshot)", kimiDesc: "Kimi K1.5 ve context kotaları",
+    xaiTitle: "xAI Grok", xaiDesc: "OAuth ile bildirilen kullanım yüzdesi",
+    kimiTitle: "Kimi Code (Moonshot)", kimiDesc: "Hesap bağlandı; sağlayıcı kota bildirmiyor",
     geminiCliTitle: "Google Gemini CLI", geminiCliDesc: "Code Assist & Gemini 2.5/3 Pro kotaları",
-    openrouterTitle: "OpenRouter", openrouterDesc: "Otomatik PKCE ile API anahtarı ve bakiye",
-    zaiTitle: "Zhipu AI (GLM / BigModel)", zaiDesc: "GLM-4 model kredileri ve bakiyesi",
-    devinTitle: "Devin AI", devinDesc: "Cognition Devin kota ve oturum takibi",
+    openrouterTitle: "OpenRouter", openrouterDesc: "PKCE kodu yapıştırma veya API anahtarı; bakiye",
+    zaiTitle: "Zhipu AI (GLM / BigModel)", zaiDesc: "Z.ai kota penceresi (%)",
+    devinTitle: "Devin AI", devinDesc: "Uyumlu CLI oturum tokenı; barındırılan yönlendirme deneysel",
     devinManualAction: "Manuel token",
     devinDocsLink: "Devin CLI manuel kimlik doğrulama yönergeleri ↗",
     copyCode: "Kodu Kopyala", codeCopied: "Kopyalandı!",
@@ -200,7 +207,7 @@ const I18N: Record<string, Record<string, string>> = {
     modalTitle: "Connect AI Account", modalSubtitle: "Track quotas and credits via OAuth or direct API key.",
     tabOAuth: "Login with OAuth", tabManual: "Manual API Key",
     oauthDesc: "Redirect to official authorization. Tokens are encrypted locally via AES-256-GCM.",
-    googleTitle: "Antigravity (Google AI Pro)", googleDesc: "Gemini and Claude & GPT shared quota pools",
+    googleTitle: "Antigravity (Google AI Pro)", googleDesc: "Loopback URL paste or hosted callback with an operator-owned Web OAuth client",
     codexTitle: "OpenAI ChatGPT / Codex", codexDesc: "Plus / Pro 5-hour rolling & weekly quotas",
     claudeTitle: "Anthropic Claude Pro/Max", claudeDesc: "5h session and weekly Opus/Sonnet quotas",
     loginBtn: "Login →", deviceWait: "Waiting for OpenAI Approval:",
@@ -208,12 +215,12 @@ const I18N: Record<string, Record<string, string>> = {
     reopenLink: "Re-open Authorization Page ↗",
     copilotTitle: "GitHub Copilot", copilotDesc: "Completions & Chat quotas",
     cursorTitle: "Cursor (Pro/Ultra)", cursorDesc: "Fast requests & on-demand usage",
-    xaiTitle: "xAI Grok", xaiDesc: "Grok-2/3 model quotas",
-    kimiTitle: "Kimi Code (Moonshot)", kimiDesc: "Kimi K1.5 & context quotas",
+    xaiTitle: "xAI Grok", xaiDesc: "OAuth-reported usage percentage",
+    kimiTitle: "Kimi Code (Moonshot)", kimiDesc: "Account connected; provider reports no quota data",
     geminiCliTitle: "Google Gemini CLI", geminiCliDesc: "Code Assist & Gemini 2.5/3 Pro quotas",
-    openrouterTitle: "OpenRouter", openrouterDesc: "Automatic PKCE key exchange & balance",
-    zaiTitle: "Zhipu AI (GLM / BigModel)", zaiDesc: "GLM-4 model credits & balance",
-    devinTitle: "Devin AI", devinDesc: "Cognition Devin quota & session tracking",
+    openrouterTitle: "OpenRouter", openrouterDesc: "PKCE code paste or API key; balance",
+    zaiTitle: "Zhipu AI (GLM / BigModel)", zaiDesc: "Z.ai usage-window percentages",
+    devinTitle: "Devin AI", devinDesc: "Compatible CLI session token; hosted redirect is experimental",
     devinManualAction: "Manual token",
     devinDocsLink: "Devin CLI manual authentication instructions ↗",
     copyCode: "Copy Code", codeCopied: "Copied!",
@@ -270,6 +277,43 @@ function t(key: string, lang: string): string {
   return I18N[lang]?.[key] || I18N['tr']?.[key] || key;
 }
 
+const SUPPORT_TIER_BADGE_STYLES: Record<ProviderSupportTier, string> = {
+  live_verified: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/25',
+  connection_verified: 'bg-sky-500/10 text-sky-400 border-sky-500/25',
+  synthetic_only: 'bg-amber-500/10 text-amber-400 border-amber-500/25',
+};
+
+function supportTierLabel(tier: ProviderSupportTier, lang: string): string {
+  if (tier === 'live_verified') return lang === 'tr' ? 'Canlı Telemetri Doğrulandı' : 'Live Verified';
+  if (tier === 'connection_verified') return lang === 'tr' ? 'Yalnız Bağlantı Doğrulandı' : 'Connection Verified Only';
+  return lang === 'tr' ? 'Deneysel / Sentetik' : 'Experimental / Synthetic';
+}
+
+function quotaKindLabel(kind: ProviderQuotaKind, lang: string): string {
+  if (kind === 'window_percent') return lang === 'tr' ? 'Kota penceresi (%)' : 'Quota windows (%)';
+  if (kind === 'balance_usd') return lang === 'tr' ? 'USD bakiye' : 'USD balance';
+  return lang === 'tr' ? 'Token / kredi / istek sayacı' : 'Token / credit / request counter';
+}
+
+function ProviderSupportDetails({ entry, lang }: { entry: ProviderCatalogEntry; lang: string }) {
+  const language = lang === 'tr' ? 'tr' : 'en';
+  return (
+    <div className="mt-2 space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span data-support-tier={entry.supportTier}
+          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold ${SUPPORT_TIER_BADGE_STYLES[entry.supportTier]}`}>
+          {supportTierLabel(entry.supportTier, lang)}
+        </span>
+        <span data-quota-kind={entry.quotaKind}
+          className="inline-flex items-center rounded-full border border-appBorder bg-appSurface/70 px-2 py-0.5 text-[10px] font-medium text-appTextMuted">
+          {quotaKindLabel(entry.quotaKind, lang)}
+        </span>
+      </div>
+      <p className="text-[11px] leading-relaxed text-appTextMuted">{entry.helpHint[language]}</p>
+    </div>
+  );
+}
+
 interface AccountApiResponse {
   success?: boolean;
   errorCode?: string;
@@ -299,25 +343,8 @@ function accountErrorMessageKey(status: number, errorCode?: string): string {
   }
 }
 function formatProviderTitle(provider: string): string {
-  const p = (provider || '').toLowerCase();
-  if (p === 'antigravity' || p === 'google-antigravity' || p === 'google') return 'Antigravity';
-  if (p === 'openai-codex' || p === 'codex') return 'OpenAI Codex';
-  if (p === 'openrouter') return 'OpenRouter';
-  if (p === 'deepseek') return 'DeepSeek';
-  if (p === 'anthropic' || p === 'claude') return 'Anthropic Claude';
-  if (p === 'cursor') return 'Cursor';
-  if (p === 'github-copilot' || p === 'copilot') return 'GitHub Copilot';
-  if (p === 'xai-oauth' || p === 'grok' || p === 'xai') return 'xAI Grok';
-  if (p === 'zai' || p === 'zhipu' || p === 'glm') return 'Zhipu AI (GLM)';
-  if (p === 'minimax-code' || p === 'minimax') return 'MiniMax Code';
-  if (p === 'cline-pass' || p === 'clinepass') return 'Cline Pass';
-  if (p === 'devin') return 'Devin';
-  if (p === 'umans') return 'Umans';
-  if (p === 'google-gemini-cli' || p === 'gemini-cli') return 'Gemini CLI';
-  if (p === 'kimi-code' || p === 'kimi' || p === 'moonshot') return 'Kimi Code';
-  if (p === 'opencode-go') return 'OpenCode Go';
-  if (p === 'alibaba-token-plan') return 'Alibaba Qwen';
-  return provider.charAt(0).toUpperCase() + provider.slice(1);
+  const entry = findCatalogEntry(provider);
+  return entry?.displayName.en ?? (provider.charAt(0).toUpperCase() + provider.slice(1));
 }
 
 function sanitizeErrorMessage(msg: string): string {
@@ -717,55 +744,126 @@ const OAUTH_PROVIDERS: { id: string; titleKey: string; descKey: string; handler:
 interface ProviderHint {
   placeholder: string;
   help: string;
-  type: string;
+  type: 'api_key' | 'oauth';
   docsUrl?: string;
   docsLabelKey?: string;
 }
 
-function getProviderHint(p: string, lang: string): ProviderHint {
-  const hints: Record<string, { placeholder: (l: string) => string; help: (l: string) => string; type: string; docsUrl?: string; docsLabelKey?: string }> = {
-    'antigravity': { placeholder: l => l === 'tr' ? 'ya29... veya OAuth Token' : 'ya29... or OAuth Token', help: l => l === 'tr' ? 'Google OAuth Access Token veya Refresh Token' : 'Google OAuth Access Token or Refresh Token', type: 'oauth' },
-    'openai-codex': { placeholder: () => 'OpenAI Access Token (eyJ...)', help: l => l === 'tr' ? 'OpenAI Bearer Access Token' : 'OpenAI Bearer Access Token', type: 'oauth' },
-    'github-copilot': { placeholder: l => l === 'tr' ? 'gho_... veya GitHub Personal Token' : 'gho_... or GitHub Personal Token', help: l => l === 'tr' ? 'GitHub Copilot yetkili erişim tokenı' : 'GitHub Copilot authorization token', type: 'oauth' },
-    'cursor': { placeholder: l => l === 'tr' ? 'WorkosCursorSessionToken veya access token' : 'WorkosCursorSessionToken or access token', help: l => l === 'tr' ? 'Cursor oturum tokenı veya çerezi' : 'Cursor session token or cookie', type: 'oauth' },
-    'openrouter': { placeholder: l => l === 'tr' ? 'sk-or-v1-... API Anahtarı' : 'sk-or-v1-... API Key', help: l => l === 'tr' ? 'OpenRouter API Anahtarı' : 'OpenRouter API Key', type: 'api_key' },
-    'deepseek': { placeholder: l => l === 'tr' ? 'sk-... DeepSeek API Anahtarı' : 'sk-... DeepSeek API Key', help: l => l === 'tr' ? 'DeepSeek Platform API Anahtarı' : 'DeepSeek Platform API Key', type: 'api_key' },
-    'xai-oauth': { placeholder: l => l === 'tr' ? 'xAI OAuth Bearer Token veya API Anahtarı' : 'xAI OAuth Bearer Token or API Key', help: l => l === 'tr' ? 'xAI Grok CLI OAuth Tokenı' : 'xAI Grok CLI OAuth Token', type: 'oauth' },
-    'zai': { placeholder: l => l === 'tr' ? 'Zhipu API Anahtarı veya OAuth Token' : 'Zhipu API Key or OAuth Token', help: l => l === 'tr' ? 'Zhipu AI / GLM erişim anahtarı' : 'Zhipu AI / GLM access key or token', type: 'oauth' },
-    'anthropic': { placeholder: l => l === 'tr' ? 'sk-ant-... veya Claude OAuth Token' : 'sk-ant-... or Claude OAuth Token', help: l => l === 'tr' ? 'Anthropic API Anahtarı veya Claude Code Tokenı' : 'Anthropic API Key or Claude Code Token', type: 'oauth' },
-    'devin': { placeholder: l => l === 'tr' ? 'Mevcut Devin CLI oturum tokenı' : 'Existing Devin CLI session token', help: l => l === 'tr' ? 'Yalnızca zaten sahip olduğunuz uyumlu Devin CLI oturum tokenını (devin-session-token$) yapıştırın. cog_ V3 API kişisel erişim tokenları (PAT) desteklenmez.' : 'Paste a compatible Devin CLI session token (devin-session-token$) only if you already have one. cog_ V3 API personal access tokens (PATs) are not supported.', type: 'oauth', docsUrl: 'https://docs.devin.ai/cli/troubleshooting', docsLabelKey: 'devinDocsLink' },
-    'minimax-code': { placeholder: l => l === 'tr' ? 'MiniMax API Key veya Token' : 'MiniMax API Key or Token', help: l => l === 'tr' ? 'MiniMax Code token plan erişim anahtarı' : 'MiniMax Code token-plan access key', type: 'api_key' },
-    'cline-pass': { placeholder: () => 'ClinePass API Key', help: l => l === 'tr' ? 'Cline kullanım kotası API anahtarı' : 'Cline usage quota API key', type: 'api_key' },
-    'umans': { placeholder: () => 'Umans API Key', help: l => l === 'tr' ? 'Umans Code kullanım API anahtarı' : 'Umans Code usage API key', type: 'api_key' },
-    'google-gemini-cli': { placeholder: () => 'Google OAuth Access Token', help: l => l === 'tr' ? 'Gemini CLI OAuth erişim tokenı' : 'Gemini CLI OAuth access token', type: 'oauth' },
-    'kimi-code': { placeholder: () => 'Kimi Code OAuth Token', help: l => l === 'tr' ? 'Kimi Code abonelik OAuth tokenı' : 'Kimi Code subscription OAuth token', type: 'oauth' },
-    'opencode-go': { placeholder: () => 'OpenCode Go API Key', help: l => l === 'tr' ? 'Aktif OpenCode Go aboneliği API anahtarı' : 'API key for an active OpenCode Go subscription', type: 'api_key' },
-    'alibaba-token-plan': { placeholder: l => l === 'tr' ? 'Alibaba Token Plan Key / Cookie' : 'Alibaba Token Plan Key / Cookie', help: l => l === 'tr' ? 'Bailian/Qwen token plan anahtarı veya konsol oturumu' : 'Bailian/Qwen token-plan key or console session', type: 'api_key' },
-  };
-  const h = hints[p];
-  if (h) return { placeholder: h.placeholder(lang), help: h.help(lang), type: h.type, docsUrl: h.docsUrl, docsLabelKey: h.docsLabelKey };
-  return { placeholder: lang === 'tr' ? 'Secret veya API Anahtarı' : 'Secret or API Key', help: lang === 'tr' ? 'Sağlayıcı erişim anahtarı' : 'Provider access credential', type: 'api_key' };
+interface ProviderCredentialHint {
+  placeholder: Readonly<{ en: string; tr: string }>;
+  help: Readonly<{ en: string; tr: string }>;
+  type: ProviderHint['type'];
+  docsUrl?: string;
+  docsLabelKey?: string;
 }
 
-const MANUAL_PROVIDERS = [
-  { value: 'antigravity', label: 'Antigravity (Google AI Pro)' },
-  { value: 'openai-codex', label: 'OpenAI ChatGPT / Codex' },
-  { value: 'github-copilot', label: 'GitHub Copilot' },
-  { value: 'cursor', label: 'Cursor' },
-  { value: 'anthropic', label: 'Anthropic Claude' },
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'deepseek', label: 'DeepSeek' },
-  { value: 'xai-oauth', label: 'xAI Grok' },
-  { value: 'zai', label: 'Zhipu AI (GLM)' },
-  { value: 'minimax-code', label: 'MiniMax Code' },
-  { value: 'cline-pass', label: 'Cline Pass' },
-  { value: 'devin', label: 'Devin' },
-  { value: 'umans', label: 'Umans' },
-  { value: 'google-gemini-cli', label: 'Gemini CLI' },
-  { value: 'kimi-code', label: 'Kimi Code' },
-  { value: 'opencode-go', label: 'OpenCode Go' },
-  { value: 'alibaba-token-plan', label: 'Alibaba Qwen' },
-];
+const PROVIDER_CREDENTIAL_HINTS: Record<string, ProviderCredentialHint> = {
+  antigravity: {
+    placeholder: { en: 'Google OAuth access or refresh token', tr: 'Google OAuth erişim veya yenileme tokenı' },
+    help: { en: 'Paste a Google OAuth token only when using manual credentials.', tr: 'Manuel kimlik bilgisi kullanıyorsanız Google OAuth tokenı yapıştırın.' },
+    type: 'oauth',
+  },
+  'openai-codex': {
+    placeholder: { en: 'OpenAI Codex OAuth access token', tr: 'OpenAI Codex OAuth erişim tokenı' },
+    help: { en: 'Use an OpenAI OAuth access token.', tr: 'OpenAI OAuth erişim tokenı kullanın.' },
+    type: 'oauth',
+  },
+  'github-copilot': {
+    placeholder: { en: 'GitHub Copilot OAuth token', tr: 'GitHub Copilot OAuth tokenı' },
+    help: { en: 'Use a compatible GitHub authorization token.', tr: 'Uyumlu bir GitHub yetkilendirme tokenı kullanın.' },
+    type: 'oauth',
+  },
+  cursor: {
+    placeholder: { en: 'WorkosCursorSessionToken or access token', tr: 'WorkosCursorSessionToken veya erişim tokenı' },
+    help: { en: 'Use a compatible Cursor session token or cookie.', tr: 'Uyumlu Cursor oturum tokenı veya çerezi kullanın.' },
+    type: 'oauth',
+  },
+  openrouter: {
+    placeholder: { en: 'sk-or-v1-... API key', tr: 'sk-or-v1-... API anahtarı' },
+    help: { en: 'OpenRouter API key.', tr: 'OpenRouter API anahtarı.' },
+    type: 'api_key',
+  },
+  deepseek: {
+    placeholder: { en: 'sk-... DeepSeek API key', tr: 'sk-... DeepSeek API anahtarı' },
+    help: { en: 'DeepSeek Platform API key.', tr: 'DeepSeek Platform API anahtarı.' },
+    type: 'api_key',
+  },
+  'xai-oauth': {
+    placeholder: { en: 'xAI OAuth access token', tr: 'xAI OAuth erişim tokenı' },
+    help: { en: 'Use an xAI OAuth token; API keys are not accepted by this adapter.', tr: 'xAI OAuth tokenı kullanın; bu adaptör API anahtarlarını kabul etmez.' },
+    type: 'oauth',
+  },
+  zai: {
+    placeholder: { en: 'Zhipu / Z.ai bearer token', tr: 'Zhipu / Z.ai bearer tokenı' },
+    help: { en: 'Use a compatible Zhipu / Z.ai bearer credential.', tr: 'Uyumlu bir Zhipu / Z.ai bearer kimlik bilgisi kullanın.' },
+    type: 'oauth',
+  },
+  anthropic: {
+    placeholder: { en: 'Claude Code OAuth access token', tr: 'Claude Code OAuth erişim tokenı' },
+    help: { en: 'Use a compatible Claude Code OAuth token; Anthropic API keys are not accepted.', tr: 'Uyumlu bir Claude Code OAuth tokenı kullanın; Anthropic API anahtarları kabul edilmez.' },
+    type: 'oauth',
+  },
+  devin: {
+    placeholder: { en: 'Existing Devin CLI session token', tr: 'Mevcut Devin CLI oturum tokenı' },
+    help: {
+      en: 'Only a compatible existing Devin CLI session token is supported; cog_ V3 PATs are unsupported. Hosted redirect is experimental.',
+      tr: 'Yalnızca mevcut uyumlu Devin CLI oturum tokenı desteklenir; cog_ V3 PAT desteklenmez. Barındırılan yönlendirme deneyseldir.',
+    },
+    type: 'oauth',
+    docsUrl: 'https://docs.devin.ai/cli/troubleshooting',
+    docsLabelKey: 'devinDocsLink',
+  },
+  'minimax-code': {
+    placeholder: { en: 'MiniMax Code API key', tr: 'MiniMax Code API anahtarı' },
+    help: { en: 'Access key for a MiniMax Code token plan.', tr: 'MiniMax Code token planı için erişim anahtarı.' },
+    type: 'api_key',
+  },
+  'cline-pass': {
+    placeholder: { en: 'Cline Pass API key', tr: 'Cline Pass API anahtarı' },
+    help: { en: 'Cline usage quota API key.', tr: 'Cline kullanım kota API anahtarı.' },
+    type: 'api_key',
+  },
+  umans: {
+    placeholder: { en: 'Umans API key', tr: 'Umans API anahtarı' },
+    help: { en: 'Umans Code usage API key.', tr: 'Umans Code kullanım API anahtarı.' },
+    type: 'api_key',
+  },
+  'google-gemini-cli': {
+    placeholder: { en: 'Google Gemini CLI OAuth access token', tr: 'Google Gemini CLI OAuth erişim tokenı' },
+    help: { en: 'Use a Gemini CLI OAuth token.', tr: 'Gemini CLI OAuth tokenı kullanın.' },
+    type: 'oauth',
+  },
+  'kimi-code': {
+    placeholder: { en: 'Kimi Code OAuth token', tr: 'Kimi Code OAuth tokenı' },
+    help: { en: 'Use a Kimi Code subscription OAuth token; standard API keys are not accepted.', tr: 'Kimi Code abonelik OAuth tokenı kullanın; standart API anahtarları kabul edilmez.' },
+    type: 'oauth',
+  },
+  'opencode-go': {
+    placeholder: { en: 'OpenCode Go API key', tr: 'OpenCode Go API anahtarı' },
+    help: { en: 'API key for an active OpenCode Go subscription.', tr: 'Aktif OpenCode Go aboneliğine ait API anahtarı.' },
+    type: 'api_key',
+  },
+  'alibaba-token-plan': {
+    placeholder: { en: 'Alibaba/Qwen token-plan API key and session cookie', tr: 'Alibaba/Qwen token-plan API anahtarı ve oturum çerezi' },
+    help: { en: 'Use a supported token-plan key and the required console session cookie.', tr: 'Desteklenen token-plan anahtarı ile gerekli konsol oturum çerezini kullanın.' },
+    type: 'api_key',
+  },
+};
+
+function getProviderHint(p: string, lang: string): ProviderHint {
+  const entry = findCatalogEntry(p);
+  const language = lang === 'tr' ? 'tr' : 'en';
+  const credentialHint = entry ? PROVIDER_CREDENTIAL_HINTS[entry.id] : undefined;
+  return {
+    placeholder: credentialHint?.placeholder[language] ?? (language === 'tr' ? 'Secret veya API Anahtarı' : 'Secret or API Key'),
+    help: credentialHint?.help[language] ?? entry?.helpHint[language] ?? (language === 'tr' ? 'Sağlayıcı erişim kimlik bilgisi' : 'Provider access credential'),
+    type: credentialHint?.type ?? 'api_key',
+    docsUrl: credentialHint?.docsUrl,
+    docsLabelKey: credentialHint?.docsLabelKey,
+  };
+}
+
+const MANUAL_PROVIDERS = getProviderCatalog();
 
 // ── Dashboard Component ──
 function Dashboard() {
@@ -1780,22 +1878,24 @@ function Dashboard() {
     }
   }
 
-  function handleOAuthProviderClick(handler: string) {
-    if (handler === 'google') startBrowserOAuth('google', t('googleTitle', lang));
-    else if (handler === 'claude') startBrowserOAuth('claude', t('claudeTitle', lang));
-    else if (handler === 'gemini-cli') startBrowserOAuth('gemini-cli', t('geminiCliTitle', lang));
-    else if (handler === 'zai') startBrowserOAuth('zai', t('zaiTitle', lang));
-    else if (handler === 'cursor') startOAuthPoll('cursor', 'Cursor', 'cursor', ['uuid', 'verifier'], 'browser');
-    else if (handler === 'openrouter') startBrowserOAuth('openrouter', t('openrouterTitle', lang));
+  function handleOAuthProviderClick(handler: string, providerId: string) {
+    const entry = findCatalogEntry(providerId);
+    const providerName = entry?.displayName[lang === 'tr' ? 'tr' : 'en'] ?? providerId;
+    if (handler === 'google') startBrowserOAuth('google', providerName);
+    else if (handler === 'claude') startBrowserOAuth('claude', providerName);
+    else if (handler === 'gemini-cli') startBrowserOAuth('gemini-cli', providerName);
+    else if (handler === 'zai') startBrowserOAuth('zai', providerName);
+    else if (handler === 'cursor') startOAuthPoll('cursor', providerName, 'cursor', ['uuid', 'verifier'], 'browser');
+    else if (handler === 'openrouter') startBrowserOAuth('openrouter', providerName);
     else if (handler === 'devin') {
       cancelOAuth();
       setManualProvider('devin');
       setModalTab('manual');
     }
-    else if (handler === 'codex-device') startOAuthPoll('codex', 'OpenAI', 'codex', ['deviceAuthId', 'userCode']);
-    else if (handler === 'copilot-device') startOAuthPoll('copilot', 'GitHub Copilot', 'copilot', ['deviceCode']);
-    else if (handler === 'xai-device') startOAuthPoll('xai', 'xAI Grok', 'xai', ['deviceCode']);
-    else if (handler === 'kimi-device') startOAuthPoll('kimi', 'Kimi Code', 'kimi', ['deviceCode', 'deviceId']);
+    else if (handler === 'codex-device') startOAuthPoll('codex', providerName, 'codex', ['deviceAuthId', 'userCode']);
+    else if (handler === 'copilot-device') startOAuthPoll('copilot', providerName, 'copilot', ['deviceCode']);
+    else if (handler === 'xai-device') startOAuthPoll('xai', providerName, 'xai', ['deviceCode']);
+    else if (handler === 'kimi-device') startOAuthPoll('kimi', providerName, 'kimi', ['deviceCode', 'deviceId']);
   }
 
   async function copyDeviceCode() {
@@ -1838,6 +1938,7 @@ function Dashboard() {
   }
 
   const hint = getProviderHint(manualProvider, lang);
+  const manualProviderEntry = findCatalogEntry(manualProvider);
 
   // ── Render ──
   const editBtnDisabled = currentGroup !== 'none';
@@ -2135,19 +2236,24 @@ function Dashboard() {
                 <p className="text-xs text-appTextMuted leading-relaxed">{t('oauthDesc', lang)}</p>
                 {oauthPanel === 'list' && (
                   <div id="oauthProvidersList" className="space-y-2 max-h-[48vh] overflow-y-auto pr-1">
-                    {OAUTH_PROVIDERS.map(op => (
-                      <button key={op.id} onClick={() => handleOAuthProviderClick(op.handler)}
-                        className="w-full flex items-center justify-between p-3 rounded-xl border border-appBorder bg-appMuted/40 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-lg bg-appMuted flex items-center justify-center p-1.5 border border-appBorder shrink-0">{op.svg}</div>
-                          <div>
-                            <div className="text-xs font-semibold text-appText group-hover:text-appAccent transition">{t(op.titleKey, lang)}</div>
-                            <div className="text-[11px] text-appTextMuted">{t(op.descKey, lang)}</div>
+                    {OAUTH_PROVIDERS.map(op => {
+                      const entry = findCatalogEntry(op.id);
+                      const language = lang === 'tr' ? 'tr' : 'en';
+                      return (
+                        <button key={op.id} onClick={() => handleOAuthProviderClick(op.handler, op.id)}
+                          className="w-full flex items-center justify-between p-3 rounded-xl border border-appBorder bg-appMuted/40 hover:border-appAccent hover:bg-appAccentSoft transition group text-left">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-appMuted flex items-center justify-center p-1.5 border border-appBorder shrink-0">{op.svg}</div>
+                            <div className="min-w-0">
+                              <div className="text-xs font-semibold text-appText group-hover:text-appAccent transition">{entry?.displayName[language] ?? t(op.titleKey, lang)}</div>
+                              <div className="text-[11px] text-appTextMuted">{t(op.descKey, lang)}</div>
+                              {entry && <ProviderSupportDetails entry={entry} lang={lang} />}
+                            </div>
                           </div>
-                        </div>
-                        <span className="text-xs font-semibold text-appAccent shrink-0">{t(op.handler === 'devin' ? 'devinManualAction' : 'loginBtn', lang)}</span>
-                      </button>
-                    ))}
+                          <span className="text-xs font-semibold text-appAccent shrink-0">{t(op.handler === 'devin' ? 'devinManualAction' : 'loginBtn', lang)}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 )}
                 {oauthPanel === 'device' && (
@@ -2257,8 +2363,16 @@ function Dashboard() {
                   <label className="block text-xs font-semibold text-appTextMuted mb-1.5">{t('provider', lang)}</label>
                   <select name="provider" value={manualProvider} onChange={e => setManualProvider(e.target.value)}
                     className="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none cursor-pointer">
-                    {MANUAL_PROVIDERS.map(mp => <option key={mp.value} value={mp.value}>{mp.label}</option>)}
+                    {MANUAL_PROVIDERS.map(mp => {
+                      const language = lang === 'tr' ? 'tr' : 'en';
+                      return (
+                        <option key={mp.id} value={mp.id}>
+                          {mp.displayName[language]} — {supportTierLabel(mp.supportTier, lang)} · {quotaKindLabel(mp.quotaKind, lang)}
+                        </option>
+                      );
+                    })}
                   </select>
+                  {manualProviderEntry && <ProviderSupportDetails entry={manualProviderEntry} lang={lang} />}
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-appTextMuted mb-1.5">{t('accountLabel', lang)}</label>
