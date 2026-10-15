@@ -57,6 +57,49 @@ function rowToCredentialRef(row: CredentialRefRow): CredentialRef {
 }
 const CREDENTIAL_METADATA_ENCRYPTION_ENV = "CREDENTIAL_METADATA_ENCRYPTION";
 const ENCRYPTED_METADATA_VERSION = 1;
+export const DEFAULT_USAGE_SNAPSHOT_RETENTION_DAYS = 7;
+const USAGE_SNAPSHOT_RETENTION_BATCH_SIZE = 1_000;
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
+
+export interface UsageSnapshotPruneOptions {
+  retentionDays?: number;
+  now?: number;
+  signal?: AbortSignal;
+}
+
+export interface UsageSnapshotPruneReceipt {
+  cutoff: number;
+  watermark: number;
+  protectedCount: number;
+  deletedCount: number;
+  batches: number;
+  stopped?: "closed";
+}
+
+const LAST_GOOD_SNAPSHOT_PREDICATE = `
+  CASE WHEN json_valid(report_json) THEN
+    CASE
+      WHEN json_type(report_json) = 'null' THEN 0
+      WHEN json_type(report_json, '$.error') IN ('array', 'object') THEN 0
+      WHEN json_type(report_json, '$.error') = 'text'
+        AND json_extract(report_json, '$.error') <> '' THEN 0
+      WHEN json_type(report_json, '$.error') IN ('integer', 'real')
+        AND json_extract(report_json, '$.error') <> 0 THEN 0
+      WHEN json_type(report_json, '$.error') = 'true' THEN 0
+      WHEN json_extract(report_json, '$.health') IN ('error', 'stale') THEN 0
+      WHEN json_extract(report_json, '$.source') IN ('error', 'stale') THEN 0
+      WHEN json_type(report_json, '$.stale') = 'true' THEN 0
+      ELSE 1
+    END
+  ELSE 0 END = 1
+`;
+
+function throwIfRetentionAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  const error = new Error("Usage snapshot retention was aborted.");
+  error.name = "AbortError";
+  throw error;
+}
 
 interface DecodedCredentialMetadata {
   metadata: Record<string, unknown>;
@@ -170,6 +213,7 @@ export class StorageVault {
   #metadataEncryptionEnabled =
     process.env[CREDENTIAL_METADATA_ENCRYPTION_ENV]?.trim().toLowerCase() === "enabled";
   #schemaVersion = 0;
+  #usageSnapshotPrunePromise?: Promise<UsageSnapshotPruneReceipt>;
 
   constructor(dbPath: string = "data/usage.db") {
     const dir = dbPath.includes("/") ? dbPath.slice(0, dbPath.lastIndexOf("/")) : "";
@@ -1296,6 +1340,234 @@ export class StorageVault {
 
   // ==================== Snapshot Management ====================
 
+  pruneUsageSnapshots(
+    options: UsageSnapshotPruneOptions = {},
+  ): Promise<UsageSnapshotPruneReceipt> {
+    if (this.#closed) return Promise.reject(new Error("Vault is closed."));
+    if (this.#usageSnapshotPrunePromise) return this.#usageSnapshotPrunePromise;
+
+    const pruning = this.#runUsageSnapshotPrune(options);
+    this.#usageSnapshotPrunePromise = pruning;
+    void pruning.then(
+      () => {
+        if (this.#usageSnapshotPrunePromise === pruning) {
+          this.#usageSnapshotPrunePromise = undefined;
+        }
+      },
+      () => {
+        if (this.#usageSnapshotPrunePromise === pruning) {
+          this.#usageSnapshotPrunePromise = undefined;
+        }
+      },
+    );
+    return pruning;
+  }
+
+  async #runUsageSnapshotPrune(
+    options: UsageSnapshotPruneOptions,
+  ): Promise<UsageSnapshotPruneReceipt> {
+    const retentionDays = options.retentionDays ?? DEFAULT_USAGE_SNAPSHOT_RETENTION_DAYS;
+    if (
+      !Number.isSafeInteger(retentionDays) ||
+      retentionDays <= 0 ||
+      !Number.isSafeInteger(retentionDays * MILLISECONDS_PER_DAY)
+    ) {
+      throw new RangeError("retentionDays must be a positive safe integer.");
+    }
+    const now = options.now ?? Date.now();
+    if (!Number.isSafeInteger(now)) {
+      throw new RangeError("now must be a safe integer timestamp.");
+    }
+    const cutoff = now - retentionDays * MILLISECONDS_PER_DAY;
+    if (!Number.isSafeInteger(cutoff)) {
+      throw new RangeError("The snapshot retention cutoff is outside the safe integer range.");
+    }
+    throwIfRetentionAborted(options.signal);
+
+    const watermarkRow = this.#db
+      .prepare("SELECT COALESCE(MAX(id), 0) AS watermark FROM usage_snapshots")
+      .get() as { watermark: number };
+    const watermark = watermarkRow.watermark;
+    const receipt: UsageSnapshotPruneReceipt = {
+      cutoff,
+      watermark,
+      protectedCount: 0,
+      deletedCount: 0,
+      batches: 0,
+    };
+    if (watermark === 0) return receipt;
+    throwIfRetentionAborted(options.signal);
+
+    let keepTableCreated = false;
+    try {
+      this.#db.exec(`
+        CREATE TEMP TABLE IF NOT EXISTS usage_snapshot_retention_keep (
+          id INTEGER PRIMARY KEY
+        );
+      `);
+      keepTableCreated = true;
+      this.#db.exec("DELETE FROM temp.usage_snapshot_retention_keep;");
+      this.#db.prepare(`
+        WITH credential_ids AS (
+          SELECT DISTINCT credential_id
+          FROM usage_snapshots
+          WHERE id <= ?
+        )
+        INSERT OR IGNORE INTO temp.usage_snapshot_retention_keep (id)
+        SELECT latest.id
+        FROM credential_ids AS c
+        INNER JOIN usage_snapshots AS latest
+          ON latest.id = (
+            SELECT candidate.id
+            FROM usage_snapshots AS candidate
+            WHERE candidate.credential_id = c.credential_id
+              AND candidate.id <= ?
+            ORDER BY candidate.fetched_at DESC, candidate.id DESC
+            LIMIT 1
+          )
+        UNION
+        SELECT last_good.id
+        FROM credential_ids AS c
+        INNER JOIN usage_snapshots AS last_good
+          ON last_good.id = (
+            SELECT candidate.id
+            FROM usage_snapshots AS candidate
+            WHERE candidate.credential_id = c.credential_id
+              AND candidate.id <= ?
+              AND ${LAST_GOOD_SNAPSHOT_PREDICATE}
+            ORDER BY candidate.fetched_at DESC, candidate.id DESC
+            LIMIT 1
+          );
+      `).run(watermark, watermark, watermark);
+
+      const protectedRow = this.#db
+        .prepare("SELECT COUNT(*) AS count FROM temp.usage_snapshot_retention_keep")
+        .get() as { count: number };
+      receipt.protectedCount = protectedRow.count;
+
+      const findBatchBoundary = this.#db.prepare(`
+        SELECT MAX(id) AS last_id
+        FROM (
+          SELECT s.id
+          FROM usage_snapshots AS s
+          WHERE s.id > ?
+            AND s.id <= ?
+            AND s.fetched_at < ?
+            AND NOT EXISTS (
+              SELECT 1
+              FROM temp.usage_snapshot_retention_keep AS protected
+              WHERE protected.id = s.id
+            )
+          ORDER BY s.id
+          LIMIT ${USAGE_SNAPSHOT_RETENTION_BATCH_SIZE}
+        )
+      `);
+      const deleteBatch = this.#db.prepare(`
+        DELETE FROM usage_snapshots
+        WHERE id > ?
+          AND id <= ?
+          AND id <= ?
+          AND fetched_at < ?
+          AND NOT EXISTS (
+            SELECT 1
+            FROM temp.usage_snapshot_retention_keep AS protected
+            WHERE protected.id = usage_snapshots.id
+          )
+      `);
+      let cursor = 0;
+      const commitBatch = this.#db.transaction(() => {
+        const boundary = findBatchBoundary.get(cursor, watermark, cutoff) as {
+          last_id: number | null;
+        };
+        if (boundary.last_id === null) return { lastId: null, deleted: 0 };
+        const deleted = deleteBatch.run(
+          cursor,
+          boundary.last_id,
+          watermark,
+          cutoff,
+        ).changes;
+        return { lastId: boundary.last_id, deleted };
+      });
+
+      while (true) {
+        if (this.#closed) return { ...receipt, stopped: "closed" };
+        throwIfRetentionAborted(options.signal);
+        const batch = commitBatch.immediate();
+        if (batch.lastId === null) break;
+        cursor = batch.lastId;
+        if (batch.deleted > 0) {
+          receipt.deletedCount += batch.deleted;
+          receipt.batches += 1;
+        }
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+      }
+      return receipt;
+    } finally {
+      if (keepTableCreated && !this.#closed) {
+        this.#db.exec("DROP TABLE IF EXISTS temp.usage_snapshot_retention_keep;");
+      }
+    }
+  }
+
+  getLastSuccessfulUsage(ownerId: string, credentialId: string): UsageReport | null {
+    if (this.#closed || !ownerId || !credentialId) return null;
+    const row = this.#db.prepare(`
+      SELECT s.report_json, s.owner_id FROM usage_snapshots s
+      INNER JOIN credentials c ON c.id = s.credential_id AND c.owner_id = ?
+      WHERE s.owner_id = ? AND s.credential_id = ?
+        AND ${LAST_GOOD_SNAPSHOT_PREDICATE}
+      ORDER BY s.fetched_at DESC, s.id DESC
+      LIMIT 1
+    `).get(ownerId, ownerId, credentialId) as
+      | { report_json: string; owner_id: string | null }
+      | undefined;
+    if (!row) return null;
+
+    try {
+      const report = JSON.parse(row.report_json) as UsageReport;
+      delete report.raw;
+      return {
+        ...report,
+        ownerId: row.owner_id ?? ownerId,
+        health: report.health ?? "healthy",
+        stale: report.stale ?? false,
+        source: report.source ?? "live",
+        lastGoodFetchedAt: report.lastGoodFetchedAt ?? report.fetchedAt,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  getLastSuccessfulUsageInternal(credentialId: string): UsageReport | null {
+    if (this.#closed || !credentialId) return null;
+    const row = this.#db.prepare(`
+      SELECT s.report_json, s.owner_id FROM usage_snapshots s
+      WHERE s.credential_id = ?
+        AND ${LAST_GOOD_SNAPSHOT_PREDICATE}
+      ORDER BY s.fetched_at DESC, s.id DESC
+      LIMIT 1
+    `).get(credentialId) as
+      | { report_json: string; owner_id: string | null }
+      | undefined;
+    if (!row) return null;
+
+    try {
+      const report = JSON.parse(row.report_json) as UsageReport;
+      delete report.raw;
+      return {
+        ...report,
+        ownerId: row.owner_id ?? report.ownerId,
+        health: report.health ?? "healthy",
+        stale: report.stale ?? false,
+        source: report.source ?? "live",
+        lastGoodFetchedAt: report.lastGoodFetchedAt ?? report.fetchedAt,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   saveUsageSnapshot(ownerId: string, report: UsageReport): boolean {
     return this.#saveOwnerScopedSnapshot(ownerId, report);
   }
@@ -1463,66 +1735,6 @@ export class StorageVault {
     return result;
   }
 
-  getLastSuccessfulUsage(ownerId: string, credentialId: string): UsageReport | null {
-    if (this.#closed || !ownerId || !credentialId) return null;
-    const rows = this.#db.prepare(`
-      SELECT s.report_json, s.owner_id FROM usage_snapshots s
-      INNER JOIN credentials c ON c.id = s.credential_id AND c.owner_id = ?
-      WHERE s.owner_id = ? AND s.credential_id = ?
-      ORDER BY s.fetched_at DESC, s.id DESC
-    `).all(ownerId, ownerId, credentialId) as { report_json: string; owner_id: string | null }[];
-
-    for (const row of rows) {
-      try {
-        const report = JSON.parse(row.report_json) as UsageReport;
-        delete report.raw;
-        if (report.error) continue;
-        if (report.health === "error" || report.health === "stale") continue;
-        if (report.source === "error" || report.source === "stale") continue;
-        if (report.stale === true) continue;
-
-        return {
-          ...report,
-          ownerId: row.owner_id ?? ownerId,
-          health: report.health ?? "healthy",
-          stale: report.stale ?? false,
-          source: report.source ?? "live",
-          lastGoodFetchedAt: report.lastGoodFetchedAt ?? report.fetchedAt,
-        };
-      } catch {}
-    }
-    return null;
-  }
-
-  getLastSuccessfulUsageInternal(credentialId: string): UsageReport | null {
-    if (this.#closed || !credentialId) return null;
-    const rows = this.#db.prepare(`
-      SELECT s.report_json, s.owner_id FROM usage_snapshots s
-      WHERE s.credential_id = ?
-      ORDER BY s.fetched_at DESC, s.id DESC
-    `).all(credentialId) as { report_json: string; owner_id: string | null }[];
-
-    for (const row of rows) {
-      try {
-        const report = JSON.parse(row.report_json) as UsageReport;
-        delete report.raw;
-        if (report.error) continue;
-        if (report.health === "error" || report.health === "stale") continue;
-        if (report.source === "error" || report.source === "stale") continue;
-        if (report.stale === true) continue;
-
-        return {
-          ...report,
-          ownerId: row.owner_id ?? report.ownerId,
-          health: report.health ?? "healthy",
-          stale: report.stale ?? false,
-          source: report.source ?? "live",
-          lastGoodFetchedAt: report.lastGoodFetchedAt ?? report.fetchedAt,
-        };
-      } catch {}
-    }
-    return null;
-  }
 
   // ==================== Health & Lifecycle ====================
 

@@ -1,5 +1,6 @@
 import { assertMasterKeyConfigured } from "./core/crypto";
-import { StorageVault } from "./core/storage/vault";
+import { DEFAULT_USAGE_SNAPSHOT_RETENTION_DAYS, StorageVault } from "./core/storage/vault";
+import { UsageSnapshotRetention } from "./core/storage/retention";
 import { createDefaultRegistry } from "./core/providers/registry";
 import { PollerEngine } from "./core/poller/poller";
 import type { PollerOptions } from "./core/poller/poller";
@@ -11,6 +12,18 @@ assertMasterKeyConfigured();
 
 const port = Number(process.env["PORT"]) || 3100;
 const dbPath = process.env["DATABASE_PATH"] || "data/usage.db";
+
+const retentionDaysSetting = process.env["SNAPSHOT_RETENTION_DAYS"];
+const snapshotRetentionDays = retentionDaysSetting === undefined
+  ? DEFAULT_USAGE_SNAPSHOT_RETENTION_DAYS
+  : Number(retentionDaysSetting.trim());
+if (
+  !Number.isSafeInteger(snapshotRetentionDays) ||
+  snapshotRetentionDays < 1 ||
+  !Number.isSafeInteger(snapshotRetentionDays * 24 * 60 * 60 * 1_000)
+) {
+  throw new RangeError("SNAPSHOT_RETENTION_DAYS must be a positive safe integer.");
+}
 
 const vault = new StorageVault(dbPath);
 const registry = createDefaultRegistry();
@@ -38,6 +51,14 @@ const poller = new PollerEngine(vault, registry, {
 
 // Start background polling daemon
 poller.start();
+
+const snapshotRetention = new UsageSnapshotRetention(vault, {
+  retentionDays: snapshotRetentionDays,
+});
+void snapshotRetention.start().catch((error: unknown) => {
+  if (error instanceof Error && error.name === "AbortError") return;
+  console.error("Usage snapshot retention failed:", error);
+});
 
 const authService = new AuthService(vault);
 const app = createServer(vault, poller, registry, authService);

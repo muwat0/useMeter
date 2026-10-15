@@ -89,6 +89,12 @@ Kullanım verisinin güncelliğini ve güvenilirliğini tanımlayan üç durumlu
 ### Yıkıcı Olmayan Son Başarılı Durum Koruması (Non-destructive Last-Good Telemetry)
 Geçici ağ kesintilerinde veya sağlayıcı çökmelerinde önceden bilinen kota limitlerinin sıfırlanmasını veya panodan kaybolmasını engelleyen dayanıklılık mekanizması. Sistem, kiracı izolasyonu (`ownerId` + `credentialId`) sınırları dahilinde son başarılı anlık görüntüyü korur; arayüzde kehribar (amber) renkli uyarı rozeti ve "Son başarılı güncelleme" zamanıyla birlikte limitleri göstermeye devam eder.
 
+### Kullanım Geçmişi Saklama Süresi (Usage History Retention)
+Kullanım anlık görüntülerinin geçmiş incelemeler için tutulduğu zaman aralığı. Sürenin dışındaki geçmiş kayıtlar temizlenebilir; her hesabın güncel anlık görüntüsü ve son başarılı anlık görüntüsü bu süreden bağımsız olarak korunur. Böylece geçmiş temizliği panodaki güncel durumu veya yıkıcı olmayan son başarılı veri korumasını ortadan kaldırmaz.
+
+### Korunan Kullanım Anlık Görüntüsü (Protected Usage Snapshot)
+Bir hesaba ait en güncel durumu veya son başarılı durumu temsil ettiği için geçmiş temizliğinden muaf olan kullanım kaydı. Aynı rapor zamanını paylaşan kayıtlar arasında son kaydedilen görüntü önceliklidir. Henüz başarılı yoklaması bulunmayan hesap için yalnız güncel görüntü korunur; gerçek kota tükenmesi başarılı telemetri sayılır.
+
 ### Sağlayıcı Kota Tükenmesi vs İletişim / Yoklama Hatası (Provider Exhaustion vs Polling Failure)
 Sistem bu iki durumu kesin çizgilerle birbirinden ayırır:
 1. **Sağlayıcı Kota Tükenmesi (Provider Quota Exhaustion):** Sağlayıcı API'si geçerli ve başarılı bir HTTP yanıtı (HTTP 200) dönmüş, ancak kullanıcının kotasının dolduğunu (`usedFraction >= 1.0` veya `status: "exhausted"`) bildirmiştir. Bu durum bir hata DEĞİLDİR; telemetri açısından **Sağlıklı (`healthy`)** ve canlı (`live`) bir veridir.

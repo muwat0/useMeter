@@ -20,6 +20,8 @@ The deployment on `production-server` is active: Docker Engine 29.8.0 runs the c
 
 From the deployment directory:
 
+> **Existing-database safety gate:** A release containing automatic snapshot retention performs a prune on its first application startup. Before the first `docker compose up -d` against an existing data volume, create and verify a standalone, WAL-consistent backup of the current database. The direct-SQLite `VACUUM INTO` pattern below is one supported method; apply the schema, integrity, and count checks appropriate to the current database. Retain the copy outside the live volume. Reverting the application image alone cannot restore snapshots already deleted by retention.
+
 ```sh
 git clone https://github.com/muwat0/useMeter.git .
 # Or fetch the desired release commit from the canonical repository.
@@ -161,6 +163,18 @@ sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml up -d --no-build -
 ## Operational notes
 
 The deployment is live on `production-server`. Keep the production `.env` file and the named Docker volume outside Git. Do not replace the `my_webapp` application; it is unrelated static/PHP hosting. Updates should be performed by fetching a reviewed release, rebuilding the image, and restarting the Compose service while preserving the named volume.
+
+## Usage snapshot retention (source behavior; not a current-release claim)
+
+A release containing `UsageSnapshotRetention` prunes immediately after the vault and poller initialize, then runs hourly in the background. `SNAPSHOT_RETENTION_DAYS` defaults to `7` and must be a positive safe integer with a safely representable millisecond window; invalid day values are rejected during application startup. The storage method also validates `now` and the computed cutoff as safe integer epoch-millisecond values before reading snapshots. Each run preserves all snapshots with `fetched_at >= now - retentionDays * 86,400,000`, plus each credential's latest snapshot and latest last-good snapshot. Both anchors rank by `fetched_at DESC, id DESC`; a same-time tie therefore selects the larger snapshot ID. Last-good uses the same legacy-compatible health/error classification as the storage reader, including healthy quota-exhausted reports.
+
+At run start, the worker captures a snapshot-ID watermark and computes the protected anchors once. It deletes only older-than-cutoff rows at or below that watermark, in transactions of at most 1,000 deletions, yielding between committed batches. Rows inserted during a run are deferred to a later run even if their provider timestamp is old. Runs do not overlap within the vault. This operation deletes history rows only: it does not delete users, credentials, invitations, secrets, or token metadata.
+
+The checked-in `compose.yaml` forwards the setting as `SNAPSHOT_RETENTION_DAYS: ${SNAPSHOT_RETENTION_DAYS:-7}`. Set a custom value in the Compose interpolation environment (for example, the configured `.env` or `--env-file`); the Compose service must also contain that environment mapping. A `.env` entry by itself does not inject a variable into a container, and older or deployment-specific Compose files need the mapping added explicitly to allow overrides. This source documentation does not establish that the current production image or external production Compose file enables the worker.
+
+Retention does not run a recurring `VACUUM`. SQLite marks deleted pages reusable, so pruning can leave the live database file at its previous size while increasing `freelist_count`; physical compaction is separate offline maintenance. A protected, verified pre-first-start backup of a schema-v2 database retains the prior snapshot rows and encrypted credential metadata as a separate recovery copy. Keep it outside the live volume. Rolling back the image alone cannot restore deleted rows; recovery requires an offline restore from that pre-prune backup under the existing WAL/sidecar safety rules.
+
+**Local synthetic growth measurement (not production or real-user evidence):** On Bun 1.4.2, a seeded 200,000-snapshot / 50-owner / 100-credential database pruned 198,850 rows in 199 batches in 788.42 ms, preserving 150 expired anchors and all 1,000 recent snapshots. Latest-per-owner and last-good query p95 were 2.25 ms and 2.19 ms before pruning, then 0.06 ms each; history p95 was 0.06 ms then 0.04 ms. After a checkpoint, the live synthetic database remained 143,675,392 bytes while free pages rose from 0 to 34,781. A separate synthetic `VACUUM INTO` copy was 876,544 bytes; that is not automatic shrinkage of the live database. The maximum observed timer lag was 219.91 ms, so cooperative yielding is not a strict end-to-end latency bound. These measurements do not establish production performance or deployment status.
 
 ## Bounded polling configuration (source, not a live-release claim)
 

@@ -216,25 +216,20 @@ CREATE TABLE IF NOT EXISTS credentials (
 CREATE INDEX IF NOT EXISTS idx_credentials_owner_provider ON credentials(owner_id, provider);
 CREATE INDEX IF NOT EXISTS idx_credentials_owner_id ON credentials(owner_id);
 
--- Kullanım Anlık Görüntüleri Tablosu
+-- Usage Snapshots Table
 CREATE TABLE IF NOT EXISTS usage_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_id TEXT, -- NULL ise eski kayıttan sahiplenilecek
+    owner_id TEXT REFERENCES users(id) ON DELETE CASCADE,
     credential_id TEXT NOT NULL,
     provider TEXT NOT NULL,
-    window_id TEXT NOT NULL,
-    used_fraction REAL,
-    remaining REAL,
-    unit TEXT NOT NULL,
-    resets_at INTEGER,
-    status TEXT NOT NULL,
-    recorded_at INTEGER NOT NULL,
-    FOREIGN KEY(owner_id) REFERENCES users(id) ON DELETE CASCADE,
+    account_label TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL,
     FOREIGN KEY(credential_id) REFERENCES credentials(id) ON DELETE CASCADE
 );
-CREATE INDEX IF NOT EXISTS idx_usage_owner_recorded ON usage_snapshots(owner_id, recorded_at DESC);
-CREATE INDEX IF NOT EXISTS idx_usage_cred_recorded ON usage_snapshots(credential_id, recorded_at DESC);
-CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage_snapshots(provider, recorded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_snapshots_cred_time ON usage_snapshots(credential_id, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_snapshots_owner_time ON usage_snapshots(owner_id, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_snapshots_owner_cred_time ON usage_snapshots(owner_id, credential_id, fetched_at DESC);
 ```
 
 -- Davetiyeler Tablosu
@@ -261,6 +256,22 @@ UPDATE credentials SET owner_id = :firstUserId WHERE owner_id IS NULL;
 UPDATE usage_snapshots SET owner_id = :firstUserId WHERE owner_id IS NULL;
 ```
 Bu işlemden sonra veya sisteme sonradan kaydolan kullanıcılar için sahipsiz kayıt kalmaz; diğer kullanıcılar yalnızca kendi ekledikleri kimlik bilgilerini ve kotalarını görür.
+
+#### UsageHistoryRetention: Kullanım Geçmişi Saklama Politikası
+
+`usage_snapshots` geçmişini saklama süresi varsayılan **7 gündür**. `SNAPSHOT_RETENTION_DAYS`, pozitif güvenli bir tam sayı ile bu süreyi değiştirir. Saklama penceresi dışında kalan kayıtlar uygulama başlangıcındaki ilk temizlikte ve ardından saatlik çalışan arka plan işinde değerlendirilir.
+
+Pencere sonu `cutoff = now - retentionDays * 86_400_000` olarak hesaplanır; `fetched_at >= cutoff` olan tüm anlık görüntüler korunur. Storage işlemi `now`, retention penceresi ve hesaplanan `cutoff` değerlerinin epoch-milisaniye safe integer aralığında olduğunu veritabanına dokunmadan önce doğrular. Her credential için ayrıca en fazla iki `ProtectedUsageSnapshot` anchor'ı tutulur:
+
+- **En yeni kayıt:** başarı/sağlık durumundan bağımsız olarak `fetched_at DESC, id DESC` sıralamasındaki ilk kayıt.
+- **En son başarılı kayıt:** `StorageVault` last-good okuyucusunun aynı sınıflandırmasına göre ilk başarılı kayıt. Truthy `error`, `health`/`source` değerleri `error` veya `stale`, ya da yalnızca boolean `stale: true` kaydı başarılı olmaktan çıkarır. Eski raporlarda alanların eksik olması ve `error` alanının `null`, `false`, `0` veya boş metin olması başarıyla uyumludur; sağlıklı bir kota-tükenmiş rapor da başarılı sayılır.
+- Bozuk JSON veya JSON `null` içeren eski raporlar son-başarılı snapshot sayılmaz; bozuk bir rapor credential'ın en yeni-any anchor'ı olarak yine de korunabilir.
+
+İki anchor aynı satıra işaret ederse yalnızca bir kez korunur. Eşit `fetched_at` değerlerinde daha büyük snapshot ID kazanır; daha sonra eklenen ama daha eski `fetched_at` taşıyan bir satır en yeni/son başarılı seçiminin önüne geçmez. Bu kurallar her kullanıcı ve credential için ayrı uygulanır.
+
+Her çalışma başlangıçta tek bir `MAX(id)` watermark'ı alır ve anchor kümesini bu watermark'a kadar bir kez hesaplar. Yalnızca `id <= watermark`, `fetched_at < cutoff` olan ve anchor kümesinde bulunmayan `usage_snapshots` satırları silinebilir. Yeni çalışma sırasında eklenen satırlar, `fetched_at` değeri eski olsa bile, sonraki çalışmaya bırakılır. Silme en çok 1.000 satırlık commit edilmiş transaction'lar halinde yapılır ve transaction'lar arasında event loop'a kontrol verilir. Bu temizlik kullanıcı, credential, davetiye, kimlik bilgisi veya token metadata kayıtlarını silmez.
+
+Rutin retention bir `VACUUM` çalıştırmaz. Silinen sayfalar SQLite tarafından veritabanı içinde yeniden kullanılabilir; bu nedenle aktif DB dosyasının boyutu kendiliğinden küçülmek zorunda değildir.
 
 ### Modül 3: Aktif Yoklayıcı Daemon (`src/core/poller/`)
 Arka planda periyodik olarak çalışan zamanlayıcıdır.
