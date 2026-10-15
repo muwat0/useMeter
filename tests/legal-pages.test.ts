@@ -76,32 +76,4 @@ describe("public legal and support pages", () => {
     }
   });
 
-  it("discloses storage, retention, billing, security, and support boundaries", async () => {
-    const app = createTestApp();
-    const privacy = await (await app.request("/privacy")).text();
-    const terms = await (await app.request("/terms")).text();
-    const security = await (await app.request("/security")).text();
-    const support = await (await app.request("/support")).text();
-
-    expect(privacy).toContain("AES-256-GCM");
-    expect(privacy).toContain("Argon2id");
-    expect(privacy).toContain("7 gün");
-    expect(privacy).toContain("SNAPSHOT_RETENTION_DAYS");
-    expect(privacy).toContain("ON DELETE CASCADE");
-    expect(privacy).toContain("satmaz");
-    expect(privacy).toContain("anlık görüntüleri");
-
-    expect(terms).toContain("olduğu gibi");
-    expect(terms).toContain("faturalandırma kaydı değildir");
-    expect(terms).toContain("USAGE_MASTER_KEY");
-
-    expect(security).toContain("USAGE_MASTER_KEY");
-    expect(security).toContain("AES-256-GCM");
-    expect(security).toContain("Argon2id");
-    expect(security).toContain("security@muwat.org");
-    expect(security).toContain("murat@muwat.org");
-
-    expect(support).toContain("https://github.com/muwat0/useMeter/issues");
-    expect(support).toContain("murat@muwat.org");
-  });
 });

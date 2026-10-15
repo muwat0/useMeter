@@ -11,7 +11,7 @@ import {
 
 // ── Types ──
 interface UsageAmount {
-  unit: 'percent' | 'usd' | 'credits';
+  unit: 'percent' | 'usd' | 'credits' | 'requests' | 'tokens';
   used?: number;
   remaining?: number;
   limit?: number;
@@ -104,6 +104,9 @@ const I18N: Record<string, Record<string, string>> = {
     noAccounts: 'Henüz kayıtlı bir AI hesabı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.',
     lastUpdate: "Son Güncelleme", deleteConfirm: "Bu hesabın kimlik bilgisi ve kaydedilmiş kullanım geçmişi kalıcı olarak silinecek. Bu işlem geri alınamaz. Devam etmek istiyor musunuz?", deleteFailed: "Hesap kaldırılamadı. Lütfen tekrar deneyin.",
     resetsIn: "Sıfırlanma", rightsAvailable: "Hak Mevcut",
+    requestsUnit: "istek", tokensUnit: "token",
+    usageRemaining: "{n} {unit} kaldı", usageUsedOfLimit: "{used} / {limit} {unit} kullanıldı",
+    usageUsed: "{n} {unit} kullanıldı", usageLimit: "{n} {unit} limit",
     modalTitle: "AI Hesabı Bağla", modalSubtitle: "OAuth veya doğrudan API anahtarıyla kota takibi kurun.",
     tabOAuth: "OAuth ile Oturum Aç", tabManual: "Manuel API Key",
     oauthDesc: "Resmi sağlayıcı girişine yönlendirilirsiniz. Token\u2019lar yerel veritabanında AES-256-GCM ile şifrelenir.",
@@ -204,6 +207,9 @@ const I18N: Record<string, Record<string, string>> = {
     noAccounts: 'No AI accounts connected yet. Click <b>+ Connect Account</b> to add one.',
     lastUpdate: "Updated", deleteConfirm: "This account's credential and saved usage history will be permanently deleted. This cannot be undone. Continue?", deleteFailed: "The account could not be removed. Please try again.",
     resetsIn: "Resets in", rightsAvailable: "Available",
+    requestsUnit: "requests", tokensUnit: "tokens",
+    usageRemaining: "{n} {unit} remaining", usageUsedOfLimit: "{used} / {limit} {unit} used",
+    usageUsed: "{n} {unit} used", usageLimit: "{n} {unit} limit",
     modalTitle: "Connect AI Account", modalSubtitle: "Track quotas and credits via OAuth or direct API key.",
     tabOAuth: "Login with OAuth", tabManual: "Manual API Key",
     oauthDesc: "Redirect to official authorization. Tokens are encrypted locally via AES-256-GCM.",
@@ -275,6 +281,29 @@ const I18N: Record<string, Record<string, string>> = {
 // ── Helpers ──
 function t(key: string, lang: string): string {
   return I18N[lang]?.[key] || I18N['tr']?.[key] || key;
+}
+
+function formatCountUsage(amount: UsageAmount, lang: string): string | null {
+  if (amount.unit !== 'requests' && amount.unit !== 'tokens') return null;
+  const unit = t(amount.unit === 'requests' ? 'requestsUnit' : 'tokensUnit', lang);
+  const numberFormat = new Intl.NumberFormat(lang === 'tr' ? 'tr-TR' : 'en-US');
+  if (typeof amount.remaining === 'number' && Number.isFinite(amount.remaining)) {
+    return t('usageRemaining', lang).replace('{n}', numberFormat.format(amount.remaining)).replace('{unit}', unit);
+  }
+  if (typeof amount.used === 'number' && Number.isFinite(amount.used)
+    && typeof amount.limit === 'number' && Number.isFinite(amount.limit)) {
+    return t('usageUsedOfLimit', lang)
+      .replace('{used}', numberFormat.format(amount.used))
+      .replace('{limit}', numberFormat.format(amount.limit))
+      .replace('{unit}', unit);
+  }
+  if (typeof amount.used === 'number' && Number.isFinite(amount.used)) {
+    return t('usageUsed', lang).replace('{n}', numberFormat.format(amount.used)).replace('{unit}', unit);
+  }
+  if (typeof amount.limit === 'number' && Number.isFinite(amount.limit)) {
+    return t('usageLimit', lang).replace('{n}', numberFormat.format(amount.limit)).replace('{unit}', unit);
+  }
+  return null;
 }
 
 const SUPPORT_TIER_BADGE_STYLES: Record<ProviderSupportTier, string> = {
@@ -644,22 +673,33 @@ function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStart
           let barEl: React.ReactNode = null;
 
           if (l.amount.unit === 'percent') {
-            const used = l.amount.used || 0;
-            const isCritical = used >= 90;
-            const barColor = isCritical ? 'bg-rose-500' : 'account-card-bar-fill';
-            valueEl = <span className="account-card-value font-bold text-sm">{used.toFixed(1)}%</span>;
-            barEl = (
-              <div className="w-full account-card-bar-track h-1.5 rounded-full overflow-hidden mt-2">
-                <div className={`${barColor} h-full transition-all duration-300`} style={{ width: `${Math.min(100, used)}%` }} />
-              </div>
-            );
+            const used = l.amount.used;
+            if (typeof used === 'number' && Number.isFinite(used)) {
+              const isCritical = used >= 90;
+              const barColor = isCritical ? 'bg-rose-500' : 'account-card-bar-fill';
+              valueEl = <span className="account-card-value font-bold text-sm">{used.toFixed(1)}%</span>;
+              barEl = (
+                <div className="w-full account-card-bar-track h-1.5 rounded-full overflow-hidden mt-2">
+                  <div className={`${barColor} h-full transition-all duration-300`} style={{ width: `${Math.min(100, used)}%` }} />
+                </div>
+              );
+            }
           } else if (l.amount.unit === 'usd') {
-            const rem = l.amount.remaining ?? 0;
-            valueEl = <span className="account-card-value font-bold text-sm">${rem.toFixed(2)}</span>;
+            const rem = l.amount.remaining;
+            if (typeof rem === 'number' && Number.isFinite(rem)) {
+              valueEl = <span className="account-card-value font-bold text-sm">${rem.toFixed(2)}</span>;
+            }
           } else if (l.amount.unit === 'credits') {
-            const rem = l.amount.remaining ?? 0;
-            const labelText = lang === 'tr' ? `${rem} Hak Mevcut` : `${rem} Available`;
-            valueEl = <span className="account-card-badge font-semibold text-xs px-2.5 py-0.5 rounded-md">{labelText}</span>;
+            const rem = l.amount.remaining;
+            if (typeof rem === 'number' && Number.isFinite(rem)) {
+              const labelText = lang === 'tr' ? `${rem} Hak Mevcut` : `${rem} Available`;
+              valueEl = <span className="account-card-badge font-semibold text-xs px-2.5 py-0.5 rounded-md">{labelText}</span>;
+            }
+          } else {
+            const quantityText = formatCountUsage(l.amount, lang);
+            if (quantityText) {
+              valueEl = <span className="account-card-value font-bold text-sm">{quantityText}</span>;
+            }
           }
 
           let countdownEl: React.ReactNode = null;
@@ -939,13 +979,14 @@ function Dashboard() {
   // Poll spinner
   const [pollSpinning, setPollSpinning] = useState(false);
 
-  // ── Apply mode ──
+  // ── Apply mode and document language ──
   useEffect(() => {
     const isDark = mode === 'dark';
     document.documentElement.classList.toggle('dark', isDark);
     document.documentElement.classList.toggle('light', !isDark);
+    document.documentElement.lang = lang;
     localStorage.setItem('usage_mode', mode);
-  }, [mode]);
+  }, [mode, lang]);
   // ── OAuth unmount cleanup ──
   useEffect(() => {
     return () => {
@@ -1948,17 +1989,17 @@ function Dashboard() {
     <>
       {/* Header */}
       <header className="border-b border-appBorder bg-appSurface/80 backdrop-blur-md px-4 sm:px-6 py-3 sticky top-0 z-20 transition-colors">
-        <div className="max-w-screen-2xl mx-auto flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
+        <div className="max-w-screen-2xl mx-auto min-w-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
+          <div className="min-w-0 flex items-center gap-2.5 sm:gap-3">
             <div className="flex items-center gap-2">
               <span className="font-extrabold tracking-wider text-appText text-lg font-mono">use<span className="text-appAccent">Meter</span></span>
               <span id="syncLiveDot" className="w-2 h-2 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20" title={syncText} />
             </div>
             <div className="hidden sm:block h-4 w-px bg-appBorder" />
-            <span id="headerSyncStatus" className="text-xs text-appTextMuted tracking-tight font-medium">{syncText}</span>
+            <span id="headerSyncStatus" className="min-w-0 truncate text-xs text-appTextMuted tracking-tight font-medium">{syncText}</span>
           </div>
 
-          <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap justify-end">
+          <div className="min-w-0 w-full sm:w-auto flex items-center gap-1.5 sm:gap-2 flex-wrap justify-start sm:justify-end">
             {/* Edit */}
             <button onClick={toggleEditMode} id="editModeBtn" title={t(editBtnDisabled ? 'editDisabledGrouped' : 'editModeTitle', lang)} disabled={editBtnDisabled}
               className={`h-9 w-9 rounded-lg border border-appBorder transition flex items-center justify-center text-sm ${editBtnDisabled ? 'opacity-40 cursor-not-allowed' : ''} ${isEditMode ? 'bg-appAccent text-zinc-950' : 'bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent'}`}>
@@ -2400,7 +2441,7 @@ function Dashboard() {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-appTextMuted mb-1.5">{t('credentialType', lang)}</label>
-                  <select name="credentialType" defaultValue={hint.type}
+                  <select key={manualProvider} name="credentialType" defaultValue={hint.type}
                     className="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none">
                     <option value="api_key">{t('apiKey', lang)}</option>
                     <option value="oauth">{t('oauthToken', lang)}</option>
@@ -2408,7 +2449,7 @@ function Dashboard() {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-appTextMuted mb-1.5">{t('secretLabel', lang)}</label>
-                  <input type="password" name="secret" placeholder={hint.placeholder} required
+                  <input key={manualProvider} type="password" name="secret" placeholder={hint.placeholder} required
                     className="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none" />
                   <p className="text-[11px] text-appTextMuted mt-1">{hint.help}</p>
                   {hint.docsUrl && hint.docsLabelKey && (

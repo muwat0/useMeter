@@ -58,14 +58,14 @@ const LEGAL_COPY: Record<LegalLanguage, LegalCopy> = {
           {
             heading: "Saklama ve silme",
             paragraphs: [
-              "Kullanım anlık görüntüleri varsayılan olarak 7 gün tutulur. Sunucu operatörü SNAPSHOT_RETENTION_DAYS ayarıyla bu süreyi değiştirebilir.",
-              "Bir sağlayıcı kimlik bilgisi silindiğinde ona bağlı kullanım anlık görüntüleri SQLite ON DELETE CASCADE kısıtı aracılığıyla silinir. Hesap silme de hesaba bağlı oturumları, kimlik bilgilerini, kullanım kayıtlarını, parola sıfırlama kayıtlarını ve kullanıcının oluşturduğu davetiyeleri siler. Daha önce alınmış yedekler ayrıca yönetilir ve bu silme işlemlerinden etkilenmeyebilir.",
+              "Kullanım anlık görüntüleri varsayılan olarak 7 gün boyunca dönen bir geçmişte tutulur. En güncel anlık görüntü ve son başarılı anlık görüntü, kimlik bilgisi veya kullanıcı silinene ya da yeni bir anlık görüntüyle değiştirilene kadar 7 günden uzun süre saklanabilir. Sunucu operatörü SNAPSHOT_RETENTION_DAYS ayarıyla varsayılan süreyi değiştirebilir.",
+              "Kimlik bilgisi veya hesap silme işlemleri ilişkili uygulama verilerini veritabanından siler. Daha önce alınmış yedekler uygulama veritabanından ayrı olarak operatörün yedek saklama ve silme uygulamalarına tabidir; uygulama içindeki silme işlemi yedeklerdeki veriyi hemen silmez.",
             ],
           },
           {
             heading: "Sağlayıcı istekleri ve veri paylaşımı",
             paragraphs: [
-              "useMeter telemetriyi veya hesap verilerini satmaz. Kullanım verisi toplamak için kendi örneğiniz, bağladığınız sağlayıcıların API uç noktalarına istek gönderir; isteklere sağlayıcının verdiği erişim belirteci veya API anahtarı kimlik doğrulama bilgisi olarak eklenebilir. Sağlayıcılar bu istekleri kendi gizlilik ve kullanım koşullarına göre işler.",
+              "Kullanım verisi toplamak için kendi örneğiniz, bağladığınız sağlayıcıların API uç noktalarına istek gönderir; isteklere sağlayıcının verdiği erişim belirteci veya API anahtarı kimlik doğrulama bilgisi olarak eklenebilir. Sağlayıcılar bu istekleri kendi gizlilik ve kullanım koşullarına göre işler.",
             ],
           },
         ],
@@ -109,30 +109,29 @@ const LEGAL_COPY: Record<LegalLanguage, LegalCopy> = {
           {
             heading: "Güvenlik açığı bildirimi",
             paragraphs: [
-              "Güvenlik açığı şüphenizi sorumlu biçimde bildirin. Lütfen security@muwat.org adresine e-posta gönderin; bu adrese ulaşamıyorsanız murat@muwat.org adresini kullanın. Etkilenen bileşeni, yeniden üretim adımlarını ve olası etkiyi paylaşın; gerçek kullanıcı verilerine erişmeyin, hizmeti aksatmayın ve düzeltme için makul süre tanımadan ayrıntıları kamuya açıklamayın.",
+              "Güvenlik açığı şüphenizi sorumlu biçimde bildirmek için örneği işleten Murat'a murat@muwat.org adresinden e-posta gönderebilirsiniz. Bu, en iyi çaba esaslı bir iletişim kanalıdır; izleme veya yanıt süresi garantisi yoktur. Etkilenen bileşeni, yeniden üretim adımlarını ve olası etkiyi paylaşın; gerçek kullanıcı verilerine erişmeyin, hizmeti aksatmayın ve düzeltme için makul süre tanımadan ayrıntıları kamuya açıklamayın.",
             ],
           },
         ],
         actions: [
-          { href: "mailto:security@muwat.org", label: "Güvenlik ekibine e-posta gönder" },
-          { href: "mailto:murat@muwat.org", label: "Alternatif iletişim" },
+          { href: "mailto:murat@muwat.org", label: "Güvenlik bildirimi için e-posta" },
         ],
       },
       support: {
         title: "Destek",
-        introduction: "useMeter kendi sunucunuzda çalışır; örnek, ağ, yedek ve yapılandırma desteği öncelikle dağıtımı yöneten kişiye aittir. Proje desteği topluluk kanalları üzerinden sağlanır; yanıt veya çözüm süresi garantisi yoktur.",
+        introduction: "useMeter kendi sunucunuzda çalışır; örnek, ağ, yedek ve yapılandırma desteği öncelikle dağıtımı yöneten kişiye aittir. Proje desteği için e-posta birincil iletişim kanalıdır; en iyi çaba esaslıdır ve yanıt veya çözüm süresi garantisi yoktur.",
         sections: [
           {
             heading: "Hata bildirimi ve yardım",
             paragraphs: [
               "Sorun bildirirken useMeter sürümünü, ilgili sağlayıcıyı, beklenen ve gerçekleşen davranışı ve hassas olmayan hata ayrıntılarını ekleyin. Parola, API anahtarı, OAuth belirteci, e-posta veya kişisel kullanım verisi paylaşmayın.",
-              "Güvenlik açıklarını genel GitHub sorunlarında paylaşmayın; Güvenlik sayfasındaki sorumlu bildirim yönergelerini kullanın.",
+              "Proje desteği için murat@muwat.org adresine e-posta gönderin. GitHub sorunları deposuna erişiminiz varsa GitHub sorunlarını da kullanabilirsiniz; bu özel depo herkese açık bir topluluk destek kanalı değildir.",
             ],
           },
         ],
         actions: [
-          { href: "https://github.com/muwat0/useMeter/issues", label: "GitHub sorunlarını aç" },
-          { href: "mailto:murat@muwat.org", label: "E-posta ile iletişim" },
+          { href: "mailto:murat@muwat.org", label: "Birincil destek: e-posta" },
+          { href: "https://github.com/muwat0/useMeter/issues", label: "GitHub sorunları (depo erişimi gerekir)" },
         ],
       },
     },
@@ -163,14 +162,14 @@ const LEGAL_COPY: Record<LegalLanguage, LegalCopy> = {
           {
             heading: "Retention and deletion",
             paragraphs: [
-              "Usage snapshots are retained for 7 days by default. The server operator can change this period with SNAPSHOT_RETENTION_DAYS.",
-              "Deleting a provider credential removes its associated usage snapshots through SQLite ON DELETE CASCADE constraints. Deleting an account also removes its sessions, credentials, usage records, password-reset records, and invitations created by that user. Previously created backups are managed separately and may not be affected by these deletions.",
+              "Usage snapshots are kept in a rolling history of 7 days by default. The latest snapshot and the last successful snapshot may remain for longer than 7 days until replaced by a newer snapshot or the credential or user is deleted. The server operator can change the default period with SNAPSHOT_RETENTION_DAYS.",
+              "Deleting a credential or account removes associated application data from the database. Previously created backups are separate and subject to the operator's backup retention and deletion practices; deleting data in the application does not immediately delete it from backups.",
             ],
           },
           {
             heading: "Provider requests and sharing",
             paragraphs: [
-              "useMeter does not sell telemetry or account data. To collect usage data, your instance sends requests to the API endpoints of providers you connect; a provider-issued access token or API key may be included as authentication. Providers process those requests under their own privacy notices and terms.",
+              "To collect usage data, your instance sends requests to the API endpoints of providers you connect; a provider-issued access token or API key may be included as authentication. Providers process those requests under their own privacy notices and terms.",
             ],
           },
         ],
@@ -214,30 +213,29 @@ const LEGAL_COPY: Record<LegalLanguage, LegalCopy> = {
           {
             heading: "Responsible disclosure",
             paragraphs: [
-              "Please report suspected vulnerabilities responsibly. Email security@muwat.org; if that address is unavailable, contact murat@muwat.org. Include the affected component, reproduction steps, and potential impact. Do not access real user data or disrupt services, and allow a reasonable time for remediation before public disclosure.",
+              "To report a suspected vulnerability responsibly, email Murat, the operator of this instance, at murat@muwat.org. This is a best-effort contact with no monitoring or response-time guarantee. Include the affected component, reproduction steps, and potential impact. Do not access real user data or disrupt services, and allow a reasonable time for remediation before public disclosure.",
             ],
           },
         ],
         actions: [
-          { href: "mailto:security@muwat.org", label: "Email the security contact" },
-          { href: "mailto:murat@muwat.org", label: "Alternative contact" },
+          { href: "mailto:murat@muwat.org", label: "Email for security reports" },
         ],
       },
       support: {
         title: "Support",
-        introduction: "useMeter runs on your own server; deployment, networking, backups, and configuration are primarily the responsibility of the person operating that instance. Project support is community-based, with no guaranteed response or resolution time.",
+        introduction: "useMeter runs on your own server; deployment, networking, backups, and configuration are primarily the responsibility of the person operating that instance. Email is the primary project-support contact; it is best-effort, with no guaranteed response or resolution time.",
         sections: [
           {
             heading: "Bug reports and help",
             paragraphs: [
               "When reporting an issue, include the useMeter version, relevant provider, expected and actual behavior, and non-sensitive error details. Do not share passwords, API keys, OAuth tokens, email addresses, or personal usage data.",
-              "Do not disclose security vulnerabilities in public GitHub issues; use the responsible-disclosure instructions on the Security page.",
+              "For project support, email murat@muwat.org. You can also use GitHub issues if you have access to the repository; this private repository is not a public community-support channel.",
             ],
           },
         ],
         actions: [
-          { href: "https://github.com/muwat0/useMeter/issues", label: "Open GitHub issues" },
-          { href: "mailto:murat@muwat.org", label: "Contact by email" },
+          { href: "mailto:murat@muwat.org", label: "Primary support: email" },
+          { href: "https://github.com/muwat0/useMeter/issues", label: "GitHub issues (repository access required)" },
         ],
       },
     },

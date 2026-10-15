@@ -9,8 +9,13 @@ Environment=USEMETER_BACKUP_DIR=%h/usemeter-backups
 EnvironmentFile=-%h/.config/usemeter/backup.env
 WorkingDirectory=%h
 UMask=0077
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=full
+# Sudo privilege transition: murat is not in the host docker group.
+# Docker access relies on the strictly scoped sudoers rule:
+#   murat ALL=(ALL) NOPASSWD: /usr/bin/docker
+# NoNewPrivileges=yes would block setuid transition to root for /usr/bin/sudo.
+# Similarly, ProtectSystem / PrivateTmp mount namespaces under systemd user
+# managers can interfere with standard setuid execution. We rely on the unprivileged
+# murat user boundary, explicit umask 077, and strictly scoped /usr/bin/docker commands.
+NoNewPrivileges=no
 TimeoutStartSec=30min
 ExecStart=%h/.local/lib/usemeter/backup/usemeter-backup.sh
