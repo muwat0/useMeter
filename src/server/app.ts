@@ -18,6 +18,7 @@ import {
   RATE_LIMIT_POLICIES,
   resolveClientIp,
 } from "./security";
+import { getProviderCatalog } from "../core/providers/catalog";
 import { join } from "path";
 import { renderAccountRecoveryPageHtml } from "./account-pages";
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
@@ -648,6 +649,7 @@ export function createServer(
     const path = new URL(c.req.url).pathname;
     const publicRoute =
       path === "/health" ||
+      path === "/api/providers/catalog" ||
       path.startsWith("/assets/") ||
       path === "/api/oauth/google/callback" ||
       path === "/api/oauth/devin/callback" ||
@@ -705,6 +707,11 @@ export function createServer(
       integrity: vault.checkIntegrity(),
       pollerRunning: poller.isRunning(),
     });
+  });
+
+  // Public, non-secret provider metadata for the onboarding UI.
+  app.get("/api/providers/catalog", c => {
+    return c.json({ success: true, providers: getProviderCatalog() });
   });
 
   // Static asset serving for React client build

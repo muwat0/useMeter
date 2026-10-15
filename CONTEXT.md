@@ -48,6 +48,38 @@ Bir Uygulama Kullanıcısının belirli bir Sağlayıcı Hesabını bağlamak i�
 - **Manuel Tamamlama:** Sağlayıcının tarayıcıda döndürdüğü yetkilendirme yanıtının Kullanıcı tarafından kendi girişimine teslim edilmesi. Yanıt yalnız ilgili Kullanıcı/girişim bağında ve tek kez tüketilir; farklı bir kullanıcının girişimini tamamlayamaz.
 
 
+
+### Sağlayıcı Doğrulama ve Destek Düzeyi (Provider Verification & Support Tier)
+Bir sağlayıcıya bağlanabilmenin, gerçek kullanım verisi alabilmenin ve uygulamanın kendi akışlarını sentetik verilerle sınamanın farklı kanıtlar olduğunu belirten sınıflandırma.
+- **Canlı Telemetri Doğrulandı (Live Telemetry Verified):** Gerçek sağlayıcı yanıtından geçerli, normalize bakiye/kota/kullanım verisi gözlenmiştir. Bu kanıt, her yetkilendirme yolunun veya her planın denendiği anlamına gelmez; ilgili bağlantı yolu ve doğrulama kapsamı ayrıca belirtilir.
+- **Yalnız Bağlantı Doğrulandı (Connection Verified Only):** Gerçek hesabın bağlandığı gözlenmiştir; sağlayıcı kullanım verisi bildirmemişse veya kota yanıtı henüz gözlenmemişse telemetri doğrulanmış sayılmaz. Boş veri, üyelik bulunmadığı veya kotanın tükendiği sonucu değildir.
+- **Canlı Doğrulanmadı (Not Live Verified):** Uygulama ve adaptör kodu bulunabilir, sentetik testler geçebilir; bunlar gerçek sağlayıcı bağlantısı veya telemetri kanıtı yerine geçmez. “Topluluk tarafından destekleniyor” ya da hizmet garantisi anlamı yüklenmez.
+- **Deneysel Uyumluluk (Experimental Compatibility):** Belgelenmemiş sağlayıcı davranışı, doğrulanmamış callback/istemci uyumluluğu veya benzeri sınırlamadır; kanıt düzeyinden ayrı bir uyarıdır. Gerçek kota tükenmesi sağlıklı telemetridir; hata veya doğrulanmamış destek sınıfı değildir.
+
+Kanonik destek matrisi, `src/core/providers/catalog.ts` içindeki 17 adaptör için aşağıdaki sınıflandırmadır. `live_verified` gerçek sağlayıcı telemetrisi, `connection_verified` yalnızca başarılı gerçek bağlantı, `synthetic_only` ise gerçek sağlayıcı doğrulaması bulunmadığı anlamına gelir.
+
+| Kanonik sağlayıcı kimliği | Destek düzeyi | Kimlik doğrulama modları | Kota türü |
+| --- | --- | --- | --- |
+| `openrouter` | `synthetic_only` | `oauth_loopback_paste`, `api_key` | `balance_usd` |
+| `deepseek` | `synthetic_only` | `api_key` | `balance_usd` |
+| `anthropic` | `synthetic_only` | `oauth_loopback_paste` | `window_percent` |
+| `openai-codex` | `live_verified` | `oauth_device` | `window_percent` |
+| `antigravity` | `synthetic_only` | `oauth_loopback_paste`, `oauth_callback` | `window_percent` |
+| `github-copilot` | `live_verified` | `oauth_device` | `window_percent` |
+| `cursor` | `live_verified` | `oauth_device`, `session_cookie` | `window_percent` |
+| `xai-oauth` | `live_verified` | `oauth_device` | `window_percent` |
+| `zai` | `synthetic_only` | `oauth_loopback_paste`, `api_key` | `window_percent` |
+| `minimax-code` | `synthetic_only` | `api_key` | `window_percent` |
+| `cline-pass` | `synthetic_only` | `api_key` | `window_percent` |
+| `devin` | `synthetic_only` | `oauth_callback`, `session_cookie` | `token_credits` |
+| `umans` | `synthetic_only` | `api_key` | `token_credits` |
+| `google-gemini-cli` | `synthetic_only` | `oauth_loopback_paste` | `window_percent` |
+| `kimi-code` | `connection_verified` | `oauth_device` | `window_percent` |
+| `opencode-go` | `synthetic_only` | `api_key` | `window_percent` |
+| `alibaba-token-plan` | `synthetic_only` | `api_key`, `session_cookie` | `window_percent` |
+
+`window_percent` yüzde tabanlı kota penceresi; `balance_usd` dolar bakiyesi; `token_credits` token, kredi veya istek sayaçlarını ifade eder. Kimi'nin doğrulanmış nötr sonucu “Hesap bağlandı; sağlayıcı kota bildirmiyor”dur; boş/eksik kota yanıtı hesap üyeliği, planı veya bölgesi hakkında kanıt değildir. Devin `cog_` V3 PAT'lerini desteklemez ve hosted OAuth yönlendirmesi deneysel/doğrulanmamıştır. Antigravity, gömülü masaüstü OAuth istemcisinde loopback callback URL'sinin elle yapıştırılmasını; otomatik hosted callback'te ise operatörün kendi Google OAuth Web istemcisini ve tam HTTPS callback URI'sini gerektirir. Matris kimlik doğrulaması olmadan `GET /api/providers/catalog` ile sunulur ve sır/token içermez.
+
 ### Kiracı Sınırı ve Mülkiyet İzolasyonu (Tenant Boundary & Ownership Isolation)
 Veritabanı satır düzeyinde uygulanan mülkiyet kuralı. Her kimlik bilgisi (`credential`) ve kullanım kaydı (`usage_snapshot`) bir `owner_id` yabancı anahtarına (foreign key) bağlanmak zorundadır. Kullanıcılar yalnızca kendi `ownerId` değerleriyle eşleşen kayıtları listeleyebilir, güncelleyebilir veya silebilir.
 
