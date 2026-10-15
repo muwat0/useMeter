@@ -16,7 +16,7 @@ Uygulamanın web arayüzüne ve API'lerine erişmek için kimlik doğrulayan ba�
 Sistem genelinde kullanıcıları ve sistem telemetrisini yönetme yetkisine sahip kullanıcı (`role: "admin"`).
 - **İlk Kullanıcı Kuralı:** Sisteme ilk kaydolan kullanıcı (aynı zamanda eski verileri sahiplenen kişi) otomatik olarak `admin` rolü alır. Sonraki kullanıcılar `user` rolüyle kaydolur.
 - **Yetki Alanı:** Kullanıcıları listeleme, rolleri değiştirme (yönetici atama/yetki alma), kullanıcı silme (ilişkili hesap ve kayıtların silinmesiyle birlikte) ve sistem genel telemetrisini (toplam kullanıcı, aktif oturum, DB boyutu, sağlayıcı dağılımı) izleme.
-- **Güvenlik Kısıtı:** Bir yönetici kendi hesabını silemez; sistemdeki son yönetici sıradan kullanıcıya düşürülemez veya silinemez. Normal kullanıcılar yönetici paneline (`/admin`) ve uç noktalarına (`/api/admin/*`) erişemez (HTTP 403 Forbidden).
+- **Güvenlik Kısıtı:** Yönetici yönetim uç noktasından kendi hesabını silemez; sistemdeki son yönetici sıradan kullanıcıya düşürülemez veya silinemez. Ayrı, mevcut parola ve etkin oturum gerektiren öz-silme akışı, başka bir yönetici kalıyorsa yöneticiler için de kullanılabilir. Normal kullanıcılar yönetici paneline (`/admin`) ve uç noktalarına (`/api/admin/*`) erişemez (HTTP 403 Forbidden).
 
 ### Sağlayıcı Hesabı / Harici Hesap (Provider Account)
 Bir yapay zeka sağlayıcısı nezdinde (OpenAI, Anthropic, Google Cloud, Cursor vb.) tanımlı olan harici abonelik veya kimlik bilgisi kaydı.
@@ -25,9 +25,21 @@ Bir yapay zeka sağlayıcısı nezdinde (OpenAI, Anthropic, Google Cloud, Cursor
 
 ### Oturum (Session)
 Kimliği doğrulanmış bir kullanıcının web paneline ve korumalı API'lere erişimini sağlayan durum bilgisi.
-- **Oturum Belirteci (Session Token):** İstemciye HTTP çerezi (`auth_session`) içinde gönderilen 32 baytlık kriptografik olarak güvenli opak rastgele dize (opaque token).
+- **Oturum Belirteci (Session Token):** İstemciye HTTP çerezi (`usage_session`) içinde gönderilen 32 baytlık kriptografik olarak güvenli opak rastgele dize (opaque token).
 - **Kalıcılık ve Güvenlik:** Veritabanında oturum belirtecinin açık hali ASLA saklanmaz; yalnızca SHA-256 hash özeti (`token_hash`) saklanır.
 - **Geçerlilik Süresi (TTL):** 30 gündür (2.592.000 saniye). Süresi dolan veya sonlandırılan (logout) oturumlar anında yetkisiz hale gelir.
+
+### Parola Değişikliği (Password Change)
+Kullanıcının mevcut parolasını ve etkin oturumunu doğrulayarak giriş parolasını değiştirmesi. Başarılı değişiklik işlemini yapan oturumu korur; kullanıcının diğer oturumlarını ve bekleyen Parola Kurtarma Girişimlerini atomik olarak geçersiz kılar. Bekleyen sağlayıcı yetkilendirmeleri iptal edilir; geciken kimlik bilgisi veya yoklama yazıları eski doğrulama yetkisiyle kayıt oluşturamaz.
+
+### Parola Kurtarma Girişimi (Password Recovery Attempt)
+Kullanıcının e-posta adresine gerçek posta yoluyla ulaştırılan, parola yenileme yetkisi. Oturum, Davetiye veya Sağlayıcı Yetkilendirme Girişimi değildir. Kullanıcı başına yalnızca en yeni girişim geçerlidir; 15 dakika sonra sona erer ve bir kez tüketilebilir. Veritabanında yalnız token özeti saklanır. Başarılı tüketim parola yenileme ve kullanıcının tüm Oturumlarının iptaliyle atomiktir; kurtarma otomatik giriş yapmaz. Token hangi hesabın yenileneceğini belirler; aynı istekteki başka bir hesabın tarayıcı çerezi veya verisi etkilenmez. Kamuya açık istek, hesabın varlığını veya posta teslimat sonucunu açıklamaz. Posta hizmeti yapılandırılmadığında yeni kurtarma istekleri kapalıdır; önceden verilmiş geçerli bir girişim yine tüketilebilir.
+
+### Kullanıcı Öz-Silme (Self-Service Account Deletion)
+Etkin Oturum ve mevcut parola ile Kullanıcının kendi uygulama hesabını kalıcı olarak silmesi. Kullanıcıya ait Oturumlar, Kimlik Bilgileri, Kullanım Anlık Görüntüleri, Kurtarma Girişimleri ve oluşturduğu Davetiyeler birlikte silinir. Başka bir yönetici kalmadıysa yönetici hesabı silinemez. Bekleyen sağlayıcı yetkilendirmeleri ve geciken yoklama/kimlik bilgisi yazıları eski mülkiyet yetkisiyle veri oluşturamaz. Önceden alınmış yedeklerin ayrı saklama politikası vardır; canlı silme yedeklerin silindiği anlamına gelmez.
+
+### Geri Alınmış Yazma Yetkisi (Revoked Mutation Authority)
+Parola veya Oturum doğrulaması ile kalıcı değişiklik arasındaki süre içinde değişen yetkinin eski doğrulama sonucuyla kullanılmaması kuralı. Parola, oturum ve reset belirteci geçerliliği geri döndürülemez atomik yazmadan hemen önce yeniden doğrulanır; kabul edilmiş senkron yazma geriye dönük başarısız sayılmaz.
 
 ### Sağlayıcı Yetkilendirme Girişimi (Provider Authorization Attempt)
 Bir Uygulama Kullanıcısının belirli bir Sağlayıcı Hesabını bağlamak için başlattığı, kısa ömürlü ve tek kullanımlık yetkilendirme süreci.
@@ -49,7 +61,7 @@ Yalnızca yöneticiler (`admin`) tarafından üretilen, yeni bir kullanıcının
 - **Geçerlilik Süresi (TTL):** Üretildiği andan itibaren 24 saattir (86.400 saniye). Süresi dolmuş (`expired`), kullanılmış (`accepted`) veya iptal edilmiş (`revoked`) davetiyeler geçersizdir.
 - **Zorunlu E-posta Bağlayıcılığı (Strict Email Binding):** Davetiye oluşturulurken yönetici tarafından geçerli bir hedef e-posta adresi (`email`) verilmesi zorunludur; useMeter bünyesinde anonim veya e-postasız serbest davetiye bulunmaz. Davetiye kabul edildiğinde yeni kullanıcı hesabı doğrudan bu kanonik e-posta adresi ile oluşturulur (`COLLATE NOCASE`).
 - **Dış Kayıt Politikasını Aşma (Registration Bypass):** Sistem genelinde genel kayıtlar kapatılmış olsa dahi (`isRegistrationAllowed() === false`), geçerli bir davetiye belirteci taşıyan kullanıcılar sisteme başarıyla kaydolabilir.
-- **E-posta Gönderim Sınırı (No SMTP Boundary):** Sistemde otomatik e-posta gönderim (SMTP) katmanı bulunmaz. Yönetici oluşturulan davet bağlantısını (`/invite/:token`) panodan kopyalar ve kullanıcıya harici güvenli kanallardan kendisi iletir.
+- **Manuel Davet Teslimi (Manual Invitation Delivery):** Yönetici oluşturulan davet bağlantısını (`/invite/:token`) panodan kopyalar ve kullanıcıya harici güvenli kanallardan kendisi iletir. Parola Kurtarma Girişiminin posta teslimi ayrı bir iş akışıdır; davetiyenin otomatik gönderileceği anlamına gelmez.
 ### Sağlayıcı (Provider)
 Yapay zeka modellerini veya API altyapısını sunan bağımsız servis kuruluşu (örn. `openai`, `anthropic`, `openrouter`, `deepseek`, `google`, `cursor`). Her sağlayıcının kendine özgü kimlik doğrulama, hız sınırı (rate limit) ve kota politikası vardır.
 

@@ -234,6 +234,19 @@ export class OAuthSessionStore<T = Record<string, never>> {
     return true;
   }
 
+  /** Cancels every pending or reserved session for an owner, preserving admitted synchronous commits. */
+  cancelOwner(ownerId: string): number {
+    this.sweepExpired();
+    let cancelled = 0;
+    for (const entry of this.#entries.values()) {
+      if (entry.ownerId !== ownerId || entry.status !== "pending" || entry.commitAdmitted) continue;
+      this.#remove(entry, "cancelled");
+      cancelled++;
+    }
+    this.#scheduleCleanup();
+    return cancelled;
+  }
+
   /** Deterministic clock seam used by tests and the automatic unref'ed timer. */
   sweepExpired(): number {
     const now = this.#now();

@@ -56,7 +56,11 @@ const MAX_PROVIDER_GROUP_WORKERS = 17;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 type ProviderDispatch = <T>(
-  operation: (markDispatched: () => void, skipDispatch: () => void) => Promise<T> | T,
+  operation: (
+    markDispatched: () => void,
+    skipDispatch: () => void,
+    signal: AbortSignal,
+  ) => Promise<T> | T,
   signal?: AbortSignal,
 ) => Promise<T>;
 
@@ -65,7 +69,10 @@ type CredentialPollScope = Pick<CredentialRef, "id" | "ownerId">;
 interface ProviderPoolJob {
   providerId: string;
   credentialScope?: CredentialPollScope;
-  signal?: AbortSignal;
+  ownerId?: string;
+  signal: AbortSignal;
+  controller: AbortController;
+  externalSignal?: AbortSignal;
   operation: (dispatch: ProviderDispatch) => Promise<unknown> | unknown;
   promise: Promise<unknown>;
   resolve(value: unknown): void;
@@ -73,6 +80,7 @@ interface ProviderPoolJob {
   admissionDeadlineAt: number;
   state: "queued" | "admitted" | "dispatched" | "finished";
   onAbort?: () => void;
+  onExternalAbort?: () => void;
 }
 
 class ProviderRequestPool {
@@ -83,6 +91,7 @@ class ProviderRequestPool {
   readonly #admissionTimeoutMs: number;
   readonly #queue: ProviderPoolJob[] = [];
   readonly #credentialJobs = new Map<string, Map<string, ProviderPoolJob>>();
+  readonly #ownerJobs = new Map<string, Set<ProviderPoolJob>>();
   readonly #activeByProvider = new Map<string, number>();
   readonly #pendingProviders = new Map<string, ProviderPoolJob>();
   readonly #lastDispatchAt = new Map<string, number>();
@@ -105,12 +114,13 @@ class ProviderRequestPool {
 
   run<T>(
     providerId: string,
-    signal: AbortSignal | undefined,
+    externalSignal: AbortSignal | undefined,
     operation: (dispatch: ProviderDispatch) => Promise<T> | T,
     credentialScope?: CredentialPollScope,
+    ownerId = credentialScope?.ownerId,
   ): Promise<T> {
     try {
-      signal?.throwIfAborted();
+      externalSignal?.throwIfAborted();
     } catch (error) {
       return Promise.reject(error);
     }
@@ -128,10 +138,14 @@ class ProviderRequestPool {
     }
 
     const { promise, resolve, reject } = Promise.withResolvers<T>();
+    const controller = new AbortController();
     const job: ProviderPoolJob = {
       providerId,
       credentialScope,
-      signal,
+      ownerId,
+      signal: controller.signal,
+      controller,
+      externalSignal,
       operation: dispatch => operation(dispatch),
       promise,
       resolve: value => resolve(value as T),
@@ -147,21 +161,34 @@ class ProviderRequestPool {
       }
       jobsByOwner.set(credentialScope.ownerId, job);
     }
-    if (signal) {
-      job.onAbort = () => {
-        if (job.state !== "queued") return;
-        this.#removeQueued(job);
-        job.state = "finished";
-        this.#forgetCredentialJob(job);
-        signal.removeEventListener("abort", job.onAbort!);
-        reject(signal.reason ?? new Error("Provider request canceled"));
-        this.#drain();
-      };
-      signal.addEventListener("abort", job.onAbort, { once: true });
+    if (ownerId) {
+      let jobs = this.#ownerJobs.get(ownerId);
+      if (!jobs) {
+        jobs = new Set<ProviderPoolJob>();
+        this.#ownerJobs.set(ownerId, jobs);
+      }
+      jobs.add(job);
     }
+    job.onAbort = () => {
+      if (job.state !== "queued") return;
+      this.#removeQueued(job);
+      job.state = "finished";
+      this.#forgetCredentialJob(job);
+      this.#forgetOwnerJob(job);
+      this.#detachSignals(job);
+      reject(job.signal.reason ?? new Error("Provider request canceled"));
+      this.#drain();
+    };
+    job.onExternalAbort = () => {
+      if (!controller.signal.aborted) {
+        controller.abort(externalSignal?.reason ?? new Error("Provider request canceled"));
+      }
+    };
+    controller.signal.addEventListener("abort", job.onAbort, { once: true });
+    externalSignal?.addEventListener("abort", job.onExternalAbort, { once: true });
     this.#queue.push(job);
-    if (signal?.aborted) {
-      job.onAbort?.();
+    if (controller.signal.aborted) {
+      job.onAbort();
       return promise;
     }
     this.#drain();
@@ -177,6 +204,20 @@ class ProviderRequestPool {
     if (jobsByOwner.size === 0) this.#credentialJobs.delete(credentialId);
   }
 
+  cancelOwner(ownerId: string): number {
+    const jobs = this.#ownerJobs.get(ownerId);
+    if (!jobs) return 0;
+    let cancelled = 0;
+    for (const job of Array.from(jobs)) {
+      cancelled++;
+      if (!job.signal.aborted) job.controller.abort(new Error("Owner authorization was revoked"));
+      if (job.state === "queued") job.onAbort?.();
+    }
+    this.#drain();
+    return cancelled;
+  }
+
+
   #removeQueued(job: ProviderPoolJob): void {
     const index = this.#queue.indexOf(job);
     if (index !== -1) this.#queue.splice(index, 1);
@@ -190,6 +231,20 @@ class ProviderRequestPool {
     jobsByOwner.delete(scope.ownerId);
     if (jobsByOwner.size === 0) this.#credentialJobs.delete(scope.id);
   }
+  #forgetOwnerJob(job: ProviderPoolJob): void {
+    if (!job.ownerId) return;
+    const jobs = this.#ownerJobs.get(job.ownerId);
+    jobs?.delete(job);
+    if (jobs?.size === 0) this.#ownerJobs.delete(job.ownerId);
+  }
+
+  #detachSignals(job: ProviderPoolJob): void {
+    if (job.onAbort) job.signal.removeEventListener("abort", job.onAbort);
+    if (job.externalSignal && job.onExternalAbort) {
+      job.externalSignal.removeEventListener("abort", job.onExternalAbort);
+    }
+  }
+
 
   #isReady(job: ProviderPoolJob, now: number): boolean {
     if (this.#pendingProviders.has(job.providerId)) return false;
@@ -203,8 +258,8 @@ class ProviderRequestPool {
 
   #dispatch<T>(
     job: ProviderPoolJob,
-    operation: (markDispatched: () => void, skipDispatch: () => void) => Promise<T> | T,
-    signal: AbortSignal | undefined,
+    operation: (markDispatched: () => void, skipDispatch: () => void, signal: AbortSignal) => Promise<T> | T,
+    signal: AbortSignal,
   ): Promise<T> {
     if (signal?.aborted) {
       this.#skipDispatch(job);
@@ -234,7 +289,7 @@ class ProviderRequestPool {
 
     let result: Promise<T> | T;
     try {
-      result = operation(markDispatched, skipDispatch);
+      result = operation(markDispatched, skipDispatch, signal);
     } catch (error) {
       result = Promise.reject(error);
     }
@@ -258,18 +313,17 @@ class ProviderRequestPool {
       if (index === -1) break;
       const [job] = this.#queue.splice(index, 1);
       if (!job) break;
-      if (job.signal?.aborted) {
+      if (job.signal.aborted) {
         job.state = "finished";
-        if (job.onAbort) job.signal.removeEventListener("abort", job.onAbort);
         this.#forgetCredentialJob(job);
+        this.#forgetOwnerJob(job);
+        this.#detachSignals(job);
         job.reject(job.signal.reason ?? new Error("Provider request canceled"));
         continue;
       }
 
       job.state = "admitted";
-      if (job.signal && job.onAbort) {
-        job.signal.removeEventListener("abort", job.onAbort);
-      }
+      if (job.onAbort) job.signal.removeEventListener("abort", job.onAbort);
       this.#activeGlobal++;
       this.#pendingProviders.set(job.providerId, job);
       const dispatch: ProviderDispatch = (operation, signal = job.signal) =>
@@ -294,10 +348,9 @@ class ProviderRequestPool {
       if (!job || job.admissionDeadlineAt > now) continue;
       this.#queue.splice(index, 1);
       job.state = "finished";
-      if (job.signal && job.onAbort) {
-        job.signal.removeEventListener("abort", job.onAbort);
-      }
       this.#forgetCredentialJob(job);
+      this.#forgetOwnerJob(job);
+      this.#detachSignals(job);
       job.reject(new PollerAdmissionError(
         "ADMISSION_TIMEOUT",
         "Provider admission timed out before dispatch.",
@@ -348,6 +401,8 @@ class ProviderRequestPool {
     this.#activeGlobal--;
     this.#forgetCredentialJob(job);
     this.#drain();
+    this.#forgetOwnerJob(job);
+    this.#detachSignals(job);
   }
 }
 
@@ -561,10 +616,18 @@ export class PollerEngine {
     }
   }
 
-  async pollCredential(ownerId: string, credentialId: string): Promise<UsageReport | null> {
+  cancelOwner(ownerId: string): number {
+    return this.#providerPool.cancelOwner(ownerId);
+  }
+
+  async pollCredential(
+    ownerId: string,
+    credentialId: string,
+    context: CredentialValidationContext = {},
+  ): Promise<UsageReport | null> {
     const ref = this.#vault.getCredentialRef(ownerId, credentialId);
     if (!ref || ref.ownerId !== ownerId) return null;
-    return this.#scheduleCredentialPoll(ref, false);
+    return this.#scheduleCredentialPoll(ref, false, context);
   }
 
   async validateAndSaveCredential(
@@ -600,7 +663,8 @@ export class PollerEngine {
     return this.#providerPool.run(
       this.#canonicalProviderId(input.provider),
       context.signal,
-      dispatch => dispatch(markDispatched => this.#runWithDeadline(context.signal, async attempt => {
+      dispatch => dispatch((markDispatched, _skipDispatch, dispatchSignal) =>
+        this.#runWithDeadline(dispatchSignal, async attempt => {
         markDispatched();
         const fetched = await adapter.fetchUsage(candidate, {
           signal: attempt.signal,
@@ -666,23 +730,37 @@ export class PollerEngine {
         this.#saveSuccessfulReport(saved, fetched, false);
         return saved;
       });
-      }), context.signal),
+        }),
+      ),
+      undefined,
+      ownerId,
     );
   }
 
-  async pollUser(ownerId: string): Promise<UsageReport[]> {
-    return this.#pollCredentialRefs(this.#vault.listCredentialRefs(ownerId), false);
+  async pollUser(
+    ownerId: string,
+    context: CredentialValidationContext = {},
+  ): Promise<UsageReport[]> {
+    return this.#pollCredentialRefs(this.#vault.listCredentialRefs(ownerId), false, context);
   }
 
   #scheduleCredentialPoll(
     ref: CredentialRef,
     daemon: boolean,
+    context: CredentialValidationContext = {},
   ): Promise<UsageReport | null> {
     return this.#providerPool.run(
       this.#canonicalProviderId(ref.provider),
-      undefined,
-      dispatch => dispatch((markDispatched, skipDispatch) =>
-        this.#pollCredentialInternal(ref, daemon, markDispatched, skipDispatch),
+      context.signal,
+      dispatch => dispatch((markDispatched, skipDispatch, dispatchSignal) =>
+        this.#pollCredentialInternal(
+          ref,
+          daemon,
+          markDispatched,
+          skipDispatch,
+          dispatchSignal,
+          context.beforeCommit,
+        ),
       ),
       ref,
     );
@@ -693,6 +771,8 @@ export class PollerEngine {
     daemon: boolean,
     markDispatched: () => void,
     skipDispatch: () => void,
+    dispatchSignal: AbortSignal,
+    beforeCommit?: () => boolean,
   ): Promise<UsageReport | null> {
     let dispatchedCredential: StoredCredential | undefined;
     let dispatchedEpoch: number | undefined;
@@ -700,7 +780,7 @@ export class PollerEngine {
     let promise!: Promise<UsageReport | null>;
     promise = Promise.resolve().then(async () => {
       try {
-        return await this.#runWithDeadline(undefined, async attempt => {
+        return await this.#runWithDeadline(dispatchSignal, async attempt => {
           let credential: StoredCredential | null;
           try {
             credential = this.#vault.getCredentialInternal(ref.id);
@@ -731,10 +811,9 @@ export class PollerEngine {
               if (
                 !this.#credentialStillOwnedBy(ref) ||
                 this.#getEpoch(credential.id) !== epoch ||
-                !attempt.isActive()
-              ) {
-                return;
-              }
+                !attempt.isActive() ||
+                (beforeCommit !== undefined && !beforeCommit())
+              ) return;
               this.#vault.updateCredentialTokens(
                 credential.ownerId!,
                 credential.id,
@@ -745,7 +824,8 @@ export class PollerEngine {
                 if (
                   !this.#credentialStillOwnedBy(ref) ||
                   this.#getEpoch(credential.id) !== epoch ||
-                  !attempt.isActive()
+                  !attempt.isActive() ||
+                  (beforeCommit !== undefined && !beforeCommit())
                 ) {
                   return;
                 }
@@ -761,13 +841,14 @@ export class PollerEngine {
           markDispatched();
           const fetched = await adapter.fetchUsage(credential, ctx);
           attempt.throwIfInactive();
-          if (!this.#credentialStillOwnedBy(ref)) return null;
-          if (this.#getEpoch(credential.id) !== epoch) return null;
+          // The credential may have been reauthenticated or claimed while the adapter was in flight.
+          if (!this.#credentialStillOwnedBy(ref) || this.#getEpoch(credential.id) !== epoch) return null;
           if (fetched.error) throw new Error(fetched.error);
-          if (this.#getEpoch(credential.id) !== epoch) return null;
+          if (beforeCommit && !beforeCommit()) return null;
           return attempt.commit(() => this.#saveSuccessfulReport(credential, fetched, daemon));
         });
       } catch (error) {
+        if (dispatchSignal.aborted) return null;
         if (credentialReadFailed) throw error;
         if (!this.#credentialStillOwnedBy(ref)) return null;
         const credential = dispatchedCredential;
@@ -807,6 +888,7 @@ export class PollerEngine {
               stale: false,
               source: "error",
             };
+        if (beforeCommit && !beforeCommit()) return null;
         if (daemon) this.#vault.saveUsageSnapshotInternal(fallbackReport);
         else this.#vault.saveUsageSnapshot(credential.ownerId!, fallbackReport);
         return fallbackReport;
@@ -815,7 +897,11 @@ export class PollerEngine {
     return promise;
   }
 
-  async #pollCredentialRefs(refs: CredentialRef[], daemon: boolean): Promise<UsageReport[]> {
+  async #pollCredentialRefs(
+    refs: CredentialRef[],
+    daemon: boolean,
+    context: CredentialValidationContext = {},
+  ): Promise<UsageReport[]> {
     const groupsByProvider = new Map<string, number[]>();
     for (let index = 0; index < refs.length; index++) {
       const ref = refs[index]!;
@@ -837,7 +923,7 @@ export class PollerEngine {
         const group = groups[nextGroupIndex++]!;
         for (const refIndex of group) {
           try {
-            const report = await this.#scheduleCredentialPoll(refs[refIndex]!, daemon);
+            const report = await this.#scheduleCredentialPoll(refs[refIndex]!, daemon, context);
             if (report) reportsByRef[refIndex] = report;
           } catch (error) {
             errors.push(error);

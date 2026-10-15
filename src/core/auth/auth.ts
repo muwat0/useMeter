@@ -1,19 +1,72 @@
+import { randomBytes } from "node:crypto";
 import type { AuthResult, AuthSuccess, CreateInvitationResult, InvitationView, User } from "../../types";
 import { generateSessionToken, hashPassword, hashSessionToken, verifyPassword } from "../crypto";
 import type { StorageVault } from "../storage/vault";
+import type { PasswordResetMailer } from "./password-reset-mailer";
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const INVITATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const PASSWORD_RESET_TTL_MS = 15 * 60 * 1000;
+const RECOVERY_MAX_ACTIVE = 2;
+const RECOVERY_MAX_PENDING = 32;
+const RECOVERY_QUEUE_TTL_MS = 30_000;
+const RECOVERY_MAIL_TIMEOUT_MS = 5_000;
 
 // Precomputed valid Argon2id hash for constant-time evaluation when email is unknown
 const DUMMY_TIMING_HASH =
   "$argon2id$v=19$m=65536,t=2,p=1$pFiheG3pfmVEd4SrEZKdKOlIJn38dcPGFMyIMLn3ybM$xG5hE/QX0uFuIeCHaKDouy4FbynF+pJF/0XaNTFYcvM";
 
+interface AuthServiceOptions {
+  passwordResetMailer?: PasswordResetMailer;
+  now?: () => number;
+}
+
+interface RecoveryQueueItem {
+  email: string;
+  expiresAt: number;
+}
+
+type PasswordValidation =
+  | { success: true; password: string }
+  | { success: false; message: string };
+
+function validatePassword(password: unknown): PasswordValidation {
+  if (typeof password !== "string") {
+    return { success: false, message: "Password must be a string" };
+  }
+
+  const charCount = Array.from(password).length;
+  const byteLength = Buffer.byteLength(password, "utf8");
+  if (charCount < 12 || password.length < 12) {
+    return { success: false, message: "Password must be at least 12 characters long" };
+  }
+  if (charCount > 256 || password.length > 256 || byteLength > 256) {
+    return { success: false, message: "Password must not exceed 256 UTF-8 characters/code units" };
+  }
+  return { success: true, password };
+}
+
+function invalidPasswordResult(message: string): AuthResult<never> {
+  return { success: false, error: "WEAK_PASSWORD", message };
+}
+
 export class AuthService {
   readonly #vault: StorageVault;
+  readonly #passwordResetMailer?: PasswordResetMailer;
+  readonly #now: () => number;
+  readonly #recoveryQueue: RecoveryQueueItem[] = [];
+  readonly #recoveryControllers = new Set<AbortController>();
+  readonly #recoveryTasks = new Set<Promise<void>>();
+  #recoveryActive = 0;
+  #recoveryOutstandingSends = 0;
+  #recoveryPump?: ReturnType<typeof setImmediate>;
+  #recoveryExpiryTimer?: ReturnType<typeof setTimeout>;
+  #recoveryStopped = false;
 
-  constructor(vault: StorageVault) {
+  constructor(vault: StorageVault, options: AuthServiceOptions = {}) {
     this.#vault = vault;
+    this.#passwordResetMailer = options.passwordResetMailer;
+    this.#now = options.now ?? Date.now;
   }
 
   /**
@@ -30,28 +83,9 @@ export class AuthService {
       return { success: false, error: "INVALID_EMAIL", message: "Invalid email address format" };
     }
 
-    if (typeof password !== "string") {
-      return { success: false, error: "WEAK_PASSWORD", message: "Password must be a string" };
-    }
-
-    const charCount = Array.from(password).length;
-    const byteLength = Buffer.byteLength(password, "utf8");
-
-    if (charCount < 12 || password.length < 12) {
-      return {
-        success: false,
-        error: "WEAK_PASSWORD",
-        message: "Password must be at least 12 characters long",
-      };
-    }
-
-    if (charCount > 256 || password.length > 256 || byteLength > 256) {
-      return {
-        success: false,
-        error: "WEAK_PASSWORD",
-        message: "Password must not exceed 256 UTF-8 characters/code units",
-      };
-    }
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.success) return invalidPasswordResult(passwordValidation.message);
+    const validPassword = passwordValidation.password;
 
     const existing = this.#vault.getUserByEmail(normalizedEmail);
     if (existing) {
@@ -62,7 +96,7 @@ export class AuthService {
       };
     }
 
-    const passwordHash = await hashPassword(password);
+    const passwordHash = await hashPassword(validPassword);
     let user: User;
     try {
       const created = this.#vault.createUserWithLegacyClaim(normalizedEmail, passwordHash);
@@ -132,7 +166,19 @@ export class AuthService {
     const rawToken = generateSessionToken();
     const tokenHash = hashSessionToken(rawToken);
     const expiresAt = Date.now() + SESSION_TTL_MS;
-    const session = this.#vault.createSession(userWithHash.id, tokenHash, expiresAt);
+    const session = this.#vault.createSessionIfPasswordHashMatches(
+      userWithHash.id,
+      userWithHash.passwordHash,
+      tokenHash,
+      expiresAt,
+    );
+    if (!session) {
+      return {
+        success: false,
+        error: "INVALID_CREDENTIALS",
+        message: "Invalid email or password",
+      };
+    }
 
     return {
       success: true,
@@ -197,6 +243,262 @@ export class AuthService {
     if (typeof token !== "string" || !token.trim()) return;
     const tokenHash = hashSessionToken(token);
     this.#vault.deleteSessionByTokenHash(tokenHash);
+  }
+
+  isSessionActive(userId: string, rawToken: string): boolean {
+    if (typeof rawToken !== "string" || !rawToken) return false;
+    return this.isSessionTokenHashActive(userId, hashSessionToken(rawToken));
+  }
+
+  isSessionTokenHashActive(userId: string, tokenHash: string): boolean {
+    const session = this.#vault.getSessionByTokenHash(tokenHash);
+    return !!session && session.userId === userId && session.expiresAt > this.#now();
+  }
+
+  async changePassword(
+    userId: string,
+    rawSessionToken: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<AuthResult<void>> {
+    const validation = validatePassword(newPassword);
+    if (!validation.success) return invalidPasswordResult(validation.message);
+    const currentValidation = validatePassword(currentPassword);
+    if (!currentValidation.success) {
+      return { success: false, error: "INVALID_CREDENTIALS", message: "Current password is incorrect" };
+    }
+
+    const sessionTokenHash = hashSessionToken(rawSessionToken);
+    const user = this.#vault.getUserByIdWithPasswordHash(userId);
+    if (!user || !this.isSessionTokenHashActive(userId, sessionTokenHash)) {
+      return { success: false, error: "UNAUTHENTICATED", message: "Session is no longer active" };
+    }
+    if (!await verifyPassword(currentPassword, user.passwordHash)) {
+      return { success: false, error: "INVALID_CREDENTIALS", message: "Current password is incorrect" };
+    }
+
+    const nextPasswordHash = await hashPassword(validation.password);
+    const result = this.#vault.changePasswordAtomic(
+      userId,
+      sessionTokenHash,
+      user.passwordHash,
+      nextPasswordHash,
+      this.#now(),
+    );
+    if (result === "unauthenticated") {
+      return { success: false, error: "UNAUTHENTICATED", message: "Session is no longer active" };
+    }
+    if (result === "conflict") {
+      return { success: false, error: "INVALID_CREDENTIALS", message: "Password changed during this request" };
+    }
+    return { success: true, data: undefined };
+  }
+
+  requestPasswordReset(email: string): AuthResult<void> {
+    if (!this.#passwordResetMailer || this.#recoveryStopped || this.#recoveryQueue.length >= RECOVERY_MAX_PENDING) {
+      return {
+        success: false,
+        error: "RECOVERY_UNAVAILABLE",
+        message: "Password recovery is temporarily unavailable",
+      };
+    }
+    if (typeof email !== "string" || email.trim().length > 320) {
+      return { success: false, error: "INVALID_EMAIL", message: "Invalid email address format" };
+    }
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return { success: false, error: "INVALID_EMAIL", message: "Invalid email address format" };
+    }
+
+    this.#recoveryQueue.push({
+      email: normalizedEmail,
+      expiresAt: this.#now() + RECOVERY_QUEUE_TTL_MS,
+    });
+    this.#scheduleRecoveryExpiry();
+    this.#scheduleRecoveryPump();
+    return { success: true, data: undefined };
+  }
+
+  isPasswordRecoveryConfigured(): boolean {
+    return this.#passwordResetMailer !== undefined && !this.#recoveryStopped;
+  }
+
+  async confirmPasswordReset(
+    rawToken: string,
+    newPassword: string,
+  ): Promise<AuthResult<{ userId: string }>> {
+    if (typeof rawToken !== "string" || !/^[0-9a-f]{64}$/i.test(rawToken)) {
+      return { success: false, error: "INVALID_RESET_TOKEN", message: "Invalid or expired password reset link" };
+    }
+    const validation = validatePassword(newPassword);
+    if (!validation.success) return invalidPasswordResult(validation.message);
+
+    const tokenHash = hashSessionToken(rawToken);
+    const reset = this.#vault.getPasswordResetContext(tokenHash, this.#now());
+    if (!reset) {
+      return { success: false, error: "INVALID_RESET_TOKEN", message: "Invalid or expired password reset link" };
+    }
+    const nextPasswordHash = await hashPassword(validation.password);
+    const userId = this.#vault.consumePasswordResetToken(
+      tokenHash,
+      reset.passwordHash,
+      nextPasswordHash,
+      this.#now(),
+    );
+    if (!userId) {
+      return { success: false, error: "INVALID_RESET_TOKEN", message: "Invalid or expired password reset link" };
+    }
+    return { success: true, data: { userId } };
+  }
+
+  async deleteAccount(
+    userId: string,
+    rawSessionToken: string,
+    password: string,
+  ): Promise<AuthResult<void>> {
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.success) {
+      return { success: false, error: "INVALID_CREDENTIALS", message: "Password is incorrect" };
+    }
+    const sessionTokenHash = hashSessionToken(rawSessionToken);
+    const user = this.#vault.getUserByIdWithPasswordHash(userId);
+    if (!user || !this.isSessionTokenHashActive(userId, sessionTokenHash)) {
+      return { success: false, error: "UNAUTHENTICATED", message: "Session is no longer active" };
+    }
+    if (!await verifyPassword(password, user.passwordHash)) {
+      return { success: false, error: "INVALID_CREDENTIALS", message: "Password is incorrect" };
+    }
+
+    const result = this.#vault.deleteAccountWithSession(
+      userId,
+      sessionTokenHash,
+      user.passwordHash,
+      this.#now(),
+    );
+    if (result === "unauthenticated") {
+      return { success: false, error: "UNAUTHENTICATED", message: "Session is no longer active" };
+    }
+    if (result === "conflict") {
+      return { success: false, error: "INVALID_CREDENTIALS", message: "Password changed during this request" };
+    }
+    if (result === "last_admin") {
+      return { success: false, error: "LAST_ADMIN", message: "Another administrator must remain" };
+    }
+    return { success: true, data: undefined };
+  }
+
+  async stopPasswordRecovery(): Promise<void> {
+    this.#recoveryStopped = true;
+    this.#recoveryQueue.length = 0;
+    if (this.#recoveryPump) {
+      clearImmediate(this.#recoveryPump);
+      this.#recoveryPump = undefined;
+    }
+    clearTimeout(this.#recoveryExpiryTimer);
+    this.#recoveryExpiryTimer = undefined;
+    for (const controller of this.#recoveryControllers) {
+      if (!controller.signal.aborted) controller.abort(new Error("Password recovery stopped"));
+    }
+    await Promise.allSettled(Array.from(this.#recoveryTasks));
+  }
+
+  #scheduleRecoveryPump(): void {
+    if (this.#recoveryStopped || this.#recoveryPump) return;
+    this.#recoveryPump = setImmediate(() => {
+      this.#recoveryPump = undefined;
+      this.#pumpRecoveryQueue();
+    });
+  }
+
+  #pumpRecoveryQueue(): void {
+    while (
+      !this.#recoveryStopped &&
+      this.#recoveryActive < RECOVERY_MAX_ACTIVE &&
+      this.#recoveryOutstandingSends < RECOVERY_MAX_ACTIVE &&
+      this.#recoveryQueue.length > 0
+    ) {
+      const item = this.#recoveryQueue.shift();
+      if (!item || item.expiresAt <= this.#now()) continue;
+      this.#recoveryActive++;
+      let task!: Promise<void>;
+      task = this.#deliverPasswordReset(item)
+        .catch(() => undefined)
+        .finally(() => {
+          this.#recoveryActive--;
+          this.#recoveryTasks.delete(task);
+          this.#scheduleRecoveryPump();
+        });
+      this.#recoveryTasks.add(task);
+    }
+    this.#scheduleRecoveryExpiry();
+  }
+  #scheduleRecoveryExpiry(): void {
+    clearTimeout(this.#recoveryExpiryTimer);
+    this.#recoveryExpiryTimer = undefined;
+    if (this.#recoveryStopped || this.#recoveryQueue.length === 0) return;
+
+    let earliestExpiry = Number.POSITIVE_INFINITY;
+    for (const item of this.#recoveryQueue) {
+      earliestExpiry = Math.min(earliestExpiry, item.expiresAt);
+    }
+    const delay = Math.max(1, earliestExpiry - this.#now());
+    this.#recoveryExpiryTimer = setTimeout(() => {
+      this.#recoveryExpiryTimer = undefined;
+      const now = this.#now();
+      for (let index = this.#recoveryQueue.length - 1; index >= 0; index--) {
+        const item = this.#recoveryQueue[index];
+        if (item && item.expiresAt <= now) this.#recoveryQueue.splice(index, 1);
+      }
+      this.#scheduleRecoveryPump();
+      this.#scheduleRecoveryExpiry();
+    }, delay);
+    this.#recoveryExpiryTimer.unref?.();
+  }
+
+  async #deliverPasswordReset(item: RecoveryQueueItem): Promise<void> {
+    const mailer = this.#passwordResetMailer;
+    if (!mailer || this.#recoveryStopped) return;
+
+    const user = this.#vault.getUserByEmail(item.email);
+    if (!user) return;
+    const token = randomBytes(32).toString("hex");
+    const tokenHash = hashSessionToken(token);
+    if (!this.#vault.issuePasswordResetToken(
+      user.id,
+      tokenHash,
+      this.#now() + PASSWORD_RESET_TTL_MS,
+    )) return;
+
+    const controller = new AbortController();
+    this.#recoveryControllers.add(controller);
+    this.#recoveryOutstandingSends++;
+    let sendPromise: Promise<void>;
+    try {
+      sendPromise = Promise.resolve(mailer.send({ recipient: user.email, token }, controller.signal));
+    } catch {
+      this.#recoveryOutstandingSends--;
+      this.#recoveryControllers.delete(controller);
+      return;
+    }
+
+    const sendSettled = sendPromise.then(() => undefined, () => undefined).finally(() => {
+      this.#recoveryOutstandingSends--;
+      this.#recoveryControllers.delete(controller);
+      this.#scheduleRecoveryPump();
+    });
+    let resolveAborted!: () => void;
+    const aborted = new Promise<void>(resolve => {
+      resolveAborted = resolve;
+      controller.signal.addEventListener("abort", resolveAborted, { once: true });
+    });
+    const timeout = setTimeout(() => {
+      controller.abort(new Error("Password reset mail timed out"));
+    }, RECOVERY_MAIL_TIMEOUT_MS);
+    timeout.unref?.();
+    await Promise.race([sendSettled, aborted]);
+    clearTimeout(timeout);
+    controller.signal.removeEventListener("abort", resolveAborted);
+    this.#recoveryControllers.delete(controller);
   }
 
   /**
@@ -309,32 +611,10 @@ export class AuthService {
       };
     }
 
-    if (typeof password !== "string") {
-      return {
-        success: false,
-        error: "WEAK_PASSWORD",
-        message: "Password must be a string",
-      };
-    }
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.success) return invalidPasswordResult(passwordValidation.message);
+    const validPassword = passwordValidation.password;
 
-    const charCount = Array.from(password).length;
-    const byteLength = Buffer.byteLength(password, "utf8");
-
-    if (charCount < 12 || password.length < 12) {
-      return {
-        success: false,
-        error: "WEAK_PASSWORD",
-        message: "Password must be at least 12 characters long",
-      };
-    }
-
-    if (charCount > 256 || password.length > 256 || byteLength > 256) {
-      return {
-        success: false,
-        error: "WEAK_PASSWORD",
-        message: "Password must not exceed 256 UTF-8 characters/code units",
-      };
-    }
 
     const tokenHash = hashSessionToken(rawToken.trim());
     const invitation = this.#vault.getInvitationByTokenHash(tokenHash);
@@ -351,7 +631,7 @@ export class AuthService {
       };
     }
 
-    const passwordHash = await hashPassword(password);
+    const passwordHash = await hashPassword(validPassword);
 
     let user: User;
     try {

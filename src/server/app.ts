@@ -7,6 +7,7 @@ import type { PollerAdmissionErrorCode, PollerEngine } from "../core/poller/poll
 import type { ProviderRegistry } from "../core/providers/registry";
 import type { AdminSystemStats, AdminUserView, InputCredential, InvitationView, StoredCredential, UsageReport, User, UserRole } from "../types";
 import { AuthService } from "../core/auth/auth";
+import { hashSessionToken } from "../core/crypto";
 import {
   createCorsOriginResolver,
   applySecurityHeaders,
@@ -18,6 +19,7 @@ import {
   resolveClientIp,
 } from "./security";
 import { join } from "path";
+import { renderAccountRecoveryPageHtml } from "./account-pages";
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
 import { createHash, randomUUID } from "crypto";
 import {
@@ -63,6 +65,19 @@ const OAUTH_MAX_SESSION_TTL_MS = 10 * 60 * 1000;
 const OAUTH_MAX_SESSION_TTL_SECONDS = OAUTH_MAX_SESSION_TTL_MS / 1_000;
 const NO_OP: () => void = () => {};
 
+const ACCOUNT_RECOVERY_CSP = [
+  "default-src 'none'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "connect-src 'self'",
+  "img-src 'none'",
+  "font-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join("; ");
+
 const POLLER_ADMISSION_RETRY_AFTER_SECONDS = 30;
 const POLLER_ADMISSION_MESSAGE = "Rate limit exceeded. Please wait before polling again.";
 
@@ -78,7 +93,7 @@ const POLLER_ADMISSION_CALLBACK_COPY = {
 } as const;
 
 interface RateLimitResponseDetails {
-  errorCode?: "POLLER_CAPACITY";
+  errorCode?: "POLLER_CAPACITY" | "RATE_LIMITED";
   admissionCode?: PollerAdmissionErrorCode;
   restartRequired?: true;
   status?: "error";
@@ -98,6 +113,8 @@ interface PendingOAuthData {
   googleRedirectUri?: string;
   devinVerifier?: string;
   callbackVerifier?: string;
+  authorityTokenHash?: string;
+  requestTokenHash?: string;
 }
 
 function clearOAuthSecrets(data: PendingOAuthData | undefined): void {
@@ -108,7 +125,10 @@ function clearOAuthSecrets(data: PendingOAuthData | undefined): void {
   data.googleRedirectUri = undefined;
   data.devinVerifier = undefined;
   data.callbackVerifier = undefined;
+  data.authorityTokenHash = undefined;
+  data.requestTokenHash = undefined;
 }
+
 
 interface AppVariables {
   user: User;
@@ -163,7 +183,53 @@ function originAllowed(c: AppContext, allowedOrigins?: string[] | "*"): boolean 
 }
 
 function jsonUnauthorized(c: AppContext) {
-  return c.json({ success: false, error: "Unauthorized" }, 401);
+  return c.json({ success: false, error: "Unauthorized", errorCode: "UNAUTHENTICATED" }, 401);
+}
+
+async function readBoundedJson(c: AppContext, maxBytes: number): Promise<Record<string, unknown> | null> {
+  const contentLength = c.req.header("Content-Length");
+  if (contentLength !== undefined && (
+    !/^\d+$/.test(contentLength) ||
+    Number(contentLength) > maxBytes
+  )) return null;
+
+  const body = c.req.raw.body;
+  if (!body) return null;
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return null;
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
 }
 export interface ServerOptions {
   rateLimiter?: RateLimiter;
@@ -282,13 +348,51 @@ export function createServer(
     oauthSessions.fail(session, POLLER_ADMISSION_MESSAGE);
   }
 
-  function reserveOAuth(ownerId: string, provider: string): PendingOAuthSession | undefined {
+  function reserveOAuth(c: AppContext, ownerId: string, provider: string): PendingOAuthSession | undefined {
+    const requestToken = c.get("sessionToken");
+    if (!auth.isSessionActive(ownerId, requestToken)) return undefined;
     try {
-      return oauthSessions.reserve(ownerId, provider, {});
+      const reservation = oauthSessions.reserve(ownerId, provider, {});
+      reservation.data.authorityTokenHash = hashSessionToken(requestToken);
+      return reservation;
     } catch (error) {
       if (error instanceof OAuthCapacityError) return undefined;
       throw error;
     }
+  }
+
+  function oauthAuthorityActive(session: PendingOAuthSession): boolean {
+    const originalTokenHash = session.data.authorityTokenHash;
+    const requestTokenHash = session.data.requestTokenHash;
+    return !!originalTokenHash &&
+      auth.isSessionTokenHashActive(session.ownerId, originalTokenHash) &&
+      (!requestTokenHash || auth.isSessionTokenHashActive(session.ownerId, requestTokenHash));
+  }
+
+  function bindOAuthRequestAuthority(c: AppContext, session: PendingOAuthSession): boolean {
+    const requestToken = c.get("sessionToken");
+    const originalTokenHash = session.data.authorityTokenHash;
+    if (
+      !originalTokenHash ||
+      !auth.isSessionTokenHashActive(session.ownerId, originalTokenHash) ||
+      !auth.isSessionActive(session.ownerId, requestToken)
+    ) return false;
+    session.data.requestTokenHash = hashSessionToken(requestToken);
+    return true;
+  }
+
+  function activateOAuth(
+    session: PendingOAuthSession,
+    sessionId: string,
+    data: PendingOAuthData,
+    activationOptions: { bindingId?: string; expiresInMs?: number } = {},
+  ): boolean {
+    const authorityTokenHash = session.data.authorityTokenHash;
+    if (!authorityTokenHash || !auth.isSessionTokenHashActive(session.ownerId, authorityTokenHash)) {
+      oauthSessions.cancel(session.sessionId, session.ownerId);
+      return false;
+    }
+    return oauthSessions.activate(session, sessionId, { ...data, authorityTokenHash }, activationOptions);
   }
 
   function oauthCapacityResponse(c: AppContext) {
@@ -310,7 +414,10 @@ export function createServer(
     const cancel = () => {
       oauthSessions.cancel(session.sessionId, session.ownerId);
     };
-    if (requestSignal.aborted) cancel();
+    if (
+      requestSignal.aborted ||
+      !auth.isSessionActive(session.ownerId, c.get("sessionToken"))
+    ) cancel();
     else requestSignal.addEventListener("abort", cancel, { once: true });
     return () => requestSignal.removeEventListener("abort", cancel);
   }
@@ -324,6 +431,7 @@ export function createServer(
   ) {
     session.data.googleVerifier = undefined;
     const tokens = await googleOAuthExchange(code, verifier, config, session.signal);
+    if (!oauthAuthorityActive(session)) throw new Error("Authorization session is no longer authorized");
     session.signal.throwIfAborted();
     const accountLabel = tokens.email?.trim() || "Antigravity";
     const refreshToken = tokens.refreshToken?.trim() ? tokens.refreshToken : undefined;
@@ -345,7 +453,7 @@ export function createServer(
       },
     }, "preserve", {
       signal: session.signal,
-      beforeCommit: () => oauthSessions.admitCommit(session),
+      beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
     });
     return { saved, accountLabel };
   }
@@ -354,6 +462,7 @@ export function createServer(
     session: PendingOAuthSession,
     code: string,
   ): Promise<{ saved: StoredCredential; accountLabel: string } | null> {
+    if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return null;
     switch (session.provider) {
       case "antigravity": {
         const verifier = session.data.googleVerifier;
@@ -375,7 +484,7 @@ export function createServer(
         if (!verifier) throw new Error("Authorization session invalid");
         session.data.callbackVerifier = undefined;
         const tokens = await exchangeClaudeCode(code, verifier, session.signal);
-        if (!oauthSessions.isActive(session)) return null;
+        if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return null;
         let accountLabel = "Claude Pro/Max";
         try {
           if (tokens.accessToken) {
@@ -400,9 +509,9 @@ export function createServer(
             }
           }
         } catch {
-          if (!oauthSessions.isActive(session)) return null;
+          if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return null;
         }
-        if (!oauthSessions.isActive(session)) return null;
+        if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return null;
         const saved = await poller.validateAndSaveCredential(session.ownerId, {
           ownerId: session.ownerId,
           provider: "anthropic",
@@ -415,13 +524,13 @@ export function createServer(
           },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.admitCommit(session),
+          beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
         });
         return { saved, accountLabel };
       }
       case "google-gemini-cli": {
         const tokens = await exchangeGeminiCliCode(code, session.signal);
-        if (!oauthSessions.isActive(session)) return null;
+        if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return null;
         const accountLabel = tokens.email || tokens.projectId || "Gemini CLI";
         const saved = await poller.validateAndSaveCredential(session.ownerId, {
           ownerId: session.ownerId,
@@ -436,7 +545,7 @@ export function createServer(
           },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.admitCommit(session),
+          beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
         });
         return { saved, accountLabel };
       }
@@ -445,7 +554,7 @@ export function createServer(
         if (!verifier) throw new Error("Authorization session invalid");
         session.data.callbackVerifier = undefined;
         const keyResult = await exchangeOpenRouterCode(code, verifier, session.signal);
-        if (!oauthSessions.isActive(session)) return null;
+        if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return null;
         const accountLabel = keyResult.label || "OpenRouter";
         const saved = await poller.validateAndSaveCredential(session.ownerId, {
           ownerId: session.ownerId,
@@ -456,13 +565,13 @@ export function createServer(
           metadata: { source: "oauth-pkce" },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.admitCommit(session),
+          beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
         });
         return { saved, accountLabel };
       }
       case "zai": {
         const keyResult = await exchangeZaiCode(code, session.sessionId, session.signal);
-        if (!oauthSessions.isActive(session)) return null;
+        if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return null;
         const accountLabel = keyResult.email || "Zhipu AI";
         const saved = await poller.validateAndSaveCredential(session.ownerId, {
           ownerId: session.ownerId,
@@ -477,7 +586,7 @@ export function createServer(
           },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.admitCommit(session),
+          beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
         });
         return { saved, accountLabel };
       }
@@ -502,8 +611,17 @@ export function createServer(
   app.use("*", async (c, next) => {
     const secure = requestIsSecure(c);
     const requestPath = new URL(c.req.url).pathname;
-    const csp = requestPath === "/" ? DASHBOARD_CSP : undefined;
-    const secHeaders = getSecurityHeaders(secure, { contentSecurityPolicy: csp });
+    const recoveryPage = requestPath === "/forgot-password" || requestPath === "/reset-password";
+    const csp = requestPath === "/"
+      ? DASHBOARD_CSP
+      : recoveryPage
+        ? ACCOUNT_RECOVERY_CSP
+        : undefined;
+    const securityOptions = {
+      contentSecurityPolicy: csp,
+      referrerPolicy: recoveryPage ? "no-referrer" : undefined,
+    };
+    const secHeaders = getSecurityHeaders(secure, securityOptions);
     for (const [k, v] of Object.entries(secHeaders)) {
       c.header(k, v);
     }
@@ -511,7 +629,7 @@ export function createServer(
       await next();
     } finally {
       if (c.res) {
-        applySecurityHeaders(c.res.headers, secure, { contentSecurityPolicy: csp });
+        applySecurityHeaders(c.res.headers, secure, securityOptions);
       }
     }
   });
@@ -533,13 +651,14 @@ export function createServer(
       path.startsWith("/assets/") ||
       path === "/api/oauth/google/callback" ||
       path === "/api/oauth/devin/callback" ||
-      (path === "/login" && c.req.method === "GET") ||
-      (path === "/register" && c.req.method === "GET") ||
+      ((path === "/login" || path === "/register" || path === "/forgot-password" || path === "/reset-password") && c.req.method === "GET") ||
       ((path === "/invite" || path.startsWith("/invite/")) && c.req.method === "GET") ||
       (path.startsWith("/api/invitations/") && c.req.method === "POST" && path.endsWith("/accept")) ||
       path === "/api/auth/login" ||
       path === "/api/auth/register" ||
-      path === "/api/auth/logout";
+      path === "/api/auth/logout" ||
+      path === "/api/auth/password/reset-request" ||
+      path === "/api/auth/password/reset-confirm";
     const token = getCookie(c, SESSION_COOKIE);
     if (token) {
       const result = await auth.authenticate(token);
@@ -549,7 +668,13 @@ export function createServer(
       }
     }
     const user = c.get("user");
-    if (c.req.method !== "GET" && c.req.method !== "HEAD" && !publicRoute && !originAllowed(c, allowedOriginsList)) {
+    const recoveryMutation = path === "/api/auth/password/reset-request" || path === "/api/auth/password/reset-confirm";
+    if (
+      c.req.method !== "GET" &&
+      c.req.method !== "HEAD" &&
+      (!publicRoute || recoveryMutation) &&
+      !originAllowed(c, allowedOriginsList)
+    ) {
       return c.json({ success: false, error: "Cross-origin request rejected" }, 403);
     }
     if (publicRoute) {
@@ -641,6 +766,21 @@ export function createServer(
   app.get("/register", c => {
     const registrationDisabled = vault.getUserCount() > 0 && !vault.isRegistrationAllowed();
     return c.html(renderAuthPageHtml({ mode: "register", registrationDisabled }));
+  });
+
+  app.get("/forgot-password", c => {
+    c.header("Cache-Control", "no-store");
+    return c.html(renderAccountRecoveryPageHtml({
+      mode: "request",
+      recoveryConfigured: auth.isPasswordRecoveryConfigured(),
+    }));
+  });
+  app.get("/reset-password", c => {
+    c.header("Cache-Control", "no-store");
+    return c.html(renderAccountRecoveryPageHtml({
+      mode: "reset",
+      recoveryConfigured: auth.isPasswordRecoveryConfigured(),
+    }));
   });
 
   // Auth API routes
@@ -766,6 +906,181 @@ export function createServer(
     }
     c.header("Set-Cookie", expiredSessionCookie(requestIsSecure(c)));
     return c.json({ success: true, ok: true });
+  });
+
+  app.post("/api/auth/password/change", async c => {
+    const user = c.get("user");
+    const ip = getClientIp(c);
+    const limit = rateLimiter.check(
+      `passwordChange:${user.id}:${ip}`,
+      RATE_LIMIT_POLICIES.passwordChange,
+    );
+    if (!limit.allowed) {
+      return rateLimitResponse(
+        c,
+        limit.retryAfterSec,
+        "Too many password changes. Please try again later.",
+        { errorCode: "RATE_LIMITED" },
+      );
+    }
+
+    const body = await readBoundedJson(c, 4_096);
+    if (!body || typeof body["currentPassword"] !== "string" || typeof body["newPassword"] !== "string") {
+      return c.json({
+        success: false,
+        error: "Current and new passwords are required",
+        errorCode: body && typeof body["currentPassword"] !== "string"
+          ? "INVALID_CREDENTIALS"
+          : "WEAK_PASSWORD",
+      }, 400);
+    }
+
+    try {
+      const result = await auth.changePassword(
+        user.id,
+        c.get("sessionToken"),
+        body["currentPassword"],
+        body["newPassword"],
+      );
+      if (!result.success) {
+        const status = result.error === "UNAUTHENTICATED" || result.error === "INVALID_CREDENTIALS"
+          ? 401
+          : result.error === "WEAK_PASSWORD"
+            ? 400
+            : 500;
+        return c.json({ success: false, error: result.message, errorCode: result.error }, status);
+      }
+      oauthSessions.cancelOwner(user.id);
+      poller.cancelOwner(user.id);
+      return c.json({ success: true });
+    } catch {
+      return c.json({ success: false, error: "Password change failed", errorCode: "INTERNAL_ERROR" }, 500);
+    }
+  });
+
+  app.post("/api/auth/password/reset-request", async c => {
+    if (!auth.isPasswordRecoveryConfigured()) {
+      return c.json({
+        success: false,
+        error: "Password recovery is temporarily unavailable",
+        errorCode: "RECOVERY_UNAVAILABLE",
+      }, 503);
+    }
+    const ip = getClientIp(c);
+    const ipLimit = rateLimiter.check(
+      `passwordResetRequest:ip:${ip}`,
+      RATE_LIMIT_POLICIES.passwordResetRequest,
+    );
+    if (!ipLimit.allowed) {
+      return rateLimitResponse(
+        c,
+        ipLimit.retryAfterSec,
+        "Too many recovery requests. Please try again later.",
+        { errorCode: "RATE_LIMITED" },
+      );
+    }
+
+    const body = await readBoundedJson(c, 1_024);
+    const email = body?.["email"];
+    if (typeof email !== "string" || email.trim().length > 320) {
+      return c.json({
+        success: false,
+        error: "A valid email address is required",
+        errorCode: "INVALID_EMAIL",
+      }, 400);
+    }
+    const normalizedEmail = email.trim().toLowerCase();
+    const emailHash = createHash("sha256").update(normalizedEmail).digest("hex");
+    const emailLimit = rateLimiter.check(
+      `passwordResetRequest:email:${emailHash}`,
+      RATE_LIMIT_POLICIES.passwordResetRequest,
+    );
+    if (!emailLimit.allowed) {
+      return rateLimitResponse(
+        c,
+        emailLimit.retryAfterSec,
+        "Too many recovery requests. Please try again later.",
+        { errorCode: "RATE_LIMITED" },
+      );
+    }
+
+    const result = auth.requestPasswordReset(email);
+    if (!result.success) {
+      const status = result.error === "RECOVERY_UNAVAILABLE" ? 503 : 400;
+      return c.json({ success: false, error: result.message, errorCode: result.error }, status);
+    }
+    return c.json({ success: true }, 202);
+  });
+
+  app.post("/api/auth/password/reset-confirm", async c => {
+    const ip = getClientIp(c);
+    const limit = rateLimiter.check(
+      `passwordResetConfirm:${ip}`,
+      RATE_LIMIT_POLICIES.passwordResetConfirm,
+    );
+    if (!limit.allowed) {
+      return rateLimitResponse(
+        c,
+        limit.retryAfterSec,
+        "Too many password reset attempts. Please try again later.",
+        { errorCode: "RATE_LIMITED" },
+      );
+    }
+
+    const body = await readBoundedJson(c, 2_048);
+    if (!body || typeof body["token"] !== "string" || typeof body["newPassword"] !== "string") {
+      return c.json({ success: false, error: "Reset token and new password are required", errorCode: "INVALID_RESET_TOKEN" }, 400);
+    }
+    try {
+      const result = await auth.confirmPasswordReset(body["token"], body["newPassword"]);
+      if (!result.success) {
+        return c.json({ success: false, error: result.message, errorCode: result.error }, 400);
+      }
+      oauthSessions.cancelOwner(result.data.userId);
+      poller.cancelOwner(result.data.userId);
+      return c.json({ success: true });
+    } catch {
+      return c.json({ success: false, error: "Password reset failed", errorCode: "INTERNAL_ERROR" }, 500);
+    }
+  });
+
+  app.delete("/api/auth/account", async c => {
+    const user = c.get("user");
+    const ip = getClientIp(c);
+    const limit = rateLimiter.check(
+      `accountDelete:${user.id}:${ip}`,
+      RATE_LIMIT_POLICIES.accountDelete,
+    );
+    if (!limit.allowed) {
+      return rateLimitResponse(
+        c,
+        limit.retryAfterSec,
+        "Too many account deletion attempts. Please try again later.",
+        { errorCode: "RATE_LIMITED" },
+      );
+    }
+
+    const body = await readBoundedJson(c, 1_024);
+    if (!body || typeof body["password"] !== "string") {
+      return c.json({ success: false, error: "Password is required", errorCode: "INVALID_CREDENTIALS" }, 400);
+    }
+    try {
+      const result = await auth.deleteAccount(user.id, c.get("sessionToken"), body["password"]);
+      if (!result.success) {
+        const status = result.error === "LAST_ADMIN"
+          ? 409
+          : result.error === "UNAUTHENTICATED" || result.error === "INVALID_CREDENTIALS"
+            ? 401
+            : 500;
+        return c.json({ success: false, error: result.message, errorCode: result.error }, status);
+      }
+      oauthSessions.cancelOwner(user.id);
+      poller.cancelOwner(user.id);
+      c.header("Set-Cookie", expiredSessionCookie(requestIsSecure(c)));
+      return c.json({ success: true });
+    } catch {
+      return c.json({ success: false, error: "Account deletion failed", errorCode: "INTERNAL_ERROR" }, 500);
+    }
   });
 
   app.get("/api/auth/me", c => {
@@ -916,6 +1231,8 @@ export function createServer(
       if (!result.success) {
         return c.json({ success: false, error: result.error || "Failed to delete user" }, 400);
       }
+      oauthSessions.cancelOwner(targetId);
+      poller.cancelOwner(targetId);
       return c.json({ success: true });
     } catch {
       return c.json({ success: false, error: "Failed to delete user" }, 500);
@@ -948,7 +1265,11 @@ export function createServer(
       if (!rl.allowed) {
         return rateLimitResponse(c, rl.retryAfterSec, "Rate limit exceeded. Please wait before polling again.");
       }
-      const reports = await poller.pollUser(user.id);
+      const requestAuthority = {
+        signal: c.req.raw.signal,
+        beforeCommit: () => auth.isSessionActive(user.id, c.get("sessionToken")),
+      };
+      const reports = await poller.pollUser(user.id, requestAuthority);
       const credentials = new Map(vault.listCredentials(user.id).map(credential => [credential.id, credential]));
       const data = reports.map(report => {
         const credential = report.credentialId ? credentials.get(report.credentialId) : undefined;
@@ -979,7 +1300,10 @@ export function createServer(
       if (!cred) {
         return c.json({ success: false, error: "Credential not found" }, 404);
       }
-      const report = await poller.pollCredential(user.id, id);
+      const report = await poller.pollCredential(user.id, id, {
+        signal: c.req.raw.signal,
+        beforeCommit: () => auth.isSessionActive(user.id, c.get("sessionToken")),
+      });
       return c.json({
         success: true,
         data: report
@@ -1038,7 +1362,10 @@ export function createServer(
           ...inputData,
           ownerId: user.id,
           metadata,
-        }, "replace");
+        }, "replace", {
+          signal: c.req.raw.signal,
+          beforeCommit: () => auth.isSessionActive(user.id, c.get("sessionToken")),
+        });
       } catch (validationError) {
         if (validationError instanceof PollerAdmissionError) {
           return pollerAdmissionResponse(c, validationError);
@@ -1067,6 +1394,7 @@ export function createServer(
       const user = c.get("user");
       const id = c.req.param("id");
       const body = (await c.req.json()) as { accountLabel?: string; accent?: string | null };
+      if (!auth.isSessionActive(user.id, c.get("sessionToken"))) return jsonUnauthorized(c);
 
       const updated = vault.updateCredential(user.id, id, body);
 
@@ -1083,6 +1411,7 @@ export function createServer(
   app.delete("/api/credentials/:id", c => {
     const user = c.get("user");
     const id = c.req.param("id");
+    if (!auth.isSessionActive(user.id, c.get("sessionToken"))) return jsonUnauthorized(c);
     const ok = vault.deleteCredential(user.id, id);
     if (!ok) {
       return c.json({ success: false, error: "Credential not found" }, 404);
@@ -1096,13 +1425,13 @@ export function createServer(
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
-      reservation = reserveOAuth(user.id, "codex");
+      reservation = reserveOAuth(c, user.id, "codex");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const result = await initiateCodexDeviceAuth(reservation.signal);
       const sessionId = randomUUID();
       const expiresIn = oauthExpiresInSeconds(result.expiresIn);
-      if (!oauthSessions.activate(reservation, sessionId, {}, {
+      if (!activateOAuth(reservation, sessionId, {}, {
         bindingId: result.deviceAuthId,
         expiresInMs: expiresIn * 1_000,
       })) {
@@ -1133,10 +1462,14 @@ export function createServer(
     if (!claim) return deviceSessionNotFound(c);
     if (claim.status === "busy") return c.json({ status: "pending" });
     const session = claim.session;
+    if (!bindOAuthRequestAuthority(c, session)) {
+      oauthSessions.releaseClaim(session);
+      return deviceSessionNotFound(c);
+    }
 
     try {
       const pollRes = await pollCodexDeviceAuth(bindingId, body.userCode ?? "", session.signal);
-      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
       if (pollRes.status === "pending") {
         oauthSessions.releaseClaim(session);
         return c.json({ status: "pending" });
@@ -1147,7 +1480,7 @@ export function createServer(
       }
 
       const tokenResult = await exchangeCodexToken(pollRes.authorizationCode, pollRes.codeVerifier, session.signal);
-      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
       const accountLabel = tokenResult.email || body.label || "ChatGPT Codex";
       let saved: StoredCredential;
       try {
@@ -1165,10 +1498,10 @@ export function createServer(
           },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.admitCommit(session),
+          beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
         });
       } catch (validationError) {
-        if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
         if (validationError instanceof PollerAdmissionError) {
           failPollerAdmission(session);
           return pollerAdmissionResponse(c, validationError, { status: "error", restartRequired: true });
@@ -1180,7 +1513,7 @@ export function createServer(
       if (!oauthSessions.complete(session, saved.accountLabel)) return deviceSessionNotFound(c);
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
     } catch (error) {
-      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
       const message = error instanceof Error ? error.message : "Failed to complete device authorization";
       oauthSessions.fail(session, message);
       return c.json({ status: "error", error: message }, 500);
@@ -1192,7 +1525,7 @@ export function createServer(
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
-      reservation = reserveOAuth(user.id, "antigravity");
+      reservation = reserveOAuth(c, user.id, "antigravity");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const config = validateGoogleOAuthConfig();
@@ -1204,7 +1537,7 @@ export function createServer(
         googleClientSecret: config.clientSecret,
         googleRedirectUri: config.redirectUri,
       };
-      if (!oauthSessions.activate(reservation, sessionId, data)) {
+      if (!activateOAuth(reservation, sessionId, data)) {
         oauthSessions.cancel(reservation.sessionId, user.id);
         return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
       }
@@ -1263,6 +1596,10 @@ export function createServer(
         ? session.error
         : "Authorization response already used";
       return c.json({ success: false, error: message }, 400);
+    }
+    if (!bindOAuthRequestAuthority(c, session)) {
+      oauthSessions.cancel(session.sessionId, session.ownerId);
+      return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
     }
 
     let callback: ParsedOAuthCallback | null = null;
@@ -1324,7 +1661,7 @@ export function createServer(
         data: { id: completion.saved.id, accountLabel: completion.accountLabel },
       });
     } catch (error) {
-      if (!oauthSessions.isActive(session)) {
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) {
         return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
       }
       if (error instanceof PollerAdmissionError) {
@@ -1351,6 +1688,10 @@ export function createServer(
       session.provider !== "antigravity" ||
       session.data.googleRedirectUri === GOOGLE_LOOPBACK_CALLBACK_URI
     ) {
+      return c.html("Invalid or expired authorization session.", 400);
+    }
+    if (!oauthAuthorityActive(session)) {
+      oauthSessions.cancel(session.sessionId, session.ownerId);
       return c.html("Invalid or expired authorization session.", 400);
     }
     if (session.status !== "pending") {
@@ -1390,7 +1731,7 @@ export function createServer(
       }
       return successPage("Google Login Successful", "You can close this tab and return to useMeter.", "#10b981");
     } catch (error) {
-      if (!oauthSessions.isActive(session)) {
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) {
         return successPage("Google Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
       }
       if (error instanceof PollerAdmissionError) {
@@ -1407,11 +1748,11 @@ export function createServer(
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
-      reservation = reserveOAuth(user.id, "anthropic");
+      reservation = reserveOAuth(c, user.id, "anthropic");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const { authUrl, verifier, state, redirectUri } = initiateClaudeAuth();
-      if (!oauthSessions.activate(reservation, state, { callbackVerifier: verifier })) {
+      if (!activateOAuth(reservation, state, { callbackVerifier: verifier })) {
         oauthSessions.cancel(reservation.sessionId, user.id);
         return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
       }
@@ -1441,13 +1782,13 @@ export function createServer(
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
-      reservation = reserveOAuth(user.id, "copilot");
+      reservation = reserveOAuth(c, user.id, "copilot");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const result = await initiateCopilotDeviceAuth(reservation.signal);
       const sessionId = randomUUID();
       const expiresIn = oauthExpiresInSeconds(result.expiresIn);
-      if (!oauthSessions.activate(reservation, sessionId, {}, {
+      if (!activateOAuth(reservation, sessionId, {}, {
         bindingId: result.deviceCode,
         expiresInMs: expiresIn * 1_000,
       })) {
@@ -1477,9 +1818,13 @@ export function createServer(
     if (!claim) return deviceSessionNotFound(c);
     if (claim.status === "busy") return c.json({ status: "pending" });
     const session = claim.session;
+    if (!bindOAuthRequestAuthority(c, session)) {
+      oauthSessions.releaseClaim(session);
+      return deviceSessionNotFound(c);
+    }
     try {
       const pollRes = await pollCopilotDeviceAuth(bindingId, session.signal);
-      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
       if (pollRes.status === "pending" || pollRes.status === "slow_down") {
         oauthSessions.releaseClaim(session);
         return c.json({ status: pollRes.status });
@@ -1501,10 +1846,10 @@ export function createServer(
           metadata: { login: pollRes.token.login, email: pollRes.token.email },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.admitCommit(session),
+          beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
         });
       } catch (validationError) {
-        if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
         if (validationError instanceof PollerAdmissionError) {
           failPollerAdmission(session);
           return pollerAdmissionResponse(c, validationError, { status: "error", restartRequired: true });
@@ -1516,7 +1861,7 @@ export function createServer(
       if (!oauthSessions.complete(session, saved.accountLabel)) return deviceSessionNotFound(c);
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
     } catch (error) {
-      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
       const message = error instanceof Error ? error.message : "Failed to complete device authorization";
       oauthSessions.fail(session, message);
       return c.json({ status: "error", error: message }, 500);
@@ -1528,13 +1873,13 @@ export function createServer(
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
-      reservation = reserveOAuth(user.id, "cursor");
+      reservation = reserveOAuth(c, user.id, "cursor");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const result = await initiateCursorAuth();
       const sessionId = randomUUID();
       const expiresIn = oauthExpiresInSeconds(result.expiresIn);
-      if (!oauthSessions.activate(reservation, sessionId, { callbackVerifier: result.verifier }, {
+      if (!activateOAuth(reservation, sessionId, { callbackVerifier: result.verifier }, {
         bindingId: result.uuid,
         expiresInMs: expiresIn * 1_000,
       })) {
@@ -1564,6 +1909,10 @@ export function createServer(
     if (!claim) return deviceSessionNotFound(c);
     if (claim.status === "busy") return c.json({ status: "pending" });
     const session = claim.session;
+    if (!bindOAuthRequestAuthority(c, session)) {
+      oauthSessions.releaseClaim(session);
+      return deviceSessionNotFound(c);
+    }
     try {
       const verifier = session.data.callbackVerifier;
       if (!verifier || verifier !== body.verifier) {
@@ -1571,7 +1920,7 @@ export function createServer(
         return c.json({ status: "error", error: "Invalid device authorization verifier" }, 400);
       }
       const pollRes = await pollCursorAuth(bindingId, verifier, session.signal);
-      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
       if (pollRes.status === "pending") {
         oauthSessions.releaseClaim(session);
         return c.json({ status: "pending" });
@@ -1593,11 +1942,11 @@ export function createServer(
           metadata: { refreshToken: pollRes.refreshToken, email: pollRes.email },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.admitCommit(session),
+          beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
           accountLabelMode: "provider",
         });
       } catch (validationError) {
-        if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
         if (validationError instanceof PollerAdmissionError) {
           failPollerAdmission(session);
           return pollerAdmissionResponse(c, validationError, { status: "error", restartRequired: true });
@@ -1609,7 +1958,7 @@ export function createServer(
       if (!oauthSessions.complete(session, saved.accountLabel)) return deviceSessionNotFound(c);
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
     } catch (error) {
-      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
       const message = error instanceof Error ? error.message : "Failed to complete cursor authorization";
       oauthSessions.fail(session, message);
       return c.json({ status: "error", error: message }, 500);
@@ -1621,13 +1970,13 @@ export function createServer(
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
-      reservation = reserveOAuth(user.id, "xai");
+      reservation = reserveOAuth(c, user.id, "xai");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const result = await initiateXaiDeviceAuth(reservation.signal);
       const sessionId = randomUUID();
       const expiresIn = oauthExpiresInSeconds(result.expiresIn);
-      if (!oauthSessions.activate(reservation, sessionId, {}, {
+      if (!activateOAuth(reservation, sessionId, {}, {
         bindingId: result.deviceCode,
         expiresInMs: expiresIn * 1_000,
       })) {
@@ -1657,9 +2006,13 @@ export function createServer(
     if (!claim) return deviceSessionNotFound(c);
     if (claim.status === "busy") return c.json({ status: "pending" });
     const session = claim.session;
+    if (!bindOAuthRequestAuthority(c, session)) {
+      oauthSessions.releaseClaim(session);
+      return deviceSessionNotFound(c);
+    }
     try {
       const pollRes = await pollXaiDeviceAuth(bindingId, session.signal);
-      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
       if (pollRes.status === "pending" || pollRes.status === "slow_down") {
         oauthSessions.releaseClaim(session);
         return c.json({ status: pollRes.status });
@@ -1681,10 +2034,10 @@ export function createServer(
           metadata: { refreshToken: pollRes.refreshToken, email: pollRes.email },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.admitCommit(session),
+          beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
         });
       } catch (validationError) {
-        if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
         if (validationError instanceof PollerAdmissionError) {
           failPollerAdmission(session);
           return pollerAdmissionResponse(c, validationError, { status: "error", restartRequired: true });
@@ -1696,7 +2049,7 @@ export function createServer(
       if (!oauthSessions.complete(session, saved.accountLabel)) return deviceSessionNotFound(c);
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
     } catch (error) {
-      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
       const message = error instanceof Error ? error.message : "Failed to complete device authorization";
       oauthSessions.fail(session, message);
       return c.json({ status: "error", error: message }, 500);
@@ -1708,13 +2061,13 @@ export function createServer(
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
-      reservation = reserveOAuth(user.id, "kimi");
+      reservation = reserveOAuth(c, user.id, "kimi");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const result = await initiateKimiDeviceAuth(reservation.signal);
       const sessionId = randomUUID();
       const expiresIn = oauthExpiresInSeconds(result.expiresIn);
-      if (!oauthSessions.activate(reservation, sessionId, {}, {
+      if (!activateOAuth(reservation, sessionId, {}, {
         bindingId: result.deviceCode,
         expiresInMs: expiresIn * 1_000,
       })) {
@@ -1744,9 +2097,13 @@ export function createServer(
     if (!claim) return deviceSessionNotFound(c);
     if (claim.status === "busy") return c.json({ status: "pending" });
     const session = claim.session;
+    if (!bindOAuthRequestAuthority(c, session)) {
+      oauthSessions.releaseClaim(session);
+      return deviceSessionNotFound(c);
+    }
     try {
       const pollRes = await pollKimiDeviceAuth(bindingId, body.deviceId ?? "", session.signal);
-      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
       if (pollRes.status === "pending" || pollRes.status === "slow_down") {
         oauthSessions.releaseClaim(session);
         return c.json({ status: pollRes.status });
@@ -1768,10 +2125,10 @@ export function createServer(
           metadata: { refreshToken: pollRes.refreshToken, accountId: pollRes.accountId },
         }, "preserve", {
           signal: session.signal,
-          beforeCommit: () => oauthSessions.admitCommit(session),
+          beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
         });
       } catch (validationError) {
-        if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+        if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
         if (validationError instanceof PollerAdmissionError) {
           failPollerAdmission(session);
           return pollerAdmissionResponse(c, validationError, { status: "error", restartRequired: true });
@@ -1783,7 +2140,7 @@ export function createServer(
       if (!oauthSessions.complete(session, saved.accountLabel)) return deviceSessionNotFound(c);
       return c.json({ status: "complete", data: { id: saved.id, accountLabel: saved.accountLabel } });
     } catch (error) {
-      if (!oauthSessions.isActive(session)) return deviceSessionNotFound(c);
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return deviceSessionNotFound(c);
       const message = error instanceof Error ? error.message : "Failed to complete device authorization";
       oauthSessions.fail(session, message);
       return c.json({ status: "error", error: message }, 500);
@@ -1795,11 +2152,11 @@ export function createServer(
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
-      reservation = reserveOAuth(user.id, "google-gemini-cli");
+      reservation = reserveOAuth(c, user.id, "google-gemini-cli");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const { authUrl, state, redirectUri } = initiateGeminiCliAuth();
-      if (!oauthSessions.activate(reservation, state, {})) {
+      if (!activateOAuth(reservation, state, {})) {
         oauthSessions.cancel(reservation.sessionId, user.id);
         return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
       }
@@ -1829,11 +2186,11 @@ export function createServer(
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
-      reservation = reserveOAuth(user.id, "openrouter");
+      reservation = reserveOAuth(c, user.id, "openrouter");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const { authUrl, verifier, sessionId } = initiateOpenRouterAuth();
-      if (!oauthSessions.activate(reservation, sessionId, { callbackVerifier: verifier })) {
+      if (!activateOAuth(reservation, sessionId, { callbackVerifier: verifier })) {
         oauthSessions.cancel(reservation.sessionId, user.id);
         return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
       }
@@ -1862,11 +2219,11 @@ export function createServer(
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
-      reservation = reserveOAuth(user.id, "zai");
+      reservation = reserveOAuth(c, user.id, "zai");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const { authUrl, sessionId, redirectUri } = initiateZaiAuth();
-      if (!oauthSessions.activate(reservation, sessionId, {})) {
+      if (!activateOAuth(reservation, sessionId, {})) {
         oauthSessions.cancel(reservation.sessionId, user.id);
         return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
       }
@@ -1895,11 +2252,15 @@ export function createServer(
     session: PendingOAuthSession,
     code: string,
   ): Promise<{ success: boolean; label?: string; error?: string }> {
+    if (!oauthAuthorityActive(session)) {
+      oauthSessions.cancel(session.sessionId, session.ownerId);
+      return { success: false, error: "Authorization session expired" };
+    }
     const verifier = session.data.devinVerifier;
     if (!verifier) throw new Error("Invalid or expired authorization session");
     session.data.devinVerifier = undefined;
     const tokenResult = await exchangeDevinCode(code, verifier, session.signal);
-    if (!oauthSessions.isActive(session)) return { success: false, error: "Authorization session expired" };
+    if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return { success: false, error: "Authorization session expired" };
     const accountLabel = tokenResult.email || "Devin";
     const saved = await poller.validateAndSaveCredential(session.ownerId, {
       ownerId: session.ownerId,
@@ -1910,7 +2271,7 @@ export function createServer(
       metadata: { email: tokenResult.email, source: "oauth-pkce" },
     }, "preserve", {
       signal: session.signal,
-      beforeCommit: () => oauthSessions.admitCommit(session),
+      beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
       accountLabelMode: "provider",
     });
     if (!oauthSessions.complete(session, saved.accountLabel)) {
@@ -1924,11 +2285,11 @@ export function createServer(
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
-      reservation = reserveOAuth(user.id, "devin");
+      reservation = reserveOAuth(c, user.id, "devin");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
       const { authUrl, verifier, state, sessionId, isHosted } = initiateDevinAuth();
-      if (!oauthSessions.activate(reservation, sessionId, { devinVerifier: verifier }, { expiresInMs: 600_000 })) {
+      if (!activateOAuth(reservation, sessionId, { devinVerifier: verifier }, { expiresInMs: 600_000 })) {
         oauthSessions.cancel(reservation.sessionId, user.id);
         return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
       }
@@ -1995,6 +2356,10 @@ export function createServer(
     if (!session || session.provider !== "devin") {
       return c.html("Invalid or expired authorization session.", 400);
     }
+    if (!oauthAuthorityActive(session)) {
+      oauthSessions.cancel(session.sessionId, session.ownerId);
+      return c.html("Invalid or expired authorization session.", 400);
+    }
     if (session.status !== "pending" || !oauthSessions.claim(session)) {
       return c.html("Authorization code already used.", 400);
     }
@@ -2022,7 +2387,7 @@ export function createServer(
       }
       return successPage("Devin Login Successful", "You can close this tab and return to useMeter.", "#10b981");
     } catch (error) {
-      if (!oauthSessions.isActive(session)) {
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) {
         return successPage("Devin Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
       }
       if (error instanceof PollerAdmissionError) {
@@ -2269,7 +2634,7 @@ function renderAuthPageHtml(options: { mode: "login" | "register"; registrationD
 
       <div class="mt-6 pt-4 border-t border-appBorder text-center text-xs text-appTextMuted">
         ${isLogin
-          ? '<span data-i18n="authNoAccount">Hesabınız yok mu?</span> <a href="/register" class="font-semibold text-appAccent hover:underline" data-i18n="authToRegister">Kayıt Olun</a>'
+          ? '<span data-i18n="authNoAccount">Hesabınız yok mu?</span> <a href="/register" class="font-semibold text-appAccent hover:underline" data-i18n="authToRegister">Kayıt Olun</a><div class="mt-3"><a href="/forgot-password" class="font-semibold text-appAccent hover:underline" data-i18n="authForgotPassword">Parolamı unuttum</a></div>'
           : '<span data-i18n="authHasAccount">Zaten hesabınız var mı?</span> <a href="/login" class="font-semibold text-appAccent hover:underline" data-i18n="authToLogin">Giriş Yapın</a>'}
       </div>
       `}
@@ -2290,6 +2655,7 @@ function renderAuthPageHtml(options: { mode: "login" | "register"; registrationD
         authRegisterBtn: "Kayıt Ol",
         authNoAccount: "Hesabınız yok mu?",
         authToRegister: "Kayıt Olun",
+        authForgotPassword: "Parolamı unuttum",
         authHasAccount: "Zaten hesabınız var mı?",
         authToLogin: "Giriş Yapın",
         authPasswordMismatch: "Şifreler birbiriyle eşleşmiyor.",
@@ -2314,6 +2680,7 @@ function renderAuthPageHtml(options: { mode: "login" | "register"; registrationD
         authRegisterBtn: "Create Account",
         authNoAccount: "Don't have an account?",
         authToRegister: "Sign Up",
+        authForgotPassword: "Forgot password?",
         authHasAccount: "Already have an account?",
         authToLogin: "Sign In",
         authPasswordMismatch: "Passwords do not match.",

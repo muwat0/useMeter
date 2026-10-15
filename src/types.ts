@@ -44,6 +44,10 @@ export type AuthErrorCode =
   | "INVITATION_EXPIRED"
   | "INVITATION_REVOKED"
   | "INVITATION_USED"
+  | "INVALID_RESET_TOKEN"
+  | "RECOVERY_UNAVAILABLE"
+  | "RATE_LIMITED"
+  | "LAST_ADMIN"
   | "INTERNAL_ERROR";
 
 export type InvitationStatus = "pending" | "accepted" | "revoked" | "expired";

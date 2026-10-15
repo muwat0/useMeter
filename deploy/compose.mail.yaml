@@ -1,0 +1,21 @@
+# Optional Docker Compose overlay for useMeter password reset mail bridge
+# Usage on deployment host:
+#   docker compose -f compose.yaml -f deploy/compose.mail.yaml up -d
+#
+# Operator prerequisites on host:
+#   1. Dedicated persistent directory: /opt/usemeter/mail (chmod 0770, chgrp 1000)
+#   2. Mail bridge service running (systemctl --user start usemeter-mail-bridge)
+#   3. Bridge socket active at /opt/usemeter/mail/bridge.sock (mode 0660)
+#   4. Container process runs as UID 1000 with supplementary GID 1000
+#
+# Read-only mount (:ro): container process only connects to the Unix domain socket
+# and does not write to the host filesystem.
+
+services:
+  usemeter:
+    environment:
+      RECOVERY_MAIL_SOCKET: /app/mail-bridge/bridge.sock
+    group_add:
+      - ${MAIL_BRIDGE_HOST_GID:-1000}
+    volumes:
+      - ${MAIL_BRIDGE_HOST_DIR:-/opt/usemeter/mail}:/app/mail-bridge:ro
