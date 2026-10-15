@@ -158,10 +158,16 @@ describe("OAuth PKCE & URLs", () => {
     expect(gemini.authUrl).toContain("accounts.google.com");
     expect(gemini.authUrl).toContain("oauth2callback");
 
-    const openrouter = initiateOpenRouterAuth();
+    const openrouter = initiateOpenRouterAuth("https://usemeter.example.com/api/oauth/openrouter/callback");
     expect(openrouter.authUrl).toContain("openrouter.ai/auth");
     expect(openrouter.verifier).toBeDefined();
-
+    const openrouterAuthUrl = new URL(openrouter.authUrl);
+    expect(openrouterAuthUrl.searchParams.get("callback_url"))
+      .toBe("https://usemeter.example.com/api/oauth/openrouter/callback");
+    expect(openrouterAuthUrl.searchParams.get("state")).toBe(openrouter.sessionId);
+    expect(openrouterAuthUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(openrouterAuthUrl.searchParams.get("code_challenge")).toBeDefined();
+    expect(openrouterAuthUrl.searchParams.get("key_label")).toBe("useMeter");
     const zai = initiateZaiAuth();
     expect(zai.authUrl).toContain("chat.z.ai/api/oauth/authorize");
     expect(zai.state).toBeDefined();
@@ -313,9 +319,17 @@ describe("Server OAuth Routes", () => {
       method: "POST",
       headers: { Cookie: cookie },
     });
-    const openrouterJson = (await openrouterRes.json()) as { success: boolean; data: { authUrl: string; sessionId: string } };
+    const openrouterJson = (await openrouterRes.json()) as {
+      success: boolean;
+      data: { authUrl: string; sessionId: string; manualCallback: boolean; manualInput?: string };
+    };
     expect(openrouterJson.success).toBe(true);
-    expect(openrouterJson.data.authUrl).toContain("openrouter.ai");
+    const openrouterAuth = new URL(openrouterJson.data.authUrl);
+    expect(openrouterAuth.origin).toBe("https://openrouter.ai");
+    expect(openrouterAuth.searchParams.get("callback_url")).toBe("http://localhost/api/oauth/openrouter/callback");
+    expect(openrouterAuth.searchParams.get("state")).toBe(openrouterJson.data.sessionId);
+    expect(openrouterJson.data.manualCallback).toBe(false);
+    expect(openrouterJson.data.manualInput).toBeUndefined();
     await releaseOAuthSession(openrouterJson.data.sessionId);
 
     const zaiRes = await app.request("/api/oauth/zai/initiate", {

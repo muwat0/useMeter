@@ -35,12 +35,12 @@ export const PROVIDER_CATALOG = freezeCatalog([
     id: "openrouter",
     displayName: { en: "OpenRouter", tr: "OpenRouter" },
     aliases: [],
-    authModes: ["oauth_loopback_paste", "api_key"],
+    authModes: ["oauth_callback", "api_key"],
     supportTier: "synthetic_only",
     quotaKind: "balance_usd",
     helpHint: {
-      en: "Connect with an OpenRouter API key or complete the PKCE flow by pasting its one-time code. Balance and credit data depend on the provider response.",
-      tr: "OpenRouter API anahtarıyla bağlanın veya PKCE akışında verilen tek kullanımlık kodu yapıştırın. Bakiye ve kredi verileri sağlayıcı yanıtına bağlıdır.",
+      en: "Connect with an OpenRouter API key or complete the automatic same-origin PKCE callback. Balance and credit data depend on the provider response.",
+      tr: "OpenRouter API anahtarıyla bağlanın veya otomatik aynı-kaynaklı PKCE callback akışını tamamlayın. Bakiye ve kredi verileri sağlayıcı yanıtına bağlıdır.",
     },
   },
   {

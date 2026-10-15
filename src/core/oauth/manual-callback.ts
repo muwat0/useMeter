@@ -9,14 +9,12 @@ export interface ParsedOAuthCallback {
   providerError?: string;
 }
 
-export type ManualOAuthInputOptions =
-  | {
-      mode: "url";
-      redirectUri: string;
-      expectedState: string;
-      allowCodeHashState?: boolean;
-    }
-  | { mode: "code" };
+export type ManualOAuthInputOptions = {
+  mode: "url";
+  redirectUri: string;
+  expectedState: string;
+  allowCodeHashState?: boolean;
+};
 
 export function parseOAuthCallbackParameters(params: URLSearchParams): ParsedOAuthCallback | null {
   const seen = new Set<string>();
@@ -45,10 +43,6 @@ export function parseOAuthManualInput(
   const input = value.trim();
   if (!input) return null;
 
-  if (options.mode === "code") {
-    if (/^https?:\/\//i.test(input) || /[\u0000-\u001F\u007F]/.test(input)) return null;
-    return { state: "", code: input };
-  }
 
   if (options.allowCodeHashState) {
     const hash = input.indexOf("#");

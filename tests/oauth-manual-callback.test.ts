@@ -20,8 +20,8 @@ const GOOGLE_ENV_KEYS = [
 const GOOGLE_LOOPBACK_CALLBACK = "http://127.0.0.1:51121/oauth-callback";
 const GOOGLE_PUBLIC_CALLBACK = "https://usemeter.example.com/api/oauth/google/callback";
 
-type ManualInput = "url" | "code";
-type ManualFlowId = "claude" | "gemini-cli" | "openrouter" | "zai";
+type ManualInput = "url";
+type ManualFlowId = "claude" | "gemini-cli" | "zai";
 
 interface ManualFlow {
   id: ManualFlowId;
@@ -56,12 +56,6 @@ const MANUAL_FLOWS: readonly ManualFlow[] = [
     redirectUri: "http://127.0.0.1:8085/oauth2callback",
   },
   {
-    id: "openrouter",
-    endpoint: "/api/oauth/openrouter/initiate",
-    provider: "openrouter",
-    manualInput: "code",
-  },
-  {
     id: "zai",
     endpoint: "/api/oauth/zai/initiate",
     provider: "zai",
@@ -73,7 +67,6 @@ const MANUAL_FLOWS: readonly ManualFlow[] = [
 const VALIDATION_PROVIDERS = [
   "anthropic",
   "google-gemini-cli",
-  "openrouter",
   "zai",
   "antigravity",
 ] as const;
@@ -194,7 +187,6 @@ function callbackUrl(redirectUri: string, state: string, code = "synthetic-oauth
 }
 
 function validInput(flow: ManualFlow, data: OAuthInitiationData, code: string): string {
-  if (flow.manualInput === "code") return code;
   if (!data.redirectUri) throw new Error(`Synthetic ${flow.id} initiation omitted redirectUri`);
   return callbackUrl(data.redirectUri, data.sessionId, code);
 }
@@ -205,32 +197,22 @@ function assertManualInitiation(data: OAuthInitiationData, flow: ManualFlow): vo
   expect(data.expiresIn).toBe(600);
 
   const authUrl = new URL(data.authUrl);
-  if (flow.manualInput === "url") {
-    const redirectUri = flow.redirectUri;
-    if (!redirectUri) throw new Error(`Synthetic ${flow.id} initiation omitted redirectUri`);
-    const returnedRedirectUri = data.redirectUri;
-    if (!returnedRedirectUri) throw new Error(`Synthetic ${flow.id} initiation omitted response redirectUri`);
-    const requestedRedirectUri = requiredString(authUrl.searchParams.get("redirect_uri"), `${flow.id} redirect_uri`);
-    const state = requiredString(authUrl.searchParams.get("state"), `${flow.id} state`);
-    expect(returnedRedirectUri).toBe(redirectUri);
-    expect(requestedRedirectUri).toBe(redirectUri);
-    expect(state).toBe(data.sessionId);
-    if (flow.id === "claude") {
-      expect(requiredString(authUrl.searchParams.get("code_challenge_method"), "Claude challenge method"))
-        .toBe("S256");
-      expect(requiredString(authUrl.searchParams.get("code_challenge"), "Claude challenge")).not.toBe("");
-    } else {
-      expect(authUrl.searchParams.has("code_challenge")).toBe(false);
-      expect(authUrl.searchParams.has("code_challenge_method")).toBe(false);
-    }
-  } else {
-    expect(data.redirectUri).toBeUndefined();
-    expect(authUrl.searchParams.has("callback_url")).toBe(false);
-    expect(authUrl.searchParams.has("state")).toBe(false);
-    expect(requiredString(authUrl.searchParams.get("code_challenge_method"), "OpenRouter challenge method"))
+  const redirectUri = flow.redirectUri;
+  if (!redirectUri || !data.redirectUri) {
+    throw new Error(`Synthetic ${flow.id} initiation omitted redirectUri`);
+  }
+  const requestedRedirectUri = requiredString(authUrl.searchParams.get("redirect_uri"), `${flow.id} redirect_uri`);
+  const state = requiredString(authUrl.searchParams.get("state"), `${flow.id} state`);
+  expect(data.redirectUri).toBe(redirectUri);
+  expect(requestedRedirectUri).toBe(redirectUri);
+  expect(state).toBe(data.sessionId);
+  if (flow.id === "claude") {
+    expect(requiredString(authUrl.searchParams.get("code_challenge_method"), "Claude challenge method"))
       .toBe("S256");
-    expect(requiredString(authUrl.searchParams.get("code_challenge"), "OpenRouter challenge")).not.toBe("");
-    expect(requiredString(authUrl.searchParams.get("key_label"), "OpenRouter key label")).toBe("useMeter");
+    expect(requiredString(authUrl.searchParams.get("code_challenge"), "Claude challenge")).not.toBe("");
+  } else {
+    expect(authUrl.searchParams.has("code_challenge")).toBe(false);
+    expect(authUrl.searchParams.has("code_challenge_method")).toBe(false);
   }
 }
 
@@ -285,10 +267,6 @@ function installProviderResponses(): FetchHarness {
         return jsonResponse({ email: "gemini@example.test" });
       case "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist":
         return jsonResponse({ cloudaicompanionProject: "synthetic-gemini-project" });
-      case "https://openrouter.ai/api/v1/auth/keys":
-        return jsonResponse({ key: "synthetic-openrouter-api-key" });
-      case "https://openrouter.ai/api/v1/auth/key":
-        return jsonResponse({ data: { label: "openrouter@example.test" } });
       case "https://zcode.z.ai/api/v1/oauth/token":
         return jsonResponse({
           zai: { access_token: "synthetic-zai-oauth-access" },
@@ -495,47 +473,42 @@ describe("listener-free manual OAuth callbacks", () => {
         assertManualInitiation(data, flow);
 
         const invalidInputs: unknown[] = [null, 7, { pasted: "not a string" }];
-        if (flow.manualInput === "url") {
-          const redirectUri = flow.redirectUri!;
-          const expected = new URL(redirectUri);
-          const wrongProtocol = new URL(redirectUri);
-          wrongProtocol.protocol = "https:";
-          const wrongHost = new URL(redirectUri);
-          wrongHost.hostname = expected.hostname === "localhost" ? "127.0.0.1" : "localhost";
-          const wrongPath = new URL(redirectUri);
-          wrongPath.pathname = `${expected.pathname}/wrong`;
-          const userInfo = new URL(redirectUri);
-          userInfo.username = "untrusted";
-          userInfo.password = "synthetic";
-          const encodedState = encodeURIComponent(data.sessionId);
-          const code = "synthetic-invalid-code";
+        const redirectUri = flow.redirectUri!;
+        const expected = new URL(redirectUri);
+        const wrongProtocol = new URL(redirectUri);
+        wrongProtocol.protocol = "https:";
+        const wrongHost = new URL(redirectUri);
+        wrongHost.hostname = expected.hostname === "localhost" ? "127.0.0.1" : "localhost";
+        const wrongPath = new URL(redirectUri);
+        wrongPath.pathname = `${expected.pathname}/wrong`;
+        const userInfo = new URL(redirectUri);
+        userInfo.username = "untrusted";
+        userInfo.password = "synthetic";
+        const encodedState = encodeURIComponent(data.sessionId);
+        const code = "synthetic-invalid-code";
+        invalidInputs.push(
+          "http://[",
+          wrongProtocol.toString() + `?code=${code}&state=${encodedState}`,
+          wrongHost.toString() + `?code=${code}&state=${encodedState}`,
+          wrongPath.toString() + `?code=${code}&state=${encodedState}`,
+          userInfo.toString() + `?code=${code}&state=${encodedState}`,
+          `${callbackUrl(redirectUri, data.sessionId, code)}#unexpected-fragment`,
+          `${redirectUri}?code=first&code=second&state=${encodedState}`,
+          `${redirectUri}?code=${code}&state=${encodedState}&state=duplicate`,
+          `${redirectUri}?code=${code}`,
+          `${redirectUri}?code=${code}&state=wrong-state`,
+          `${redirectUri}?code=${code}&error=access_denied&state=${encodedState}`,
+          `${redirectUri}?state=${encodedState}`,
+        );
+        if (flow.id === "claude") {
           invalidInputs.push(
-            "http://[",
-            wrongProtocol.toString() + `?code=${code}&state=${encodedState}`,
-            wrongHost.toString() + `?code=${code}&state=${encodedState}`,
-            wrongPath.toString() + `?code=${code}&state=${encodedState}`,
-            userInfo.toString() + `?code=${code}&state=${encodedState}`,
-            `${callbackUrl(redirectUri, data.sessionId, code)}#unexpected-fragment`,
-            `${redirectUri}?code=first&code=second&state=${encodedState}`,
-            `${redirectUri}?code=${code}&state=${encodedState}&state=duplicate`,
-            `${redirectUri}?code=${code}`,
-            `${redirectUri}?code=${code}&state=wrong-state`,
-            `${redirectUri}?code=${code}&error=access_denied&state=${encodedState}`,
-            `${redirectUri}?state=${encodedState}`,
+            "synthetic-claude-raw-code",
+            "synthetic-claude-code#wrong-state",
+            callbackUrl(MANUAL_FLOWS.find(candidate => candidate.id === "gemini-cli")!.redirectUri!, data.sessionId),
           );
-          if (flow.id === "claude") {
-            invalidInputs.push(
-              "synthetic-claude-raw-code",
-              "synthetic-claude-code#wrong-state",
-              callbackUrl(MANUAL_FLOWS.find(candidate => candidate.id === "gemini-cli")!.redirectUri!, data.sessionId),
-            );
-          } else {
-            invalidInputs.push("synthetic-raw-code", `synthetic-raw-code#${data.sessionId}`);
-          }
         } else {
-          invalidInputs.push("", " \t\r\n", "https://openrouter.ai/auth?code=synthetic-code");
+          invalidInputs.push("synthetic-raw-code", `synthetic-raw-code#${data.sessionId}`);
         }
-
         for (const callbackInput of invalidInputs) {
           const response = await postManual(app, owner.cookie, data.sessionId, callbackInput);
           expect(response.status).toBe(400);
@@ -601,7 +574,6 @@ describe("listener-free manual OAuth callbacks", () => {
       const labels: Record<ManualFlowId, string> = {
         claude: "claude@example.test",
         "gemini-cli": "gemini@example.test",
-        openrouter: "openrouter@example.test",
         zai: "zai@example.test",
       };
 
@@ -680,7 +652,7 @@ describe("listener-free manual OAuth callbacks", () => {
     }
   });
 
-  it("completes all four provider routes and preserves PKCE verifier continuity", async () => {
+  it("completes all three manual provider routes and preserves PKCE verifier continuity", async () => {
     const { vault, app, auth } = context();
     const upstream = installProviderResponses();
     const sessions: OwnedSession[] = [];
@@ -689,7 +661,6 @@ describe("listener-free manual OAuth callbacks", () => {
       const issuedCodes = new Map<ManualFlowId, string>([
         ["claude", "synthetic-claude-callback-code"],
         ["gemini-cli", "synthetic-gemini-callback-code"],
-        ["openrouter", "synthetic+openrouter/code==?&#headless"],
         ["zai", "synthetic-zai-callback-code"],
       ]);
       const completions = new Map<ManualFlowId, { data: OAuthInitiationData; input: string }>();
@@ -701,9 +672,7 @@ describe("listener-free manual OAuth callbacks", () => {
         const code = requiredString(issuedCodes.get(flow.id), `${flow.id} authorization code`);
         const input = flow.id === "claude"
           ? `${code}#${data.sessionId}`
-          : flow.id === "openrouter"
-            ? ` \n  ${code} \t `
-            : validInput(flow, data, code);
+          : validInput(flow, data, code);
 
         const response = await postManual(app, owner.cookie, data.sessionId, input);
         expect(response.status).toBe(200);
@@ -724,22 +693,6 @@ describe("listener-free manual OAuth callbacks", () => {
       expect(pkceChallenge(claudeVerifier)).toBe(claudeChallenge);
       expect(claudeTokenBody["redirect_uri"]).toBe("http://localhost:54545/callback");
 
-      const openrouter = completions.get("openrouter")!;
-      const openrouterAuth = new URL(openrouter.data.authUrl);
-      expect(openrouterAuth.searchParams.get("code_challenge_method")).toBe("S256");
-      expect(openrouterAuth.searchParams.get("callback_url")).toBeNull();
-      expect(openrouterAuth.searchParams.get("key_label")).toBe("useMeter");
-      const openrouterCall = upstream.calls.find(call => call.url === "https://openrouter.ai/api/v1/auth/keys");
-      if (!openrouterCall) throw new Error("Synthetic OpenRouter key request was not captured");
-      const openrouterBody = parseJsonBody(openrouterCall);
-      expect(openrouterBody["code"]).toBe(requiredString(issuedCodes.get("openrouter"), "OpenRouter authorization code"));
-      const openrouterVerifier = requiredString(openrouterBody["code_verifier"], "OpenRouter code verifier");
-      const openrouterChallenge = requiredString(
-        openrouterAuth.searchParams.get("code_challenge"),
-        "OpenRouter challenge",
-      );
-      expect(pkceChallenge(openrouterVerifier)).toBe(openrouterChallenge);
-      expect(openrouterBody["code_challenge_method"]).toBe("S256");
 
       const gemini = completions.get("gemini-cli")!;
       const geminiAuth = new URL(gemini.data.authUrl);
@@ -772,7 +725,6 @@ describe("listener-free manual OAuth callbacks", () => {
       const expectedCredentials = [
         { provider: "anthropic", label: "claude@example.test", secret: "synthetic-claude-access" },
         { provider: "google-gemini-cli", label: "gemini@example.test", secret: "synthetic-gemini-access" },
-        { provider: "openrouter", label: "openrouter@example.test", secret: "synthetic-openrouter-api-key" },
         { provider: "zai", label: "zai@example.test", secret: "synthetic-zai-key-id.synthetic-zai-secret" },
       ];
       for (const expected of expectedCredentials) {
@@ -860,138 +812,6 @@ describe("listener-free manual OAuth callbacks", () => {
     }
   });
 
-  it("does not validate or persist a code exchange that resolves after cancellation", async () => {
-    const exchangeResult = Promise.withResolvers<Response>();
-    const exchangeStarted = Promise.withResolvers<void>();
-    let validations = 0;
-    const { vault, app, auth } = context({}, async () => { validations++; });
-    const upstream = installFetch(call => {
-      if (call.url === "https://openrouter.ai/api/v1/auth/keys") {
-        exchangeStarted.resolve();
-        return exchangeResult.promise;
-      }
-      if (call.url === "https://openrouter.ai/api/v1/auth/key") return jsonResponse({ data: { label: "cancelled@example.test" } });
-      throw new Error(`Unexpected synthetic OAuth URL: ${call.url}`);
-    });
-    let session: OwnedSession | undefined;
-    let submission: Promise<Response> | undefined;
-    try {
-      const owner = await register(auth, "manual-oauth-exchange-cancel@example.test");
-      const flow = MANUAL_FLOWS.find(candidate => candidate.id === "openrouter")!;
-      const data = await initiateManual(app, owner.cookie, flow);
-      session = { cookie: owner.cookie, sessionId: data.sessionId };
-      const input = "synthetic-cancelled-openrouter-code";
-      submission = postManual(app, owner.cookie, data.sessionId, input);
-      await exchangeStarted.promise;
-
-      const replayDuringExchange = await postManual(app, owner.cookie, data.sessionId, input);
-      expect(replayDuringExchange.status).not.toBe(200);
-      expect(upstream.calls.filter(call => call.url === "https://openrouter.ai/api/v1/auth/keys")).toHaveLength(1);
-
-      const cancelled = await app.request(`/api/oauth/sessions/${encodeURIComponent(data.sessionId)}`, {
-        method: "DELETE",
-        headers: { Cookie: owner.cookie },
-      });
-      expect(cancelled.status).toBe(200);
-      exchangeResult.resolve(jsonResponse({ key: "synthetic-late-openrouter-key" }));
-      expect((await submission).status).not.toBe(200);
-      expect(validations).toBe(0);
-      expect(vault.listCredentials(owner.id, "openrouter")).toHaveLength(0);
-      expect(vault.getSnapshotHistory(owner.id, "openrouter", 24)).toHaveLength(0);
-    } finally {
-      exchangeResult.resolve(jsonResponse({ key: "synthetic-cleanup-openrouter-key" }));
-      if (session) await cancelSessions(app, [session]);
-      await submission?.catch(() => undefined);
-      upstream.restore();
-      vault.close();
-    }
-  });
-
-  it("enforces the deadline again at the credential commit boundary after adapter validation", async () => {
-    let now = 1_800_000_000_000;
-    const validationGate = Promise.withResolvers<void>();
-    const validationStarted = Promise.withResolvers<void>();
-    const { vault, app, auth } = context(
-      { oauthNow: () => now },
-      async credential => {
-        if (credential.provider !== "openrouter") return;
-        validationStarted.resolve();
-        await validationGate.promise;
-      },
-    );
-    const upstream = installFetch(call => {
-      if (call.url === "https://openrouter.ai/api/v1/auth/keys") return jsonResponse({ key: "synthetic-expired-openrouter-key" });
-      if (call.url === "https://openrouter.ai/api/v1/auth/key") return jsonResponse({ data: { label: "expired@example.test" } });
-      throw new Error(`Unexpected synthetic OAuth URL: ${call.url}`);
-    });
-    let session: OwnedSession | undefined;
-    let submission: Promise<Response> | undefined;
-    let validationReleased = false;
-    try {
-      const owner = await register(auth, "manual-oauth-commit-deadline@example.test");
-      const flow = MANUAL_FLOWS.find(candidate => candidate.id === "openrouter")!;
-      const data = await initiateManual(app, owner.cookie, flow);
-      session = { cookie: owner.cookie, sessionId: data.sessionId };
-      submission = postManual(app, owner.cookie, data.sessionId, "synthetic-late-openrouter-code");
-      await validationStarted.promise;
-
-      now += 10 * 60 * 1000 + 1;
-      validationGate.resolve();
-      validationReleased = true;
-      expect((await submission).status).not.toBe(200);
-      expect(vault.listCredentials(owner.id, "openrouter")).toHaveLength(0);
-      expect(vault.getSnapshotHistory(owner.id, "openrouter", 24)).toHaveLength(0);
-    } finally {
-      if (!validationReleased) validationGate.resolve();
-      if (session) await cancelSessions(app, [session]);
-      await submission?.catch(() => undefined);
-      upstream.restore();
-      vault.close();
-    }
-  });
-
-  it("does not commit credentials or snapshots when cancellation happens during adapter validation", async () => {
-    const validationGate = Promise.withResolvers<void>();
-    const validationStarted = Promise.withResolvers<void>();
-    const { vault, app, auth } = context({}, async credential => {
-      if (credential.provider !== "openrouter") return;
-      validationStarted.resolve();
-      await validationGate.promise;
-    });
-    const upstream = installFetch(call => {
-      if (call.url === "https://openrouter.ai/api/v1/auth/keys") return jsonResponse({ key: "synthetic-cancel-openrouter-key" });
-      if (call.url === "https://openrouter.ai/api/v1/auth/key") return jsonResponse({ data: { label: "cancelled-validation@example.test" } });
-      throw new Error(`Unexpected synthetic OAuth URL: ${call.url}`);
-    });
-    let session: OwnedSession | undefined;
-    let submission: Promise<Response> | undefined;
-    let validationReleased = false;
-    try {
-      const owner = await register(auth, "manual-oauth-validation-cancel@example.test");
-      const flow = MANUAL_FLOWS.find(candidate => candidate.id === "openrouter")!;
-      const data = await initiateManual(app, owner.cookie, flow);
-      session = { cookie: owner.cookie, sessionId: data.sessionId };
-      submission = postManual(app, owner.cookie, data.sessionId, "synthetic-validation-cancel-code");
-      await validationStarted.promise;
-
-      const cancelled = await app.request(`/api/oauth/sessions/${encodeURIComponent(data.sessionId)}`, {
-        method: "DELETE",
-        headers: { Cookie: owner.cookie },
-      });
-      expect(cancelled.status).toBe(200);
-      validationGate.resolve();
-      validationReleased = true;
-      expect((await submission).status).not.toBe(200);
-      expect(vault.listCredentials(owner.id, "openrouter")).toHaveLength(0);
-      expect(vault.getSnapshotHistory(owner.id, "openrouter", 24)).toHaveLength(0);
-    } finally {
-      if (!validationReleased) validationGate.resolve();
-      if (session) await cancelSessions(app, [session]);
-      await submission?.catch(() => undefined);
-      upstream.restore();
-      vault.close();
-    }
-  });
 
   it("migrates embedded Google manual completion to the generic endpoint", async () => {
     const env = snapshotGoogleEnv();
