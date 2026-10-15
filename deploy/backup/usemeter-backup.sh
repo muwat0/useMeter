@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 if [[ "$COMPOSE_FILE" != /* ]]; then COMPOSE_FILE="$PROJECT_DIR/$COMPOSE_FILE"; fi
 [[ -f "$COMPOSE_FILE" ]] || fail 'Compose file is missing'
 [[ "$COMPOSE_SERVICE" =~ ^[A-Za-z0-9_.-]+$ ]] || fail 'invalid Compose service name'
-command -v docker >/dev/null 2>&1 || fail 'Docker CLI is unavailable'
+[[ -x '/usr/bin/docker' ]] || command -v docker >/dev/null 2>&1 || fail 'Docker CLI is unavailable'
 command -v realpath >/dev/null 2>&1 || fail 'realpath is unavailable'
 
 [[ ! -L "$BACKUP_DIR" ]] || fail 'backup directory must not be a symlink'
@@ -30,7 +30,8 @@ BACKUP_DIR="$(realpath -e -- "$BACKUP_DIR")"
 [[ "$(stat -c '%u' -- "$BACKUP_DIR")" == "$(id -u)" ]] || fail 'backup directory is not owned by murat'
 [[ "$(stat -c '%a' -- "$BACKUP_DIR")" == '700' ]] || fail 'backup directory must have mode 0700'
 
-COMPOSE=(docker compose --project-directory "$PROJECT_DIR" --file "$COMPOSE_FILE")
+DOCKER=(sudo -n /usr/bin/docker)
+COMPOSE=("${DOCKER[@]}" compose --project-directory "$PROJECT_DIR" --file "$COMPOSE_FILE")
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 FINAL_NAME="usemeter-${STAMP}-${BASHPID}-${RANDOM}.sqlite"
 FINAL_PATH="$BACKUP_DIR/$FINAL_NAME"
@@ -61,7 +62,7 @@ cleanup() {
       if (( status == 0 )); then status=1; fi
     fi
   fi
-  if (( CLEAN_CONTAINER == 1 )); then docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true; fi
+  if (( CLEAN_CONTAINER == 1 )); then "${DOCKER[@]}" rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true; fi
   if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then rm -rf -- "$WORK_DIR"; fi
   exit "$status"
 }
@@ -83,26 +84,29 @@ CONTAINER_ID="$("${COMPOSE[@]}" run --detach --no-deps --name "$CONTAINER_NAME" 
   run /run/usemeter-backup-snapshot.ts create)" || fail 'could not start the snapshot container'
 [[ "$CONTAINER_ID" =~ ^[0-9a-f]{12,64}$ ]] || fail 'snapshot container did not return an ID'
 CLEAN_CONTAINER=1
-CONTAINER_STATUS="$(docker wait "$CONTAINER_ID")" || fail 'could not wait for the snapshot container'
+CONTAINER_STATUS="$("${DOCKER[@]}" wait "$CONTAINER_ID")" || fail 'could not wait for the snapshot container'
 if [[ "$CONTAINER_STATUS" != '0' ]]; then
-  docker logs "$CONTAINER_ID" >&2 || true
+  "${DOCKER[@]}" logs "$CONTAINER_ID" >&2 || true
   fail 'SQLite snapshot creation or validation failed'
 fi
 CLEAN_TEMP=1
-docker logs "$CONTAINER_ID"
+"${DOCKER[@]}" logs "$CONTAINER_ID"
 
-docker cp "$CONTAINER_ID:$TEMP_DB" "$WORK_DIR/$FINAL_NAME"
+TEMP_BASE="${TEMP_DB##*/}"
+"${DOCKER[@]}" cp "$CONTAINER_ID:$TEMP_DB" - | tar --no-same-owner --no-same-permissions -xf - -C "$WORK_DIR"
+[[ -f "$WORK_DIR/$TEMP_BASE" && ! -L "$WORK_DIR/$TEMP_BASE" ]] || fail 'extracted snapshot file is missing or invalid'
+mv -- "$WORK_DIR/$TEMP_BASE" "$WORK_DIR/$FINAL_NAME"
 chmod 0600 -- "$WORK_DIR/$FINAL_NAME"
 [[ "$(stat -c '%u' -- "$WORK_DIR/$FINAL_NAME")" == "$(id -u)" ]] || fail 'copied backup is not owned by murat'
 [[ "$(stat -c '%a' -- "$WORK_DIR/$FINAL_NAME")" == '600' ]] || fail 'copied backup does not have mode 0600'
-DRILL_IMAGE="$(docker inspect --format '{{.Image}}' "$CONTAINER_ID")" || fail 'could not resolve the snapshot image'
+DRILL_IMAGE="$("${DOCKER[@]}" inspect --format '{{.Image}}' "$CONTAINER_ID")" || fail 'could not resolve the snapshot image'
 [[ "$DRILL_IMAGE" =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'snapshot image digest is invalid'
 USEMETER_DRILL_IMAGE="$DRILL_IMAGE" "$SCRIPT_DIR/usemeter-restore-drill.sh" "$WORK_DIR/$FINAL_NAME"
 mv -- "$WORK_DIR/$FINAL_NAME" "$FINAL_PATH"
 
 if ! remove_volume_temp; then fail 'verified host backup exists, but temporary volume copy cleanup failed'; fi
 CLEAN_TEMP=0
-docker rm "$CONTAINER_ID" >/dev/null
+"${DOCKER[@]}" rm "$CONTAINER_ID" >/dev/null
 CLEAN_CONTAINER=0
 CONTAINER_ID=''
 

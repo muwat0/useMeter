@@ -25,21 +25,22 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 if [[ "$COMPOSE_FILE" != /* ]]; then COMPOSE_FILE="$PROJECT_DIR/$COMPOSE_FILE"; fi
 [[ -f "$COMPOSE_FILE" ]] || fail 'Compose file is missing'
 [[ "$COMPOSE_SERVICE" =~ ^[A-Za-z0-9_.-]+$ ]] || fail 'invalid Compose service name'
-command -v docker >/dev/null 2>&1 || fail 'Docker CLI is unavailable'
+[[ -x '/usr/bin/docker' ]] || command -v docker >/dev/null 2>&1 || fail 'Docker CLI is unavailable'
+DOCKER=(sudo -n /usr/bin/docker)
 
 IMAGE_ID="${USEMETER_DRILL_IMAGE:-}"
 if [[ -z "$IMAGE_ID" ]]; then
-  CONTAINER_LIST="$(docker compose --project-directory "$PROJECT_DIR" --file "$COMPOSE_FILE" ps -q "$COMPOSE_SERVICE")" || fail 'could not find a running useMeter container'
+  CONTAINER_LIST="$("${DOCKER[@]}" compose --project-directory "$PROJECT_DIR" --file "$COMPOSE_FILE" ps -q "$COMPOSE_SERVICE")" || fail 'could not find a running useMeter container'
   CONTAINER_ID=''
   IFS= read -r CONTAINER_ID <<< "$CONTAINER_LIST"
   [[ -n "$CONTAINER_ID" ]] || fail 'no running useMeter container; set USEMETER_DRILL_IMAGE to a built image'
-  IMAGE_ID="$(docker inspect --format '{{.Image}}' "$CONTAINER_ID")" || fail 'could not inspect the useMeter image'
+  IMAGE_ID="$("${DOCKER[@]}" inspect --format '{{.Image}}' "$CONTAINER_ID")" || fail 'could not inspect the useMeter image'
 fi
 [[ "$IMAGE_ID" =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'USEMETER_DRILL_IMAGE must be an image digest'
 
 # This container has no network, no writable root filesystem, no production volume,
 # and only read-only mounts for the candidate and validator source.
-docker run --rm \
+"${DOCKER[@]}" run --rm \
   --user "$(id -u):$(id -g)" \
   --network none \
   --read-only \
