@@ -12,6 +12,7 @@ services:
       NODE_ENV: production
       PORT: "3100"
       DATABASE_PATH: /app/data/usage.db
+      SNAPSHOT_RETENTION_DAYS: ${SNAPSHOT_RETENTION_DAYS:-7}
       USAGE_MASTER_KEY: ${USAGE_MASTER_KEY:?USAGE_MASTER_KEY must be set}
       TRUST_PROXY: ${TRUST_PROXY:-false}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
