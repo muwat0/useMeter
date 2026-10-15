@@ -20,6 +20,8 @@ interface LegalPageCopy {
 
 interface LegalCopy {
   languageLabel: string;
+  languageSwitchLabel: string;
+  githubRepositoryLabel: string;
   navigationLabel: string;
   themeLabel: string;
   themeHelp: string;
@@ -31,9 +33,59 @@ interface LegalCopy {
   pages: Record<LegalPage, LegalPageCopy>;
 }
 
+const GITHUB_REPOSITORY_URL = "https://github.com/muwat0/useMeter";
+const GITHUB_ICON_HTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.48 2 2 6.59 2 12.26c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49v-1.7c-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .08 1.53 1.05 1.53 1.05.9 1.59 2.35 1.13 2.92.86.09-.67.35-1.13.64-1.39-2.22-.26-4.56-1.15-4.56-5.09 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.31.1-2.73 0 0 .84-.28 2.75 1.05a9.15 9.15 0 0 1 5.01 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.42.2 2.47.1 2.73.64.72 1.03 1.64 1.03 2.76 0 3.95-2.35 4.82-4.59 5.08.36.32.68.95.68 1.91v2.83c0 .27.18.6.69.49A10.28 10.28 0 0 0 22 12.26C22 6.59 17.52 2 12 2Z"/></svg>';
+
+export const LEGAL_PAGE_PREFERENCE_SCRIPT = `(() => {
+  const root = document.documentElement;
+  const query = new URLSearchParams(window.location.search);
+  const hasExplicitLanguage = query.has("lang");
+  const requestedLanguage = query.get("lang");
+  let savedLanguage = null;
+  try { savedLanguage = window.localStorage.getItem("usage_lang"); } catch {}
+  const language = hasExplicitLanguage
+    ? (requestedLanguage === "en" ? "en" : "tr")
+    : (savedLanguage === "tr" || savedLanguage === "en"
+      ? savedLanguage
+      : ((window.navigator.language || "").toLowerCase().startsWith("tr") ? "tr" : "en"));
+  if (!hasExplicitLanguage && root.lang !== language) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("lang", language);
+    window.location.replace(url.toString());
+    return;
+  }
+  try { window.localStorage.setItem("usage_lang", language); } catch {}
+  let mode = "dark";
+  try { if (window.localStorage.getItem("usage_mode") === "light") mode = "light"; } catch {}
+  root.dataset.theme = mode;
+  const accentColors = {
+    amber: "#ff9849",
+    emerald: "#10b981",
+    cyan: "#06b6d4",
+    violet: "#a855f7",
+    slate: "#38bdf8"
+  };
+  try {
+    const accent = accentColors[window.localStorage.getItem("usage_accent") || ""];
+    if (accent) root.style.setProperty("--accent", accent);
+  } catch {}
+  window.addEventListener("DOMContentLoaded", () => {
+    const toggle = document.getElementById("theme-toggle");
+    if (!(toggle instanceof HTMLInputElement)) return;
+    toggle.checked = mode === "light";
+    toggle.addEventListener("change", () => {
+      mode = toggle.checked ? "light" : "dark";
+      root.dataset.theme = mode;
+      try { window.localStorage.setItem("usage_mode", mode); } catch {}
+    });
+  });
+})();`;
+
 const LEGAL_COPY: Record<LegalLanguage, LegalCopy> = {
   tr: {
     languageLabel: "Dil seçimi",
+    languageSwitchLabel: "Dili İngilizceye çevir",
+    githubRepositoryLabel: "GitHub deposu",
     navigationLabel: "Yasal ve destek sayfaları",
     themeLabel: "Aydınlık tema",
     themeHelp: "Aydınlık temaya geç",
@@ -138,6 +190,8 @@ const LEGAL_COPY: Record<LegalLanguage, LegalCopy> = {
   },
   en: {
     languageLabel: "Language selection",
+    languageSwitchLabel: "Switch to Turkish",
+    githubRepositoryLabel: "GitHub repository",
     navigationLabel: "Legal and support pages",
     themeLabel: "Light theme",
     themeHelp: "Switch to light theme",
@@ -259,10 +313,8 @@ export function renderLegalPageHtml(options: { page: LegalPage; lang?: LegalLang
   const language = options.lang ?? "tr";
   const copy = LEGAL_COPY[language];
   const page = copy.pages[options.page];
-  const languageOptions: readonly [LegalLanguage, string][] = [
-    ["tr", "TR"],
-    ["en", "EN"],
-  ];
+  const alternateLanguage: LegalLanguage = language === "tr" ? "en" : "tr";
+  const languageFlag = language === "tr" ? "🇹🇷" : "🇬🇧";
   const sections = page.sections.map(section => `
       <section class="content-section">
         <h2>${section.heading}</h2>
@@ -280,15 +332,20 @@ export function renderLegalPageHtml(options: { page: LegalPage; lang?: LegalLang
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="dark light">
   <title>${page.title} · useMeter</title>
+  <script>${LEGAL_PAGE_PREFERENCE_SCRIPT}</script>
   <style>
     :root { color-scheme: dark; --page-bg:#090a0d; --surface:#111318; --border:#252a34; --muted:#171a21; --text:#f4f4f6; --text-muted:#a2a8b5; --accent:#ff9849; --accent-soft:rgba(255,152,73,.12); }
-    :root:has(#theme-toggle:checked) { color-scheme:light; --page-bg:#f7f8fb; --surface:#fff; --border:#e1e5ec; --muted:#f1f3f7; --text:#172033; --text-muted:#5e687a; --accent:#c45112; --accent-soft:rgba(196,81,18,.1); }
+    :root[data-theme="light"],:root:has(#theme-toggle:checked) { color-scheme:light; --page-bg:#f7f8fb; --surface:#fff; --border:#e1e5ec; --muted:#f1f3f7; --text:#172033; --text-muted:#5e687a; --accent:#c45112; --accent-soft:rgba(196,81,18,.1); }
     * { box-sizing:border-box; }
     body { margin:0; min-height:100vh; display:flex; flex-direction:column; background:var(--page-bg); color:var(--text); font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; line-height:1.6; transition:background-color .18s ease,color .18s ease; }
     a { color:inherit; }
     .topbar { border-bottom:1px solid var(--border); background:var(--surface); }
-    .topbar-inner { width:min(100% - 40px,1040px); min-height:68px; margin:0 auto; display:flex; align-items:center; justify-content:space-between; gap:20px; }
+    .topbar-inner { width:min(100% - 40px,1040px); min-height:68px; margin:0 auto; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:20px; }
     .brand { color:var(--text); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:18px; font-weight:800; letter-spacing:.04em; text-decoration:none; white-space:nowrap; }
+    .brand-group { display:flex; align-items:center; gap:10px; }
+    .github-link { width:36px; height:36px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text-muted); text-decoration:none; transition:color .18s,border-color .18s; }
+    .github-link:hover,.github-link:focus-visible { border-color:var(--accent); color:var(--text); }
+    .github-link:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
     .brand-accent { color:var(--accent); }
     .controls { display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
     .control { min-height:36px; display:inline-flex; align-items:center; justify-content:center; gap:7px; padding:6px 10px; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text-muted); font:inherit; font-size:12px; font-weight:650; text-decoration:none; cursor:pointer; }
@@ -319,14 +376,19 @@ export function renderLegalPageHtml(options: { page: LegalPage; lang?: LegalLang
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="/" aria-label="useMeter">use<span class="brand-accent">Meter</span></a>
+      <div class="brand-group">
+        <a class="brand" href="/" aria-label="useMeter">use<span class="brand-accent">Meter</span></a>
+        <a class="github-link" href="${GITHUB_REPOSITORY_URL}" aria-label="${copy.githubRepositoryLabel}" title="${copy.githubRepositoryLabel}">${GITHUB_ICON_HTML}</a>
+      </div>
       <div class="controls">
         <label class="control theme-switch" title="${copy.themeHelp}">
           <input id="theme-toggle" type="checkbox" aria-label="${copy.themeHelp}">
           <span aria-hidden="true">☼</span><span class="theme-label">${copy.themeLabel}</span>
         </label>
-        <nav class="controls" aria-label="${copy.languageLabel}">
-          ${languageOptions.map(([value, label]) => `<a class="control" href="/${options.page}?lang=${value}" lang="${value}" hreflang="${value}"${value === language ? ' aria-current="page"' : ""}>${label}</a>`).join("")}
+        <nav aria-label="${copy.languageLabel}">
+          <a class="control" href="/${options.page}?lang=${alternateLanguage}" lang="${alternateLanguage}" hreflang="${alternateLanguage}" aria-label="${copy.languageSwitchLabel}" title="${copy.languageSwitchLabel}">
+            <span aria-hidden="true">${languageFlag}</span><span>${language.toUpperCase()}</span>
+          </a>
         </nav>
       </div>
     </div>

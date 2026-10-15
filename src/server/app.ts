@@ -21,7 +21,7 @@ import {
 import { getProviderCatalog } from "../core/providers/catalog";
 import { join } from "path";
 import { renderAccountRecoveryPageHtml } from "./account-pages";
-import { renderLegalPageHtml } from "./legal-pages";
+import { LEGAL_PAGE_PREFERENCE_SCRIPT, renderLegalPageHtml } from "./legal-pages";
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
 import * as net from "node:net";
 import { createHash, randomUUID } from "crypto";
@@ -66,6 +66,7 @@ import { OAuthCapacityError, OAuthSessionStore, type OAuthSession } from "../cor
 
 const OAUTH_MAX_SESSION_TTL_MS = 10 * 60 * 1000;
 const OAUTH_MAX_SESSION_TTL_SECONDS = OAUTH_MAX_SESSION_TTL_MS / 1_000;
+const OPENROUTER_CALLBACK_PATH = "/api/oauth/openrouter/callback";
 const NO_OP: () => void = () => {};
 
 const ACCOUNT_RECOVERY_CSP = [
@@ -82,7 +83,7 @@ const ACCOUNT_RECOVERY_CSP = [
 ].join("; ");
 const LEGAL_PAGE_CSP = [
   "default-src 'none'",
-  "script-src 'none'",
+  `script-src 'sha256-${createHash("sha256").update(LEGAL_PAGE_PREFERENCE_SCRIPT).digest("base64")}'`,
   "style-src 'unsafe-inline'",
   "connect-src 'none'",
   "img-src 'none'",
@@ -162,6 +163,7 @@ interface PendingOAuthData {
   googleRedirectUri?: string;
   devinVerifier?: string;
   callbackVerifier?: string;
+  openRouterCallbackUrl?: string;
   authorityTokenHash?: string;
   requestTokenHash?: string;
 }
@@ -174,6 +176,7 @@ function clearOAuthSecrets(data: PendingOAuthData | undefined): void {
   data.googleRedirectUri = undefined;
   data.devinVerifier = undefined;
   data.callbackVerifier = undefined;
+  data.openRouterCallbackUrl = undefined;
   data.authorityTokenHash = undefined;
   data.requestTokenHash = undefined;
 }
@@ -202,24 +205,46 @@ function requestIsSecure(c: AppContext): boolean {
   return process.env["NODE_ENV"] === "production" || new URL(c.req.url).protocol === "https:";
 }
 
-function originAllowed(c: AppContext, allowedOrigins?: string[] | "*"): boolean {
-  const origin = c.req.header("Origin");
-  if (!origin) return true;
-  let reqOrigin: string;
+function trustedRequestOrigin(c: AppContext): string | undefined {
   try {
     const requestUrl = new URL(c.req.url);
-    reqOrigin = requestUrl.origin;
+    let requestOrigin = requestUrl.origin;
     const trustProxy = process.env["TRUST_PROXY"] === "true" || process.env["TRUST_PROXY"] === "1";
     if (trustProxy) {
       const forwardedProto = c.req.header("X-Forwarded-Proto")?.split(",")[0]?.trim();
       const forwardedHost = c.req.header("X-Forwarded-Host")?.split(",")[0]?.trim() || c.req.header("Host")?.trim();
       if ((forwardedProto === "http" || forwardedProto === "https") && forwardedHost) {
-        reqOrigin = `${forwardedProto}://${forwardedHost}`;
+        const forwardedUrl = new URL(`${forwardedProto}://${forwardedHost}`);
+        if (
+          forwardedUrl.username ||
+          forwardedUrl.password ||
+          forwardedUrl.pathname !== "/" ||
+          forwardedUrl.search ||
+          forwardedUrl.hash
+        ) return undefined;
+        requestOrigin = forwardedUrl.origin;
       }
     }
+    return requestOrigin;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+function openRouterCallbackUrl(c: AppContext): string | undefined {
+  const requestOrigin = trustedRequestOrigin(c);
+  if (!requestOrigin) return undefined;
+  const url = new URL(requestOrigin);
+  const isLoopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+  if (url.protocol !== "https:" && !isLoopback) return undefined;
+  return new URL(OPENROUTER_CALLBACK_PATH, url).toString();
+}
+
+function originAllowed(c: AppContext, allowedOrigins?: string[] | "*"): boolean {
+  const origin = c.req.header("Origin");
+  if (!origin) return true;
+  const reqOrigin = trustedRequestOrigin(c);
+  if (!reqOrigin) return false;
   if (origin === reqOrigin) return true;
   if (allowedOrigins) {
     return isOriginAllowed(origin, {
@@ -285,6 +310,7 @@ export interface ServerOptions {
   assetRevision?: string;
   distDir?: string;
   googleOAuthExchange?: typeof exchangeGoogleCode;
+  openRouterOAuthExchange?: typeof exchangeOpenRouterCode;
   oauthNow?: () => number;
 }
 
@@ -471,6 +497,33 @@ export function createServer(
     return () => requestSignal.removeEventListener("abort", cancel);
   }
   const googleOAuthExchange = options?.googleOAuthExchange ?? exchangeGoogleCode;
+  const openRouterOAuthExchange = options?.openRouterOAuthExchange ?? exchangeOpenRouterCode;
+
+  async function completeOpenRouterOAuthCredential(
+    session: PendingOAuthSession,
+    code: string,
+  ): Promise<{ saved: StoredCredential; accountLabel: string } | null> {
+    if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return null;
+    const verifier = session.data.callbackVerifier;
+    if (!verifier) throw new Error("Authorization session invalid");
+    session.data.callbackVerifier = undefined;
+    const keyResult = await openRouterOAuthExchange(code, verifier, session.signal);
+    if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return null;
+    const accountLabel = keyResult.label || "OpenRouter";
+    const saved = await poller.validateAndSaveCredential(session.ownerId, {
+      ownerId: session.ownerId,
+      provider: "openrouter",
+      accountLabel,
+      credentialType: "api_key",
+      secret: keyResult.apiKey,
+      metadata: { source: "oauth-pkce" },
+    }, "preserve", {
+      signal: session.signal,
+      beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
+    });
+    return { saved, accountLabel };
+  }
+
 
   async function validateAndSaveGoogleCredential(
     session: PendingOAuthSession,
@@ -598,26 +651,6 @@ export function createServer(
         });
         return { saved, accountLabel };
       }
-      case "openrouter": {
-        const verifier = session.data.callbackVerifier;
-        if (!verifier) throw new Error("Authorization session invalid");
-        session.data.callbackVerifier = undefined;
-        const keyResult = await exchangeOpenRouterCode(code, verifier, session.signal);
-        if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return null;
-        const accountLabel = keyResult.label || "OpenRouter";
-        const saved = await poller.validateAndSaveCredential(session.ownerId, {
-          ownerId: session.ownerId,
-          provider: "openrouter",
-          accountLabel,
-          credentialType: "api_key",
-          secret: keyResult.apiKey,
-          metadata: { source: "oauth-pkce" },
-        }, "preserve", {
-          signal: session.signal,
-          beforeCommit: () => oauthAuthorityActive(session) && oauthSessions.admitCommit(session),
-        });
-        return { saved, accountLabel };
-      }
       case "zai": {
         const keyResult = await exchangeZaiCode(code, session.sessionId, session.signal);
         if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) return null;
@@ -704,6 +737,7 @@ export function createServer(
       path.startsWith("/assets/") ||
       path === "/api/oauth/google/callback" ||
       path === "/api/oauth/devin/callback" ||
+      path === "/api/oauth/openrouter/callback" ||
       ((path === "/login" || path === "/register" || path === "/forgot-password" || path === "/reset-password") && c.req.method === "GET") ||
       ((path === "/privacy" || path === "/terms" || path === "/security" || path === "/support") && c.req.method === "GET") ||
       ((path === "/invite" || path.startsWith("/invite/")) && c.req.method === "GET") ||
@@ -1702,7 +1736,7 @@ export function createServer(
     if (!sessionId) return c.json({ success: false, error: "Invalid callback request" }, 400);
 
     const session = oauthSessions.getOwned(sessionId, user.id);
-    if (!session || !["antigravity", "anthropic", "google-gemini-cli", "openrouter", "zai"].includes(session.provider)) {
+    if (!session || !["antigravity", "anthropic", "google-gemini-cli", "zai"].includes(session.provider)) {
       return c.json({ success: false, error: "Invalid or expired authorization session" }, 404);
     }
     if (session.status !== "pending") {
@@ -1741,9 +1775,6 @@ export function createServer(
           redirectUri: GEMINI_CLI_REDIRECT_URI,
           expectedState: session.sessionId,
         });
-        break;
-      case "openrouter":
-        callback = parseOAuthManualInput(request["callbackInput"], { mode: "code" });
         break;
       case "zai":
         callback = parseOAuthManualInput(request["callbackInput"], {
@@ -1856,6 +1887,57 @@ export function createServer(
       return successPage("Google Login Failed", "Authorization failed. You can close this tab.", "#f43f5e");
     }
   });
+  app.get(OPENROUTER_CALLBACK_PATH, async c => {
+    const callbackUrl = openRouterCallbackUrl(c);
+    const params = parseOAuthCallbackParameters(new URL(c.req.url).searchParams);
+    const session = params ? oauthSessions.get(params.state) : undefined;
+    const successPage = (title: string, message: string, color: string) =>
+      c.html(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:system-ui,sans-serif;background:#0a0a0b;color:${color};text-align:center;padding:50px"><h2>${title}</h2><p style="color:#a1a1aa">${message}</p><script>setTimeout(()=>window.close(),1500)</script></body></html>`);
+
+    if (!params) return c.html("Invalid authorization response.", 400);
+    if (
+      !session ||
+      session.provider !== "openrouter" ||
+      !session.data.openRouterCallbackUrl ||
+      session.data.openRouterCallbackUrl !== callbackUrl
+    ) {
+      return c.html("Invalid or expired authorization session.", 400);
+    }
+    if (!oauthAuthorityActive(session)) {
+      oauthSessions.cancel(session.sessionId, session.ownerId);
+      return c.html("Invalid or expired authorization session.", 400);
+    }
+    if (session.status !== "pending" || !oauthSessions.claim(session)) {
+      return c.html("Authorization response already used.", 400);
+    }
+    if (!session.data.callbackVerifier) {
+      oauthSessions.fail(session, "Authorization session invalid");
+      return c.html("Invalid or expired authorization session.", 400);
+    }
+    if (params.providerError) {
+      oauthSessions.fail(session, "Authorization was denied");
+      return successPage("OpenRouter Login Failed", "Authorization was denied. You can close this tab.", "#f43f5e");
+    }
+
+    try {
+      const completion = await completeOpenRouterOAuthCredential(session, params.code!);
+      if (!completion || !oauthSessions.complete(session, completion.accountLabel)) {
+        return successPage("OpenRouter Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
+      }
+      return successPage("OpenRouter Login Successful", "You can close this tab and return to useMeter.", "#10b981");
+    } catch (error) {
+      if (!oauthSessions.isActive(session) || !oauthAuthorityActive(session)) {
+        return successPage("OpenRouter Login Failed", "Authorization session expired. You can close this tab.", "#f43f5e");
+      }
+      if (error instanceof PollerAdmissionError) {
+        failPollerAdmission(session);
+        return pollerAdmissionHtmlResponse(c, error);
+      }
+      oauthSessions.fail(session, "Authorization failed");
+      return successPage("OpenRouter Login Failed", "Authorization failed. You can close this tab.", "#f43f5e");
+    }
+  });
+
 
   app.post("/api/oauth/claude/initiate", c => {
     const user = c.get("user");
@@ -2297,14 +2379,25 @@ export function createServer(
 
   app.post("/api/oauth/openrouter/initiate", c => {
     const user = c.get("user");
+    const callbackUrl = openRouterCallbackUrl(c);
+    if (!callbackUrl) {
+      return c.json({
+        success: false,
+        error: "OpenRouter automatic authorization requires HTTPS, or a loopback address for local development. Configure TRUST_PROXY with trusted HTTPS proxy headers when TLS terminates upstream.",
+      }, 400);
+    }
+
     let reservation: PendingOAuthSession | undefined;
     let detachRequestAbort = NO_OP;
     try {
       reservation = reserveOAuth(c, user.id, "openrouter");
       if (!reservation) return oauthCapacityResponse(c);
       detachRequestAbort = bindOAuthReservationToRequest(c, reservation);
-      const { authUrl, verifier, sessionId } = initiateOpenRouterAuth();
-      if (!activateOAuth(reservation, sessionId, { callbackVerifier: verifier })) {
+      const { authUrl, verifier, sessionId } = initiateOpenRouterAuth(callbackUrl);
+      if (!activateOAuth(reservation, sessionId, {
+        callbackVerifier: verifier,
+        openRouterCallbackUrl: callbackUrl,
+      })) {
         oauthSessions.cancel(reservation.sessionId, user.id);
         return c.json({ success: false, error: "Failed to initiate authorization" }, 500);
       }
@@ -2315,8 +2408,7 @@ export function createServer(
           authUrl,
           sessionId,
           expiresIn: OAUTH_MAX_SESSION_TTL_SECONDS,
-          manualCallback: true,
-          manualInput: "code",
+          manualCallback: false,
         },
       });
     } catch {

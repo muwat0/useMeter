@@ -37,6 +37,7 @@ describe("Provider catalog", () => {
     for (const entry of PROVIDER_CATALOG) counts[entry.supportTier] += 1;
 
     expect(counts).toEqual({ live_verified: 4, connection_verified: 1, synthetic_only: 12 });
+    expect(findCatalogEntry("openrouter")?.authModes).toEqual(["oauth_callback", "api_key"]);
     expect(PROVIDER_CATALOG
       .filter(entry => entry.supportTier === "live_verified")
       .map(entry => entry.id)

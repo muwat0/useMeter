@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { afterEach, describe, expect, it } from "bun:test";
 import { StorageVault } from "../src/core/storage/vault";
 import { AuthService } from "../src/core/auth/auth";
@@ -41,7 +43,8 @@ describe("public legal and support pages", () => {
 
       const csp = response.headers.get("Content-Security-Policy");
       expect(csp).toContain("default-src 'none'");
-      expect(csp).toContain("script-src 'none'");
+      expect(csp).toContain("script-src 'sha256-");
+      expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/);
       expect(csp).toContain("style-src 'unsafe-inline'");
       expect(csp).toContain("img-src 'none'");
       expect(csp).toContain("font-src 'none'");
@@ -53,7 +56,10 @@ describe("public legal and support pages", () => {
       const html = await response.text();
       expect(html).toContain(route.titleTr);
       expect(html).not.toMatch(/<(?:script|link|img|iframe|source)\b[^>]*\b(?:src|href)\s*=\s*["'](?:https?:)?\/\//i);
-      expect(html).not.toMatch(/<script\b/i);
+      const inlineScript = html.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "";
+      const scriptHash = createHash("sha256").update(inlineScript).digest("base64");
+      expect(inlineScript).not.toBe("");
+      expect(csp).toContain(`script-src 'sha256-${scriptHash}'`);
       expect(html).toContain("id=\"theme-toggle\"");
       expect(html).toContain("?lang=tr");
       expect(html).toContain("?lang=en");

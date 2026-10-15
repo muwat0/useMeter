@@ -121,7 +121,7 @@ const I18N: Record<string, Record<string, string>> = {
     xaiTitle: "xAI Grok", xaiDesc: "OAuth ile bildirilen kullanım yüzdesi",
     kimiTitle: "Kimi Code (Moonshot)", kimiDesc: "Hesap bağlandı; sağlayıcı kota bildirmiyor",
     geminiCliTitle: "Google Gemini CLI", geminiCliDesc: "Code Assist & Gemini 2.5/3 Pro kotaları",
-    openrouterTitle: "OpenRouter", openrouterDesc: "PKCE kodu yapıştırma veya API anahtarı; bakiye",
+    openrouterTitle: "OpenRouter", openrouterDesc: "Tarayıcı OAuth'u otomatik tamamlanır; kod yapıştırma gerekmez. API anahtarıyla bakiye desteği.",
     zaiTitle: "Zhipu AI (GLM / BigModel)", zaiDesc: "Z.ai kota penceresi (%)",
     devinTitle: "Devin AI", devinDesc: "Uyumlu CLI oturum tokenı; barındırılan yönlendirme deneysel",
     devinManualAction: "Manuel token",
@@ -224,7 +224,7 @@ const I18N: Record<string, Record<string, string>> = {
     xaiTitle: "xAI Grok", xaiDesc: "OAuth-reported usage percentage",
     kimiTitle: "Kimi Code (Moonshot)", kimiDesc: "Account connected; provider reports no quota data",
     geminiCliTitle: "Google Gemini CLI", geminiCliDesc: "Code Assist & Gemini 2.5/3 Pro quotas",
-    openrouterTitle: "OpenRouter", openrouterDesc: "PKCE code paste or API key; balance",
+    openrouterTitle: "OpenRouter", openrouterDesc: "Browser OAuth completes automatically; no code paste needed. API key balance is also supported.",
     zaiTitle: "Zhipu AI (GLM / BigModel)", zaiDesc: "Z.ai usage-window percentages",
     devinTitle: "Devin AI", devinDesc: "Compatible CLI session token; hosted redirect is experimental",
     devinManualAction: "Manual token",
@@ -1993,7 +1993,10 @@ function Dashboard() {
           <div className="min-w-0 flex items-center gap-2.5 sm:gap-3">
             <div className="flex items-center gap-2">
               <span className="font-extrabold tracking-wider text-appText text-lg font-mono">use<span className="text-appAccent">Meter</span></span>
-              <span id="syncLiveDot" className="w-2 h-2 rounded-full bg-emerald-500 ring-4 ring-emerald-500/20" title={syncText} />
+              <a href="https://github.com/muwat0/useMeter" aria-label={lang === 'tr' ? 'GitHub deposu' : 'GitHub repository'} title={lang === 'tr' ? 'GitHub deposu' : 'GitHub repository'}
+                className="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center focus-visible:ring-2 focus-visible:ring-appAccent focus-visible:ring-offset-2 focus-visible:ring-offset-appSurface">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.48 2 2 6.59 2 12.26c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49v-1.7c-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .08 1.53 1.05 1.53 1.05.9 1.59 2.35 1.13 2.92.86.09-.67.35-1.13.64-1.39-2.22-.26-4.56-1.15-4.56-5.09 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.31.1-2.73 0 0 .84-.28 2.75 1.05a9.15 9.15 0 0 1 5.01 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.42.2 2.47.1 2.73.64.72 1.03 1.64 1.03 2.76 0 3.95-2.35 4.82-4.59 5.08.36.32.68.95.68 1.91v2.83c0 .27.18.6.69.49A10.28 10.28 0 0 0 22 12.26C22 6.59 17.52 2 12 2Z"/></svg>
+              </a>
             </div>
             <div className="hidden sm:block h-4 w-px bg-appBorder" />
             <span id="headerSyncStatus" className="min-w-0 truncate text-xs text-appTextMuted tracking-tight font-medium">{syncText}</span>
@@ -2131,10 +2134,10 @@ function Dashboard() {
         <div className="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-3">
           <span className="text-[11px] text-appTextMuted">{lang === 'tr' ? 'Bilgi ve destek' : 'Information & support'}</span>
           <nav aria-label={lang === 'tr' ? 'Yasal ve destek bağlantıları' : 'Legal and support links'} className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-appTextMuted">
-            <a href="/privacy" className="hover:text-appText transition">{lang === 'tr' ? 'Gizlilik' : 'Privacy'}</a>
-            <a href="/terms" className="hover:text-appText transition">{lang === 'tr' ? 'Kullanım Koşulları' : 'Terms'}</a>
-            <a href="/security" className="hover:text-appText transition">{lang === 'tr' ? 'Güvenlik' : 'Security'}</a>
-            <a href="/support" className="hover:text-appText transition">{lang === 'tr' ? 'Destek' : 'Support'}</a>
+            <a href={`/privacy?lang=${lang}`} className="hover:text-appText transition">{lang === 'tr' ? 'Gizlilik' : 'Privacy'}</a>
+            <a href={`/terms?lang=${lang}`} className="hover:text-appText transition">{lang === 'tr' ? 'Kullanım Koşulları' : 'Terms'}</a>
+            <a href={`/security?lang=${lang}`} className="hover:text-appText transition">{lang === 'tr' ? 'Güvenlik' : 'Security'}</a>
+            <a href={`/support?lang=${lang}`} className="hover:text-appText transition">{lang === 'tr' ? 'Destek' : 'Support'}</a>
           </nav>
         </div>
       </footer>

@@ -258,7 +258,7 @@ The limits are process-local. Queue-full or admission-timeout responses use HTTP
 
 The documented measurements are local synthetic fake-adapter runs, not tests against this VM, the deployed service, real provider APIs, or real users. See the README and specification for the measured scenarios and their limitations. They do not establish production freshness, free-tier safety, or readiness for paid advertising/mass signup. No source/configuration changes, deployment, or live provider calls are part of this documentation update.
 
-## Hosted manual OAuth callbacks
+## Hosted OAuth completion modes
 
 Claude, Gemini CLI, and Z.ai retain their embedded clients' registered local redirect URIs, but useMeter does not open a callback listener on the remote server. After authorization, paste the final full redirect URL into the provider's manual form. The shared authenticated endpoint is `POST /api/oauth/manual`; session ownership and the stored provider select the exchange, not fields supplied by the browser.
 
@@ -267,13 +267,13 @@ Claude, Gemini CLI, and Z.ai retain their embedded clients' registered local red
 | Claude | `http://localhost:54545/callback?code=...&state=...`; `code#state` is also accepted. |
 | Gemini CLI | `http://127.0.0.1:8085/oauth2callback?code=...&state=...` |
 | Z.ai | `http://127.0.0.1:9999/callback?code=...&state=...` |
-| OpenRouter | The opaque, single-use code displayed on the authorization page. |
+| OpenRouter | Automatic same-origin PKCE redirect to `/api/oauth/openrouter/callback`; no code or URL paste. |
 
-All URL inputs must match the stored attempt's exact registered URI and state. The server never fetches the pasted address. Invalid inputs do not consume a valid attempt; valid inputs are claimed before exchange, and cancellation/expiry is checked before credential persistence. This avoids same-port interference between users without changing any upstream redirect whitelist.
+For manual URL inputs, the server checks the stored attempt's exact registered URI and state and never fetches the pasted address. Invalid inputs do not consume a valid attempt; valid inputs are claimed before exchange, and cancellation/expiry is checked before credential persistence. This avoids same-port interference between users without changing any upstream redirect whitelist.
 
-OpenRouter uses its [official headless PKCE flow](https://openrouter.ai/docs/guides/overview/auth/oauth): `callback_url` is omitted, S256 is required, and the code expires after ten minutes. Headless mode does not return state; the owned session and stored PKCE verifier bind the code exchange. Pasted code is opaque rather than restricted to an invented alphabet.
+OpenRouter uses its [official S256 PKCE callback flow](https://openrouter.ai/docs/guides/overview/auth/oauth): useMeter sends `callback_url` for the same-origin `/api/oauth/openrouter/callback` and a CSPRNG `state`, which OpenRouter returns unchanged after authorization. The server keeps the verifier and binds the callback to the owner’s session; neither the authorization code nor callback URL is pasted. Public callbacks require HTTPS, except for localhost development. When TLS terminates at the reverse proxy, set `TRUST_PROXY=true` only for the controlled proxy path and preserve `Host` and `X-Forwarded-Proto`; the application then derives the HTTPS callback origin from those trusted headers. Without a trustworthy HTTPS origin, initiation fails instead of emitting an internal HTTP callback.
 
-These hosted paths are exercised with synthetic accounts and injected upstream responses. Actual provider account eligibility, consent, and quota availability still require that account's verification; no fabricated quota or automatic login claim is made.
+These hosted paths use synthetic exchanges and validation adapters. The OpenRouter automatic callback remains `synthetic_only`; actual provider-account eligibility, consent, and quota availability have not been verified, and no real-account or quota claim is made.
 
 ## Google OAuth in Docker
 

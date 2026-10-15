@@ -1,49 +1,49 @@
-# ADR-0005: Yıkıcı Olmayan Bayat ve Bozulmuş Kullanım Durumu Yönetimi (Non-Destructive Stale and Degraded Usage State)
+# ADR-0005: Non-Destructive Stale and Degraded Usage State Management
 
-- **Durum:** Kabul Edildi
-- **Tarih:** 2026-09-15
-- **Karar Vericiler:** Murat
-- **İlgili Belgeler:** [CONTEXT.md](../../CONTEXT.md), [docs/SPEC.md](../SPEC.md), [ADR-0001](0001-self-hosted-bff-architecture.md), [ADR-0002](0002-dual-engine-tracking-model.md), [ADR-0003](0003-multi-tenant-session-authentication.md), [ADR-0004](0004-security-perimeter-and-invitation-onboarding.md)
-
----
-
-## 1. Bağlam ve Problem Tanımı
-
-useMeter; geliştiricilerin ve ekiplerin birden fazla yapay zekâ sağlayıcısındaki (Anthropic, OpenAI, Google Cloud, DeepSeek, Cursor vb.) kota ve bakiye durumlarını gerçek zamanlı ve periyodik olarak izleyen bir sistemdir.
-
-Önceki mimaride, periyodik veya manuel bir yoklama (`fetchUsage`) ağ kesintisi, sağlayıcı API zaman aşımı, HTTP 5xx hatası veya rate limit (`HTTP 429`) nedeniyle başarısız olduğunda sistem **yıkıcı (destructive)** bir hata raporu üretiyordu:
-1. **Veri Kaybı ve Kör Nokta:** Mevcut kota limitleri (`limits: []`) tamamen siliniyor veya sıfırlanıyordu. Kullanıcı, sağlayıcının geçici bir 30 saniyelik ağ kesintisi sırasında daha önceden bilinen kotalarını (%75 doluluk, kalan bakiye vb.) göremiyor, panoda boş/hatalı kartlarla karşılaşıyordu.
-2. **Kavram Karmaşası (Kota Tükenmesi vs İletişim Hatası):** Sağlayıcının resmi olarak "kotan bitti" (%100 exhaustion) yanıtı dönmesi ile sağlayıcı sunucusuna erişilememesi (DNS/timeout/502) aynı kırmızı hata kartında harmanlanıyor; telemetri sağlığı ile gerçek kullanım tükenmesi ayırt edilemiyordu.
-3. **Kullanıcı Güvensizliği:** Geçici bir ağ dalgalanmasında arayüzün aniden kırmızıya dönmesi ve verilerin yok olması, sistemin sürekli çöktüğü algısını yaratıyordu.
-
-Bu durum, son başarılı telemetrinin korunmasını ve arayüzde açıkça "bayat/önbellekteki veri" olarak etiketlenmesini sağlayan sağlam bir durum makinesi gerektirmiştir.
+- **Status:** Accepted
+- **Date:** 2026-09-15
+- **Decision Makers:** Murat
+- **Related Documents:** [CONTEXT.md](../../CONTEXT.md), [docs/SPEC.md](../SPEC.md), [ADR-0001](0001-self-hosted-bff-architecture.md), [ADR-0002](0002-dual-engine-tracking-model.md), [ADR-0003](0003-multi-tenant-session-authentication.md), [ADR-0004](0004-security-perimeter-and-invitation-onboarding.md)
 
 ---
 
-## 2. Değerlendirilen Alternatifler
+## 1. Context and Problem Statement
 
-### Alternatif A: Hatada Salt Boş Rapor Döndürmek (Önceki Yıkıcı Yaklaşım)
-- **Gerekçe:** Hata anında en yalın davranış; son veri güvenilmez sayılarak panoda hiçbir limit gösterilmez.
-- **Red Nedenleri:**
-  - Sağlayıcıların geçici 500/503 veya ağ zaman aşımları yaygındır. Her geçici hatada kota çubuklarının kaybolması kullanıcı deneyimini bozar.
-  - Saatlik/günlük kota pencerelerinin sıfırlanma sayaçları (`resetsAt`) panodan kaybolur; kullanıcı ne zaman tekrar kota açılacağını göremez.
+useMeter is a system that monitors quota and balance status across multiple AI providers (Anthropic, OpenAI, Google Cloud, DeepSeek, Cursor, etc.) in real time and periodically for developers and teams.
 
-### Alternatif B: Hatayı Sessizce Yutmak ve Hiç Rapor Üretmemek
-- **Gerekçe:** Yoklama başarısız olursa son geçerli durum veritabanında olduğu gibi kalır, yeni anlık görüntü yazılmaz.
-- **Red Nedenleri:**
-  - Kullanıcı sağlayıcıda bir problem olduğunu (örneğin API anahtarının iptal edildiğini veya sağlayıcının çöktüğünü) fark edemez.
-  - Verinin ne kadar süredir güncellenemediği bilinemez; sistem "yalancı yeşil" (false healthy) durumuna düşer.
+In the previous architecture, when a periodic or manual poll (`fetchUsage`) failed due to a network interruption, provider API timeout, HTTP 5xx error, or rate limit (`HTTP 429`), the system produced a **destructive** error report:
+1. **Data Loss and Blind Spot:** Existing quota limits (`limits: []`) were completely deleted or reset. During a temporary 30-second network outage at the provider, users could not see previously known quotas (75% utilization, remaining balance, etc.) and encountered empty/erroneous cards on the dashboard.
+2. **Conceptual Confusion (Quota Exhaustion vs. Communication Error):** An official provider response saying “your quota is exhausted” (100% exhaustion) was conflated on the same red error card with being unable to reach the provider server (DNS/timeout/502); telemetry health and actual usage exhaustion could not be distinguished.
+3. **Loss of User Trust:** The interface suddenly turning red and data disappearing during a temporary network fluctuation gave the impression that the system was constantly crashing.
 
-### Alternatif C: Üç Durumlu Sağlık Modeli ve Yıkıcı Olmayan Son Başarılı Durum Koruması (Seçilen)
-- **Gerekçe:** Başarısız yoklamada önceki başarılı limitler (`lastGood`) korunur, ancak rapor açıkça `health: "stale"`, `stale: true`, `source: "stale"` olarak işaretlenir. Hata mesajı ve son başarılı zaman damgası (`lastGoodFetchedAt`) saklanır.
-- **Sonuç:** Kullanıcı hem kotalarını görmeye devam eder hem de verinin anlık değil önbellekten geldiğini ve arkasındaki geçici hatayı kehribar (amber) renkli bir uyarı ile anlar.
+This situation required a robust state machine that preserves the last successful telemetry and clearly labels it in the interface as “stale/cached data.”
 
 ---
 
-## 3. Alınan Kararlar
+## 2. Alternatives Considered
 
-### 1. Ayrık Sağlık Taksonomisi (`UsageReportHealth` ve `UsageReportSource`)
-`src/types.ts` sözleşmesine açık ve kesin durumlar eklenmiştir:
+### Alternative A: Return Only an Empty Report on Error (Previous Destructive Approach)
+- **Rationale:** The simplest behavior at the time of an error is to treat the last data as unreliable and show no limits on the dashboard.
+- **Reasons for Rejection:**
+  - Temporary 500/503 responses or network timeouts from providers are common. Quota bars disappearing on every transient error degrades the user experience.
+  - Reset counters (`resetsAt`) for hourly/daily quota windows disappear from the dashboard; users cannot see when quota will become available again.
+
+### Alternative B: Silently Swallow the Error and Produce No Report
+- **Rationale:** If polling fails, the last valid state remains in the database as is, and no new snapshot is written.
+- **Reasons for Rejection:**
+  - Users cannot tell that there is a problem with the provider (for example, that the API key has been revoked or the provider is down).
+  - It is impossible to know how long the data has gone without being updated; the system falls into a “false healthy” state.
+
+### Alternative C: Three-State Health Model and Non-Destructive Preservation of the Last Good State (Selected)
+- **Rationale:** On a failed poll, the previous successful limits (`lastGood`) are preserved, but the report is explicitly marked as `health: "stale"`, `stale: true`, `source: "stale"`. The error message and last successful timestamp (`lastGoodFetchedAt`) are retained.
+- **Result:** Users can continue to see their quotas and understand, through an amber warning, that the data is cached rather than current, along with the transient error behind it.
+
+---
+
+## 3. Decisions
+
+### 1. Distinct Health Taxonomy (`UsageReportHealth` and `UsageReportSource`)
+Explicit and unambiguous states have been added to the `src/types.ts` contract:
 - `UsageReportHealth`: `"healthy" | "stale" | "error"`
 - `UsageReportSource`: `"live" | "stale" | "error"`
 
@@ -65,78 +65,79 @@ export interface UsageReport {
 }
 ```
 
-### 2. Dört Durumlu Durum Makinesi (State Machine Transitions)
-Yoklayıcı katmanı (`PollerEngine`), her kimlik bilgisi için son başarılı raporu kiracı izolasyonu (`ownerId` + `credentialId`) çerçevesinde takip eder:
+### 2. Four-State State Machine (State Machine Transitions)
+The poller layer (`PollerEngine`) tracks the last successful report for each credential within tenant isolation (`ownerId` + `credentialId`):
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                             BAŞLANGIÇ                                  │
+│                             INITIAL                                      │
 └────────────────────────────────────┬────────────────────────────────────┘
                                      │
-                    İlk Yoklama      │
+                    Initial Poll    │
              ┌───────────────────────┴───────────────────────┐
-             │ Başarılı                                      │ Başarısız
+             │ Successful                                    │ Failed
              ▼                                               ▼
 ┌─────────────────────────┐                     ┌─────────────────────────┐
 │        HEALTHY          │                     │          ERROR          │
 │ source: "live"          │                     │ source: "error"         │
 │ stale: false            │                     │ stale: false            │
-│ limits: [güncel veriler]│                     │ limits: []              │
-│ lastGoodFetchedAt: t1   │                     │ lastGoodFetchedAt: yok  │
-│ error: undefined        │                     │ error: "hata detayı"    │
+│ limits: [current data]  │                     │ limits: []              │
+│ lastGoodFetchedAt: t1   │                     │ lastGoodFetchedAt: none │
+│ error: undefined        │                     │ error: "error details"  │
 └────────────┬────────────┘                     └────────────┬────────────┘
              │                                               │
-             │ Yoklama Hatası                                │ Başarılı Yoklama
+             │ Poll Error                                    │ Successful Poll
              ▼                                               ▼
 ┌─────────────────────────┐                     ┌─────────────────────────┐
-│         STALE           │ ◄── Yoklama Hatası  │        HEALTHY          │
-│ source: "stale"         │ ─────────────────── │ (Tekrar sağlıklı döner) │
+│         STALE           │ ◄── Poll Error      │        HEALTHY          │
+│ source: "stale"         │ ─────────────────── │ (Returns to healthy)    │
 │ stale: true             │                     └─────────────────────────┘
-│ limits: [t1 limitleri]  │                                  ▲
+│ limits: [t1 limits]     │                                  ▲
 │ lastGoodFetchedAt: t1   │                                  │
-│ error: "yeni hata"      │ ─────────────────────────────────┘
-└─────────────────────────┘         Yeniden Başarılı Yoklama
+│ error: "new error"      │ ─────────────────────────────────┘
+└─────────────────────────┘         Successful Poll Again
 ```
 
-1. **İlk Başarılı Yoklama (`healthy`):** Rapor `health: "healthy"`, `stale: false`, `source: "live"`, `lastGoodFetchedAt: fetchedAt` olarak üretilir ve son başarılı durum (`lastGood`) güncellenir.
-2. **Sonraki Ağ / Sağlayıcı Hatası (`stale`):** Geçerli bir `lastGood` varsa, limitler silinmez (`limits = lastGood.limits`). Rapor `health: "stale"`, `stale: true`, `source: "stale"`, `lastGoodFetchedAt: lastGood.fetchedAt` olarak işaretlenir; aktif hata mesajı `error` alanına yazılır.
-3. **İlk Seferde Hata (`error`):** Daha önce başarılı bir telemetri kaydedilmemişse, korunacak limit bulunmadığından rapor `health: "error"`, `stale: false`, `source: "error"`, `limits: []` olur.
-4. **Hatanın Düzelmesi (Self-Healing):** Sonraki yoklama başarılı olduğunda sistem doğrudan `healthy` durumuna döner; `stale` bayrağı `false` olur ve `error` temizlenir.
+1. **First Successful Poll (`healthy`):** The report is produced with `health: "healthy"`, `stale: false`, `source: "live"`, `lastGoodFetchedAt: fetchedAt`, and the last good state (`lastGood`) is updated.
+2. **Subsequent Network / Provider Error (`stale`):** If a valid `lastGood` exists, the limits are not deleted (`limits = lastGood.limits`). The report is marked with `health: "stale"`, `stale: true`, `source: "stale"`, `lastGoodFetchedAt: lastGood.fetchedAt`; the active error message is written to the `error` field.
+3. **Error on First Attempt (`error`):** If no telemetry has previously been recorded successfully, there are no limits to preserve, so the report has `health: "error"`, `stale: false`, `source: "error"`, `limits: []`.
+4. **Error Recovery (Self-Healing):** When the next poll succeeds, the system returns directly to `healthy`; the `stale` flag becomes `false` and `error` is cleared.
 
-### 3. Sağlayıcı Kota Tükenmesi ile İletişim Hatalarının Kesin Ayrımı
-- **Kota Tükenmesi (Exhaustion):** Sağlayıcı API'si başarıyla yanıt vermiş (HTTP 200) ve kotanın dolduğunu (`usedFraction >= 1.0` veya `status: "exhausted"`) bildirmiştir. Bu bir yoklama hatası DEĞİLDİR; telemetri açısından **`health: "healthy"`** ve canlı veridir. Kart normal render edilir, kota çubuğu dolu görünür.
-- **Yoklama Hatası (Transport / API Failure):** Ağ zaman aşımı, HTTP 500/502/503/504 veya geçersiz JSON yanıtları telemetri arızasıdır; `stale` veya `error` akışını tetikler.
+### 3. Clear Distinction Between Provider Quota Exhaustion and Communication Errors
+- **Quota Exhaustion (Exhaustion):** The provider API responded successfully (HTTP 200) and reported that the quota is exhausted (`usedFraction >= 1.0` or `status: "exhausted"`). This is NOT a polling error; from a telemetry perspective, it is **`health: "healthy"`** and live data. The card renders normally, with the quota bar shown as full.
+- **Polling Error (Transport / API Failure):** Network timeout, HTTP 500/502/503/504, or invalid JSON responses are telemetry failures; they trigger the `stale` or `error` flow.
 
-### 4. Veritabanı ve Kiracı İzolasyonu (Storage Vault)
-- `StorageVault` anlık görüntü kaydederken ve `getLatestUsage` çağrısında `health`, `stale`, `lastGoodFetchedAt`, `source` ve `error` alanlarını SQLite JSON/kolon düzeyinde korur.
-- Son başarılı rapor çözümlemesi daima aynı `ownerId` ve `credentialId` ile sınırlıdır; farklı kullanıcıların veya hesapların verileri birbirine asla karışmaz.
+### 4. Database and Tenant Isolation (Storage Vault)
+- `StorageVault` preserves the `health`, `stale`, `lastGoodFetchedAt`, `source`, and `error` fields at the SQLite JSON/column level when saving snapshots and in `getLatestUsage` calls.
+- Resolution of the last good report is always scoped to the same `ownerId` and `credentialId`; data from different users or accounts is never mixed.
 
-### 5. Kullanıcı Arayüzü Sunumu (UI Contract)
-- **Sağlıklı (`healthy`):** Normal kart görünümü. Canlı yeşil göstergeler.
-- **Bayat / Korumalı (`stale`):**
-  - Kartın üstünde kehribar (amber) renkli dikkat rozeti ve hata metni.
-  - "Önbellekteki veri — Son başarılı: DD.MM.YYYY HH:mm" bilgilendirme şeridi.
-  - Mevcut limitler, barlar ve sıfırlanma sayaçları (`resetsAt`) eksiksiz ve interaktif olarak gösterilmeye devam eder.
-- **İlk Hata (`error`):** Kırmızı hata bandı, boş limit alanı ve sağlayıcıya bağlanma hata açıklaması.
+### 5. User Interface Presentation (UI Contract)
+- **Healthy (`healthy`):** Normal card appearance. Live green indicators.
+- **Stale / Preserved (`stale`):**
+  - An amber warning badge and error text at the top of the card.
+  - “Cached data — Last successful: DD.MM.YYYY HH:mm” information banner.
+  - Existing limits, bars, and reset counters (`resetsAt`) continue to be displayed completely and interactively.
+- **Initial Error (`error`):** Red error band, empty limits area, and an explanation of the provider connection error.
 
-### 6. Güvenlik Sınırı: Ham Yanıt İzolasyonu (No Raw Payload Exposure)
-- Upstream sağlayıcıdan dönen ham hata yığınları (stack traces), yetkilendirme başlıkları veya ham HTTP yanıt gövdeleri anlık görüntülerde veya istemciye dönen raporlarda ASLA saklanmaz veya sızdırılmaz. Yalnızca sterilize edilmiş etki alanı hata mesajları taşınır.
+### 6. Security Boundary: Raw Response Isolation (No Raw Payload Exposure)
+- Raw error stacks (stack traces), authorization headers, or raw HTTP response bodies returned by upstream providers are NEVER stored in snapshots or exposed in reports returned to the client. Only sanitized domain error messages are carried.
+
 
 ---
 
-## 4. Takaslar ve Sonuçlar
+## 4. Trade-offs and Consequences
 
-| Yaklaşım | Avantaj | Takas / Risk | Alınan Önlem |
+| Approach | Advantage | Trade-off / Risk | Mitigation |
 |---|---|---|---|
-| **Son Başarılıyı Koruma (`stale`)** | Ağ kesintilerinde kotaların ekrandan silinmesini engeller; reset sayaçları görünür kalır. | Kullanıcı ekrandaki kotayı anlık zannedip harcama yapabilir. | Kart üzerine belirgin kehribar (amber) uyarı ve "Son başarılı güncelleme" zaman damgası yerleştirilir. |
-| **Ayrık Sağlık Sınıflandırması** | Gerçek kota tükenmesi ile altyapı arızaları birbirine karışmaz. | Tür sisteminde ve arayüzde ek alanlar (`health`, `source`, `stale`, `lastGoodFetchedAt`) yönetilir. | `src/types.ts` altında sıkı TypeScript tipleri ile standardize edilmiştir. |
-| **Bellek-İçi + Veritabanı Fallback** | Yoklayıcı yeniden başlasa bile veritabanındaki son başarılı anlık görüntüden kurtarma yapılabilir. | Eski anlık görüntünün deserialization maliyeti. | Yalnızca hata durumunda ve tekil hesap bazında çalışır; ek yük ihmal edilebilirdir. |
-| **Ham Veri Yalıtımı** | API anahtarı veya hassas sağlayıcı verisi sızıntısı riski sıfırlanır. | Detaylı ham sağlayıcı hata gövdesi frontend'de doğrudan görünmez. | Hatalar sunucu tarafında kategorize edilip yerelleştirilerek kullanıcı dostu mesajlara dönüştürülür. |
+| **Preserve Last Good (`stale`)** | Prevents quotas from disappearing from the screen during network outages; reset counters remain visible. | Users may mistake the displayed quota for current data and spend accordingly. | A prominent amber warning and “Last successful update” timestamp are placed on the card. |
+| **Distinct Health Classification** | Actual quota exhaustion and infrastructure failures are not conflated. | Additional fields (`health`, `source`, `stale`, `lastGoodFetchedAt`) must be managed in the type system and interface. | Standardized with strict TypeScript types under `src/types.ts`. |
+| **In-Memory + Database Fallback** | Recovery from the last successful snapshot in the database is possible even if the poller restarts. | Deserialization cost of the old snapshot. | Runs only on error and per individual account; the overhead is negligible. |
+| **Raw Data Isolation** | The risk of API key or sensitive provider data leakage is eliminated. | Detailed raw provider error bodies are not directly visible in the frontend. | Errors are categorized server-side and localized into user-friendly messages. |
 
 ---
 
-## 5. Doğrulama ve Kabul Kriterleri
+## 5. Verification and Acceptance Criteria
 
-1. **Birim ve Entegrasyon Testleri:** Test süitinde (`tests/poller.test.ts`, `tests/storage.test.ts`, `tests/server.test.ts`) non-destructive stale akışları, ilk hata durumları, self-healing dönüşümleri ve kiracı izolasyonu doğrulanmıştır.
-2. **Arayüz Kontrolü:** SSR render ve istemci kart render katmanında amber rozet, son güncelleme tarihi ve korunan kota barları gözlemlenmiştir.
-3. **Dokümantasyon Uyumu:** `CONTEXT.md`, `docs/SPEC.md` ve `AGENTS.md` bu karara tam uyumlu olarak güncellenmiştir.
+1. **Unit and Integration Tests:** The test suite (`tests/poller.test.ts`, `tests/storage.test.ts`, `tests/server.test.ts`) verifies non-destructive stale flows, initial error states, self-healing transitions, and tenant isolation.
+2. **Interface Check:** The amber badge, last update date, and preserved quota bars were observed in the SSR render and client-side card rendering layers.
+3. **Documentation Consistency:** `CONTEXT.md`, `docs/SPEC.md`, and `AGENTS.md` have been updated to fully align with this decision.

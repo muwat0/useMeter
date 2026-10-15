@@ -1,53 +1,54 @@
-# ADR-0002: Çift Hatlı (Hibrit) Kota ve Bakiye Takip Motoru
+# ADR-0002: Dual-Track (Hybrid) Quota and Balance Tracking Engine
 
-- **Durum:** Kabul Edildi
-- **Tarih:** 2026-09-13
-- **Karar Vericiler:** Murat
-
----
-
-## 1. Bağlam ve Problem Tanımı
-Yapay zeka servislerinin kota ve bakiye verilerini toplamak için iki farklı yöntem bulunmaktadır:
-1. **Aktif Sorgulama (Active Polling):** Sunucunun periyodik olarak sağlayıcının bakiye/kota uç noktalarına istek atması.
-2. **Pasif Başlık Yakalama (Passive Header Interception):** Kullanıcının normal model çağrıları (inference) sırasında sağlayıcıdan dönen HTTP yanıt başlıklarını (response headers) dinlemesi.
-
-Her iki yöntemin de tek başına kullanıldığında kritik eksiklikleri vardır:
-- **Salt Aktif Polling:** Sık çalıştırılırsa sağlayıcıların kullanım uç noktalarındaki IP hız sınırına (`HTTP 429`) takılır; seyrek çalıştırılırsa kullanıcının yoğun kodlama anında kotayı aniden tüketmesini 5-15 dakika boyunca fark edemez (gecikmeli alarm).
-- **Salt Pasif Yakalama:** Kullanıcı model çağrısı yapmadığı sürece güncellenmez; 5 saatlik kayan pencerenin ne zaman sıfırlandığı veya hesapta kalan net dolar bakiyesi bilinemez.
+- **Status:** Accepted
+- **Date:** 2026-09-13
+- **Decision Makers:** Murat
 
 ---
 
-## 2. Karar
+## 1. Context and Problem Statement
+There are two different methods for collecting quota and balance data from AI services:
+1. **Active Polling:** The server periodically sends requests to the provider's balance/quota endpoints.
+2. **Passive Header Interception:** Listening to the HTTP response headers returned by the provider during the user's normal model calls (inference).
 
-Sistemde **Çift Hatlı (Hibrit) Takip Motoru** uygulanacaktır:
+Both methods have critical shortcomings when used on their own:
+- **Active Polling Only:** If run frequently, it hits IP rate limits on providers' usage endpoints (`HTTP 429`); if run infrequently, it may not detect sudden quota consumption during intensive coding for 5–15 minutes (delayed alert).
+- **Passive Interception Only:** It does not update unless the user makes a model call; it cannot determine when the 5-hour rolling window resets or the account's exact remaining dollar balance.
 
-### Hat A: Aktif Yoklayıcı (Active Poller)
-- **Görev:** Net nakit bakiyelerini, hesap plan tiplerini ve durağan kota durumlarını çekmek.
-- **Çalışma Aralığı:** 5–15 dakika arasında ayarlanabilir temel periyot.
-- **Kritik Korumalar:**
-  1. **Rastgele Dağıtım (Jitter):** Hesapların sorgulama aralıklarına **±%25 rastgele sapma** eklenir. Birden fazla hesabın aynı milisaniyede aynı sağlayıcıya hücum etmesi engellenir.
-  2. **Tek-Uçuş Kilidi (Single-Flight Promise Coalescing):** Bir hesap için halihazırda yürüyen bir sorgu varken gelen yeni talepler bekletilir; mükerrer ağ çağrısı yapılmaz.
-  3. **Hata Sonrası Geri Çekilme (Backoff):** Bir endpoint 429 veya 500 dönerse, o hesap için sorgulama aralığı geçici olarak uzatılır ve son başarılı veri (stale cache) gösterilmeye devam eder.
+---
 
-### Hat B: Pasif Geçit (Ingress Proxy Middleware)
-- **Görev:** Model çağrılarından anlık kota tüketimini sıfır ek ağ maliyetiyle yakalamak.
-- **Çalışma Şekli:** Sistem, yerel ağda OpenAI uyumlu bir ters vekil sunucu (reverse proxy) açar (`http://localhost:port/v1/chat/completions`). Kullanıcının IDE'si (Cursor, Zed), CLI araçları (OMP) veya botları (n8n, Ayzek) isteklerini bu geçit üzerinden yönlendirir.
-- **Yakalanan Başlıklar:**
+## 2. Decision
+
+The system will implement a **Dual-Track (Hybrid) Tracking Engine**:
+
+### Track A: Active Poller
+- **Task:** Retrieve net cash balances, account plan types, and static quota status.
+- **Operating Interval:** Configurable base period of 5–15 minutes.
+- **Critical Safeguards:**
+  1. **Jitter:** A random deviation of **±25%** is added to account polling intervals. This prevents multiple accounts from hitting the same provider at the same millisecond.
+  2. **Single-Flight Promise Coalescing:** New requests for an account are held while a request is already in progress; no duplicate network call is made.
+  3. **Backoff:** If an endpoint returns 429 or 500, the polling interval for that account is temporarily extended and the last successful data (stale cache) continues to be displayed.
+
+### Track B: Passive Gateway (Ingress Proxy Middleware)
+- **Task:** Capture real-time quota consumption from model calls at zero additional network cost.
+- **Operation:** The system opens an OpenAI-compatible reverse proxy on the local network (`http://localhost:port/v1/chat/completions`). The user's IDE (Cursor, Zed), CLI tools (OMP), or bots (n8n, Ayzek) route their requests through this gateway.
+- **Captured Headers:**
   - `anthropic-ratelimit-unified-5h-utilization`, `anthropic-ratelimit-unified-5h-reset`
   - `x-codex-primary-used-percent`, `x-codex-primary-reset-after-seconds`
   - `x-ratelimit-remaining-tokens`, `x-ratelimit-remaining-requests`
-- **Tetikleme Mantığı:** Yanıt başlığında kota doluluğu `%100` (veya `%90+`) görüldüğü anda, aktif cron döngüsü beklenmeden anında yerel durum güncellenir ve alarm motoru tetiklenir.
+- **Trigger Logic:** As soon as quota utilization of `%100` (or `%90+`) is observed in a response header, local state is updated immediately and the alert engine is triggered without waiting for the active cron cycle.
 
 ---
 
-## 3. Sonuçlar ve Takaslar
+## 3. Consequences and Trade-offs
 
-### Kazanımlar (Pros)
-- **Anında Müdahale:** Kullanıcı kotayı tükettiği saniyede sistem haberdar olur; 5 dakikalık cron gecikmesi yaşanmaz.
-- **Durağan Durum Doğruluğu:** İstek atılmayan saatlerde de 5 saatlik kayan pencerelerin açılış zamanı (`resetsAt`) tam doğrulukla geri sayar.
-- **Sıfır Ek Maliyet:** Pasif hat için hiçbir ek API veya token harcaması yapılmaz; mevcut trafiğin üstbilgisi okunur.
-- **İsteğe Bağlılık (Modülerlik):** Pasif geçit zorunlu değildir; vekil sunucuyu kullanmak istemeyen kullanıcılar sadece Aktif Poller ile de temel bakiye/kota takibini yürütebilir.
+### Benefits (Pros)
+- **Immediate Response:** The system is notified the second the user consumes quota; there is no 5-minute cron delay.
+- **Static-State Accuracy:** Even during hours with no requests, the reset time (`resetsAt`) of 5-hour rolling windows counts down with full accuracy.
+- **Zero Additional Cost:** The passive track incurs no additional API or token usage; it reads the headers of existing traffic.
+- **Optionality (Modularity):** The passive gateway is not required; users who do not want to use the proxy can still perform basic balance/quota tracking with the Active Poller alone.
 
-### Ödünler / Yükler (Cons)
-- Mimariye proxy middleware katmanı eklenmesini gerektirir.
-- İstemcilerin (IDE, CLI) base URL ayarlarının yerel vekil sunucuya yönlendirilmesi gerekir (pasif hattan tam verim alabilmek için).
+### Trade-offs / Costs
+
+- Requires adding a proxy middleware layer to the architecture.
+- Client (IDE, CLI) base URL settings must be pointed to the local proxy (to fully benefit from the passive track).

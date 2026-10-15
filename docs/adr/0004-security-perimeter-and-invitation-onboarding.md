@@ -1,62 +1,62 @@
-# ADR-0004: Güvenlik Çevresi, Ters Vekil Güveni ve Yönetici Davetiyesi ile Kontrollü Katılım
+# ADR-0004: Security Perimeter, Reverse Proxy Trust, and Controlled Onboarding via Administrator Invitation
 
-- **Durum:** Kabul Edildi
-- **Tarih:** 2026-09-15
-- **Karar Vericiler:** Murat
-- **İlgili Belgeler:** [CONTEXT.md](../../CONTEXT.md), [docs/SPEC.md](../SPEC.md), [ADR-0001](0001-self-hosted-bff-architecture.md), [ADR-0002](0002-dual-engine-tracking-model.md), [ADR-0003](0003-multi-tenant-session-authentication.md)
-
----
-
-## 1. Bağlam ve Problem Tanımı
-
-useMeter çok kullanıcılı özel SaaS modeline (ADR-0003) geçtikten sonra, self-hosted dağıtımlarda (örneğin ev sunucuları, VPS'ler, bulut sunucuları veya yerel ağ geçitleri) uygulamanın internete veya paylaşımlı ağlara açılması ihtiyacı doğmuştur. Bu durum aşağıdaki somut güvenlik gereksinimlerini gündeme getirmiştir:
-
-1. **Ağ ve Tarayıcı Tehditleri:** Clickjacking, MIME türü sahteciliği (MIME-sniffing), yetkisiz iframe gömmeleri ve XSS saldırılarına karşı standart yanıt başlıkları ve Content Security Policy (CSP) duruşunun netleştirilmesi.
-2. **Kökenler Arası Kaynak Paylaşımı (CORS):** Harici origin'lerden gelen API isteklerinin denetlenmesi ve kimlikli (`auth_session` çerezli) isteklerde joker karakter (`*`) istismarının önlenmesi.
-3. **Ters Vekil (Reverse Proxy) IP Tespiti:** Sistemin Nginx, Caddy veya Cloudflare arkasında çalışması durumunda hız sınırlarının istemci yerine vekil IP'sine uygulanmaması, ancak doğrudan erişimlerde sahte `X-Forwarded-For` başlıklarıyla IP sahteciliğine (spoofing) izin verilmemesi.
-4. **Hizmet Reddi ve Kaba Kuvvet Koruması:** Kimlik doğrulama, manuel kota sorgulama ve OAuth cihaz akışı uç noktalarında DoS ve kaba kuvvet saldırılarını önleyen bellek içi hız sınırlayıcı (rate limiter) gereksinimi.
-5. **Kontrollü Kullanıcı Katılımı (Onboarding):** Genel dış kayıtların (`registrationAllowed = false`) kapatıldığı özel/kurumsal ortamlarda yöneticinin belirlediği kullanıcılara güvenli, süreli ve tek kullanımlık kayıt imkânı sunulması.
-6. **Sıfır Dış Bağımlılık İlkesi (No SMTP):** Self-hosted kullanım kolaylığını korumak için davetiye sisteminin harici SMTP sunucusu, e-posta sağlayıcısı veya API anahtarı zorunluluğu getirmemesi.
+- **Status:** Accepted
+- **Date:** 2026-09-15
+- **Decision Makers:** Murat
+- **Related Documents:** [CONTEXT.md](../../CONTEXT.md), [docs/SPEC.md](../SPEC.md), [ADR-0001](0001-self-hosted-bff-architecture.md), [ADR-0002](0002-dual-engine-tracking-model.md), [ADR-0003](0003-multi-tenant-session-authentication.md)
 
 ---
 
-## 2. Değerlendirilen Alternatifler
+## 1. Context and Problem Statement
 
-### Alternatif A: Harici E-posta (SMTP) Bağımlı Davetiye Sistemi
-- **Gerekçe:** Geleneksel SaaS ürünlerinde davetiyelerin kullanıcının e-posta adresine doğrudan link olarak postalanması.
-- **Red Nedenleri:**
-  - **Kurulum Sürtünmesi:** Self-hosted kuran kullanıcının SMTP sunucusu (Postfix/Dovecot), TLS sertifikası veya harici işlemci (Resend, SendGrid, Amazon SES) yapılandırmasını zorunlu kılar; hafif BFF felsefesini bozar.
-  - **Kırılganlık:** Port 25 blokajları, SPF/DKIM/DMARC ayar zorlukları veya spam filtreleri yüzünden davetiyelerin ulaşamaması destek yükü oluşturur.
-  - **Karar:** Sistem bünyesinde SMTP katmanı kurulmaz; yönetici oluşturulan davet bağlantısını (`/invite/:token`) panodan kopyalar ve kullanıcıya güvendiği kanaldan (Signal, Telegram, şirket içi chat vb.) kendisi iletir.
+After useMeter transitioned to a multi-user private SaaS model (ADR-0003), the need arose to expose the application to the internet or shared networks in self-hosted deployments (for example, home servers, VPSs, cloud servers, or local network gateways). This raised the following concrete security requirements:
 
-### Alternatif B: Dağıtık / Redis Tabanlı Hız Sınırlama
-- **Gerekçe:** Çoklu sunucu/küme (cluster) mimarilerinde merkezi hız sayacı tutma.
-- **Red Nedenleri:**
-  - useMeter bağımsız çalışan tekil bir Bun süreci ve yerel SQLite kasası üzerinde çalışır (ADR-0001).
-  - Redis veya harici KV deposu eklemek operasyonel karmaşıklığı gereksiz artırır.
-  - **Karar:** Deterministik saat dikişi (`now()` injection seam) ve maksimum 10.000 anahtar tavanlı kayan pencere (sliding window) kullanan bellek içi `RateLimiter` uygulanır.
-
-### Alternatif C: Nonce/Hash Tabanlı Katı CSP
-- **Gerekçe:** XSS riskini en aza indiren en katı CSP standardı.
-- **Red Nedenleri:**
-  - useMeter sunucu taraflı HTML üretimi (SSR), gömülü tema/dil JavaScript kodları ve CDN üzerinden yüklenen Tailwind CSS motoru kullanmaktadır.
-  - Nonce veya dinamik hash üretimi mevcut hafif SSR şablon mimarisinde devasa refactor gerektirir ve önbellek/render akışlarını karmaşıklaştırır.
-  - **Karar:** `script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com` ve `style-src 'self' 'unsafe-inline'` içeren pragmatik `MINIMAL_SSR_CSP` uygulanır; dokümantasyonda asla overclaim (gerçekte olmayan nonce koruması iddiası) yapılmaz.
+1. **Network and Browser Threats:** Clarify the standard response headers and Content Security Policy (CSP) posture against clickjacking, MIME-type spoofing (MIME sniffing), unauthorized iframe embedding, and XSS attacks.
+2. **Cross-Origin Resource Sharing (CORS):** Control API requests from external origins and prevent wildcard (`*`) abuse in authenticated requests (with the `auth_session` cookie).
+3. **Reverse Proxy IP Detection:** When the system runs behind Nginx, Caddy, or Cloudflare, rate limits must not be applied to the proxy IP instead of the client; however, direct access must not permit IP spoofing through forged `X-Forwarded-For` headers.
+4. **Denial-of-Service and Brute-Force Protection:** An in-memory rate limiter is required to prevent DoS and brute-force attacks at authentication, manual quota lookup, and OAuth device-flow endpoints.
+5. **Controlled User Onboarding:** In private/corporate environments where public external registration is disabled (`registrationAllowed = false`), provide a secure, time-limited, single-use registration option for users designated by the administrator.
+6. **No External Dependency (No SMTP):** To preserve the ease of self-hosted use, the invitation system must not require an external SMTP server, email provider, or API key.
 
 ---
 
-## 3. Alınan Kararlar
+## 2. Considered Alternatives
 
-### 1. Standart Yanıt Güvenlik Başlıkları
-`src/server/security.ts` modülü üzerinden tüm yanıtlara global olarak enjekte edilir:
-- `X-Frame-Options: DENY` (Tüm sayfalarda iframe içine gömülmeyi engeller).
-- `X-Content-Type-Options: nosniff` (MIME sniffing saldırılarını engeller).
-- `Referrer-Policy: strict-origin-when-cross-origin` (Harici yönlendirmelerde gizlilik korur).
-- `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()` (Gereksiz tarayıcı yeteneklerini kapatır).
-- `Strict-Transport-Security: max-age=31536000; includeSubDomains` (Yalnızca HTTPS veya `secure: true` ortamlarında 1 yıllık HSTS uygular).
+### Alternative A: Invitation System Dependent on External Email (SMTP)
+- **Rationale:** In traditional SaaS products, invitations are sent directly to the user's email address as a link.
+- **Reasons for Rejection:**
+  - **Setup Friction:** Requires self-hosting users to configure an SMTP server (Postfix/Dovecot), a TLS certificate, or an external processor (Resend, SendGrid, Amazon SES); this undermines the lightweight BFF philosophy.
+  - **Fragility:** Invitations failing to arrive because of port 25 blocks, difficulties with SPF/DKIM/DMARC configuration, or spam filters would create support overhead.
+  - **Decision:** No SMTP layer will be built into the system; the administrator copies the generated invitation link (`/invite/:token`) from the dashboard and forwards it to the user through a trusted channel (Signal, Telegram, internal company chat, etc.).
 
-### 2. Pragmatik Content Security Policy (CSP)
-- Mevcut SSR ve Tailwind gereksinimlerine tam uyumlu `MINIMAL_SSR_CSP` politikası tanımlanmıştır:
+### Alternative B: Distributed / Redis-Based Rate Limiting
+- **Rationale:** Maintain a centralized rate counter in multi-server/cluster architectures.
+- **Reasons for Rejection:**
+  - useMeter runs as a standalone Bun process on a local SQLite vault (ADR-0001).
+  - Adding Redis or an external KV store would unnecessarily increase operational complexity.
+  - **Decision:** Implement an in-memory `RateLimiter` using a deterministic clock seam (`now()` injection seam) and a sliding window with a maximum cap of 10,000 keys.
+
+### Alternative C: Strict Nonce/Hash-Based CSP
+- **Rationale:** The strictest CSP standard for minimizing XSS risk.
+- **Reasons for Rejection:**
+  - useMeter uses server-side HTML rendering (SSR), embedded theme/language JavaScript code, and a Tailwind CSS engine loaded via CDN.
+  - Generating a nonce or dynamic hash would require a massive refactor of the existing lightweight SSR template architecture and complicate caching/render flows.
+  - **Decision:** Implement a pragmatic `MINIMAL_SSR_CSP` containing `script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com` and `style-src 'self' 'unsafe-inline'`; never overclaim in the documentation (claim protection from nonces that do not actually exist).
+
+---
+
+## 3. Decisions Made
+
+### 1. Standard Security Response Headers
+Injected globally into all responses via the `src/server/security.ts` module:
+- `X-Frame-Options: DENY` (Prevents embedding in iframes on all pages).
+- `X-Content-Type-Options: nosniff` (Prevents MIME-sniffing attacks).
+- `Referrer-Policy: strict-origin-when-cross-origin` (Preserves privacy on external redirects).
+- `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()` (Disables unnecessary browser capabilities).
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains` (Applies one-year HSTS only in HTTPS or `secure: true` environments).
+
+### 2. Pragmatic Content Security Policy (CSP)
+- The `MINIMAL_SSR_CSP` policy, fully compatible with current SSR and Tailwind requirements, has been defined:
   ```text
   default-src 'self';
   script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com;
@@ -68,67 +68,67 @@ useMeter çok kullanıcılı özel SaaS modeline (ADR-0003) geçtikten sonra, se
   base-uri 'self';
   form-action 'self'
   ```
-- Nonce veya dinamik script hash'i iddia edilmez; `'unsafe-inline'` kullanımı bilinçli bir SSR uyumluluk takasıdır.
+- No nonce or dynamic script hash is claimed; the use of `'unsafe-inline'` is a deliberate SSR compatibility tradeoff.
 
-### 3. Güvenli CORS Politikası ve Kimlikli Joker Karakter Yasağı
-- İzin verilen kökenler `CORS_ALLOWED_ORIGINS` veya `USEMETER_ALLOWED_ORIGINS` ortam değişkenleriyle belirlenir.
-- Değişken boşsa **aynı köken varsayılanı (same-origin)** geçerlidir; dış kökenlere CORS başlığı basılmaz.
-- useMeter oturum çerezleri (`auth_session`) kullandığından (`allowCredentials: true`), RFC 6454 standardı uyarınca joker karakter (`*`) kullanımı **kesinlikle reddedilir** (`isOriginAllowed` -> `false`).
+### 3. Secure CORS Policy and Prohibition on Wildcards for Authenticated Requests
+- Allowed origins are specified via the `CORS_ALLOWED_ORIGINS` or `USEMETER_ALLOWED_ORIGINS` environment variables.
+- If the variable is empty, **same-origin by default** applies; no CORS header is emitted for external origins.
+- Because useMeter uses session cookies (`auth_session`) (`allowCredentials: true`), wildcard (`*`) use is **strictly rejected** (`isOriginAllowed` -> `false`) in accordance with RFC 6454.
 
-### 4. Sıkı Ters Vekil Güveni (`TRUST_PROXY`)
-- Varsayılan olarak `trustProxy = false` durumundadır. İstemcinin gönderdiği `X-Forwarded-For` veya `X-Real-IP` başlıkları IP sahteciliğine (spoofing) karşı yok sayılır; doğrudan soket uzak adresi kullanılır.
-- Sistem güvenilir bir ters vekil (Nginx/Cloudflare) arkasında çalıştığında `TRUST_PROXY=true` veya `TRUST_PROXY=1` ayarı ile `X-Forwarded-For` başlığındaki en soldaki (istemciye ait) IP güvenle çözümlenir.
+### 4. Strict Reverse Proxy Trust (`TRUST_PROXY`)
+- By default, `trustProxy = false`. Client-supplied `X-Forwarded-For` or `X-Real-IP` headers are ignored to prevent IP spoofing; the direct socket remote address is used.
+- When the system runs behind a trusted reverse proxy (Nginx/Cloudflare), the leftmost (client) IP in the `X-Forwarded-For` header is safely resolved by setting `TRUST_PROXY=true` or `TRUST_PROXY=1`.
 
-### 5. Sınırlandırılmış Bellek-İçi Hız Sınırlayıcı (RateLimiter)
-- En fazla 10.000 benzersiz anahtar tutan (`maxKeys: 10000`) ve kayan pencere (sliding window) kullanan hafif bellek-içi hız sınırlayıcı devreye alınmıştır.
-- Standart politikalar:
-  - `auth`: `5 istek / dakika / IP` (`POST /api/auth/login`).
-  - `registration`: `5 istek / dakika / IP`; `POST /api/auth/register` ve `POST /api/invitations/:token/accept` ortak `registration:<IP>` kovasını kullanır. Gövde ayrıştırma ve parola hashing'inden önce uygulanır.
-  - `manualPoll`: `1 istek / 30 saniye / kullanıcı + credential` (`/api/refresh`)
-  - `oauthDevicePoll`: `30 istek / dakika / kullanıcı + flow`
-- Aşımlarda `429 Too Many Requests` ve `Retry-After` yanıtı verilir.
+### 5. Bounded In-Memory Rate Limiter (`RateLimiter`)
+- A lightweight in-memory rate limiter using a sliding window and holding at most 10,000 unique keys (`maxKeys: 10000`) has been implemented.
+- Standard policies:
+  - `auth`: `5 requests / minute / IP` (`POST /api/auth/login`).
+  - `registration`: `5 requests / minute / IP`; `POST /api/auth/register` and `POST /api/invitations/:token/accept` share the `registration:<IP>` bucket. Applied before body parsing and password hashing.
+  - `manualPoll`: `1 request / 30 seconds / user + credential` (`/api/refresh`)
+  - `oauthDevicePoll`: `30 requests / minute / user + flow`
+- Exceeding the limit returns `429 Too Many Requests` and a `Retry-After` response.
 
-### 6. Yönetici Davetiye Sistemi ve Tek Kullanımlık Katılım (Invitation Onboarding)
-- **Yalnızca Yönetici Yetkisi:** Davetiyeleri yalnızca `admin` rolündeki kullanıcılar üretebilir (`POST /api/admin/invitations`).
-- **Kriptografik Token Güvenliği:**
-  - İstemciye 32 baytlık rastgele güvenli dize (`crypto.getRandomValues`) verilir.
-  - Veritabanında (`invitations` tablosu) token'ın ham hali ASLA tutulmaz; yalnızca tek yönlü **SHA-256 hash'i (`token_hash`)** saklanır.
-- **24 Saat Geçerlilik ve Tek Kullanım:**
-  - Davetiyeler 24 saat (`86.400.000` ms) sonra zaman aşımına uğrar (`expired`).
-  - Bir kez kabul edilen davetiye `accepted_at` ile kilitlenir; ikinci kez kullanılamaz.
-  - Yönetici dilediğinde davetiyeyi tek tıkla iptal edebilir (`DELETE /api/admin/invitations/:id` -> `revoked_at`).
-- **Zorunlu E-posta Kilidi (Strict Email Binding):** Davetiye üretilirken yönetici tarafından geçerli bir hedef e-posta adresi belirtilmesi zorunludur; useMeter bünyesinde anonim veya e-postasız serbest davetiye bulunmaz. Kabul formunda e-posta alanı salt-okunur olarak kilitlenir ve kayıt sırasında hesap doğrudan bu e-posta ile büyük/küçük harf duyarsız (`COLLATE NOCASE`) olarak oluşturulur.
-- **Kayıt Kapalıyken Katılım (Registration Policy Bypass):** Sistemde genel dış kayıtlar kapatılmış olsa dahi (`isRegistrationAllowed() === false`), geçerli bir davetiye token'ı taşıyan kullanıcılar başarıyla kaydolabilir.
-- **Hashing Ön Kontrolü (2026-10-12):** Davet kabulünde bulunamayan, süresi dolmuş, iptal edilmiş veya kullanılmış token, pahalı parola hashing'inden önce aynı genel hatayla reddedilir. Ön kontrol yetkilendirme kararı değildir: hash üretiminden sonra atomik transaction bütün koşulları tekrar kontrol eder; iptal/expiry/eşzamanlı kabul yarışları tek kullanım güvencesini aşamaz.
-- **Ortak Katılım Hız Sınırı (2026-10-12):** Davet kabulü ve genel kayıt IP başına toplam beş istek/dakika ile sınırlıdır; farklı token veya endpoint kullanmak yeni kota açmaz. Limit aşımı HTTP 429 + `Retry-After`; kayıtların kapalı olması davet kabulünü kapatmaz, hız sınırını da kaldırmaz.
-- **E-posta İletim Sınırı (No SMTP Boundary):** useMeter bünyesinde hiçbir e-posta iletim mekanizması bulunmaz. Yönetici panelden bağlantıyı kopyalar ve kullanıcıya harici güvenli yollardan iletir.
+### 6. Administrator Invitation System and Single-Use Onboarding (Invitation Onboarding)
+- **Administrator-Only:** Only users with the `admin` role can generate invitations (`POST /api/admin/invitations`).
+- **Cryptographic Token Security:**
+  - A 32-byte cryptographically secure random string (`crypto.getRandomValues`) is provided to the client.
+  - The raw token is NEVER stored in the database (`invitations` table); only a one-way **SHA-256 hash (`token_hash`)** is stored.
+- **24-Hour Validity and Single Use:**
+  - Invitations expire (`expired`) after 24 hours (`86.400.000` ms).
+  - Once accepted, an invitation is locked with `accepted_at` and cannot be used a second time.
+  - The administrator can revoke an invitation at any time with one click (`DELETE /api/admin/invitations/:id` -> `revoked_at`).
+- **Mandatory Email Binding (Strict Email Binding):** When an invitation is generated, the administrator must specify a valid target email address; useMeter does not support anonymous or unrestricted email-less invitations. The email field on the acceptance form is locked as read-only, and the account is created at registration with this email, case-insensitively (`COLLATE NOCASE`).
+- **Onboarding While Registration Is Closed (Registration Policy Bypass):** Users with a valid invitation token can successfully register even when general external registration is disabled in the system (`isRegistrationAllowed() === false`).
+- **Pre-Hashing Check (2026-10-12):** During invitation acceptance, a token that cannot be found, has expired, has been revoked, or has already been used is rejected with the same generic error before expensive password hashing. The pre-check is not an authorization decision: after hashing, the atomic transaction checks all conditions again; revocation/expiry/concurrent-acceptance races cannot defeat the single-use guarantee.
+- **Shared Onboarding Rate Limit (2026-10-12):** Invitation acceptance and general registration are limited to a total of five requests per IP per minute; using a different token or endpoint does not open a new quota. Exceeding the limit returns HTTP 429 + `Retry-After`; closed registration does not disable invitation acceptance or remove the rate limit.
+- **Email Delivery Boundary (No SMTP Boundary):** No email delivery mechanism exists within useMeter. The administrator copies the link from the panel and transmits it to the user through external secure channels.
 
-### 7. OAuth Pending State Sınırları ve İptal Yetkisi (2026-10-13)
+### 7. OAuth Pending State Boundaries and Cancellation Authority (2026-10-13)
 
-- Web/device state ve initiate rezervasyonları tek bounded store'da: kullanıcı başına 5, sunucu örneği başına 1000 dolu slot; rezervasyon, pending ve 60 saniyelik terminal sonuçlar kapasiteye dahildir. Upstream/listener başlamadan kapasite ayrılır; limitte 429/Retry-After60 ve `OAUTH_CAPACITY`.
-- Pending süresi en fazla 10 dakika ve bu deadline commit admission'a kadar uygulanır; sağlayıcının daha kısa device TTL'i korunur. Expiry ve terminal temizliği istek beklemeyen unref timer ile yapılır; boş store timer tutmaz. PKCE/client secret gibi geçici hassas alanlar terminal/iptal/expiry sırasında silinir.
-- Her initiate sessionId döner; `DELETE /api/oauth/sessions/:sessionId` sadece sahibine açıktır. Pending çalışma admission öncesinde iptal edilebilir; store `cancel()` admitted senkron commit'i geri alamaz. Admission sonrası faz yield etmediğinden başka bir HTTP handler bu dar pencereye araya giremez. Eksik/yabancı/expired/cancelled/replay device binding upstream'e ulaşamaz; eşzamanlı aynı-owner poll duplicate exchange yapmaz.
-- AbortSignal tüm ilgili upstream ve captured callback kaynaklarına taşınır. Provider I/O ve aday doğrulaması tamamlandığında `admitCommit()` yalnızca current owner-bound claimed pending session için hemen core commit öncesi tek kullanımlık authority verir; admission'dan SQL/epoch/snapshot yazılarına kadar `await` veya provider I/O yoktur. Bu uzun ömürlü lease değil, mevcut senkron commit'in OAuth expiry/cancel tarafından geriye dönük bozulmasını engelleyen kısa sınırdır. `complete`/`fail` admission'ı temizleyip 60 saniyelik terminal receipt'i başlatır. Ayrı poller attempt deadline'ı SQL öncesi hâlâ geçerlidir; reddedilirse failure temiz biçimde terminalleşir, admission öncesi expiry ise yazı oluşturmaz.
-- Frontend geç gelen initiate yanıtını kaybetmek yerine 12 saniyelik deadline altında alıp yalnız eski sessionId'yi siler; unmount/run değişimi yeni akışı etkilemez. Başarı/hata sonucu poll tüketimi için 60 saniye saklanır. Hosted loopback topology ve genel poller kapasitesi ayrı açık işlerdir.
+- Web/device state and initiate reservations are kept in a single bounded store: 5 occupied slots per user and 1000 per server instance; reservations, pending sessions, and 60-second terminal results count toward capacity. Capacity is reserved before upstream/listener startup; at the limit, the response is 429/Retry-After60 and `OAUTH_CAPACITY`.
+- The pending lifetime is at most 10 minutes, and this deadline is enforced through commit admission; a provider's shorter device TTL is preserved. Expiry and terminal cleanup are handled by an unref timer that does not wait for requests; an empty store does not retain a timer. Temporary sensitive fields such as PKCE/client secret are deleted on terminal/cancellation/expiry.
+- Each initiate returns a `sessionId`; `DELETE /api/oauth/sessions/:sessionId` is available only to its owner. Pending work can be cancelled before admission; the store's `cancel()` cannot roll back an admitted synchronous commit. Because the admission phase does not yield, another HTTP handler cannot interpose during this narrow window. Missing/foreign/expired/cancelled/replayed device bindings cannot reach upstream; concurrent polling by the same owner does not perform a duplicate exchange.
+- `AbortSignal` is propagated to all relevant upstream and captured callback resources. Once provider I/O and candidate validation are complete, `admitCommit()` grants one-time authority only for the current owner-bound claimed pending session, immediately before the core commit; there is no `await` or provider I/O from admission through SQL/epoch/snapshot writes. This is not a long-lived lease, but a short boundary that prevents OAuth expiry/cancellation from retroactively invalidating the current synchronous commit. `complete`/`fail` clear admission and start the 60-second terminal receipt. A separate poller attempt deadline still applies before SQL; if rejected, the failure is cleanly terminalized, while expiry before admission produces no writes.
+- Instead of losing a late initiate response, the frontend receives it under a 12-second deadline and deletes only the old `sessionId`; unmount/run changes do not affect the new flow. Success/failure results are retained for 60-second poll consumption. Hosted loopback topology and general poller capacity are separate open items.
 
 
 ---
 
-## 4. Güvenlik ve Tehdit Modeli Takasları (Threat Tradeoffs)
+## 4. Security and Threat-Model Tradeoffs (Threat Tradeoffs)
 
-| Alan | Seçilen Yaklaşım | Tercih Nedeni | Bilinen Takas / Risk Kısıtı |
+| Area | Chosen Approach | Reason for Preference | Known Tradeoff / Risk Constraint |
 |---|---|---|---|
-| **CSP** | `'unsafe-inline'` içeren pragmatik SSR CSP | Mevcut sunucu taraflı HTML, tema scriptleri ve Tailwind CDN uyumluluğu | Nonce seviyesinde tam script izolasyonu sağlanamaz; ancak clickjacking ve veri kaçırma (data exfiltration) önlenir. |
-| **CORS** | Katı izin listesi, kimlikli istekte `*` yasağı | Yetkisiz sitelerin kullanıcının `auth_session` çereziyle oturum çalmasını engelleme | Dış kökenden API tüketecek meşru araçların açıkça `CORS_ALLOWED_ORIGINS` içine yazılması gerekir. |
-| **IP Tespiti** | Varsayılan `TRUST_PROXY=false` | İstemcilerin sahte `X-Forwarded-For` ile hız sınırlarını aşmasını engelleme | Ters vekil arkasında çalışan kurulumlarda `TRUST_PROXY=true` ortam değişkeni unutulursa tüm istekler vekilin yerel IP'sine sayılır. |
-| **Hız Sınırlama** | Bellek-içi kayan pencere (tavan: 10k anahtar) | Sıfır harici servis (Redis) bağımlılığı, mikro-saniye gecikme | Sunucu yeniden başladığında sayaçlar sıfırlanır; tekil Bun süreci için geçerlidir. |
-| **Davetiye Token** | 32-bayt rastgele dize + DB'de SHA-256 | Veritabanı sızıntısında açık davetiye token'larının ele geçirilmesini engelleme | Yönetici oluşturduğu bağlantıyı kaybettiğinde hash'ten token geri döndürülemez; yeni davetiye üretilmelidir. |
-| **İletişim** | Manuel bağlantı kopyalama (No SMTP) | Kurulum sürtünmesini sıfıra indirme, spam/reputasyon risklerini yok etme | Yöneticinin bağlantıyı güvenli bir iletişim kanalı üzerinden kullanıcıya manuel iletmesi gerekir. |
+| **CSP** | Pragmatic SSR CSP containing `'unsafe-inline'` | Compatibility with existing server-side HTML, theme scripts, and Tailwind CDN | Full script isolation at nonce level cannot be achieved; however, clickjacking and data exfiltration are prevented. |
+| **CORS** | Strict allowlist; no `*` for authenticated requests | Prevent sites without authorization from hijacking sessions with the user's `auth_session` cookie | Legitimate tools that consume the API from an external origin must be explicitly listed in `CORS_ALLOWED_ORIGINS`. |
+| **IP Detection** | `TRUST_PROXY=false` by default | Prevent clients from bypassing rate limits with forged `X-Forwarded-For` | In deployments behind a reverse proxy, if the `TRUST_PROXY=true` environment variable is forgotten, all requests are attributed to the proxy's local IP. |
+| **Rate Limiting** | In-memory sliding window (cap: 10k keys) | Zero dependency on external services (Redis); microsecond latency | Counters reset when the server restarts; applies to a single Bun process. |
+| **Invitation Token** | 32-byte random string + SHA-256 in the DB | Prevent plaintext invitation tokens from being obtained in a database breach | If the administrator loses the generated link, the token cannot be recovered from the hash; a new invitation must be generated. |
+| **Communication** | Manual link copying (No SMTP) | Eliminate setup friction and spam/reputation risks | The administrator must manually deliver the link to the user through a secure communication channel. |
 
 ---
 
-## 5. Sonuçlar ve Gelecek Uyarlamalar
+## 5. Consequences and Future Adaptations
 
-- Sistem, harici bir ağa açıldığında veya yerel ağda birden fazla kullanıcıya hizmet verdiğinde standart web saldırılarına karşı korunur hale getirilmiştir.
-- Gelecekte SSR şablon motoru derleme aşamasında inline scriptleri ayıklar veya statik bir SPA ayrımına gidilirse, CSP politikası `'unsafe-inline'` bağımlılığından kurtarılarak nonce veya hash temelli katı modele yükseltilebilir.
-- Çoklu sunucu dağıtımı hedeflenmediği sürece bellek-içi hız sınırlayıcı ve veritabanı düzeyindeki davetiye takibi mimari açıdan yeterli ve yalındır.
+- The system has been hardened against standard web attacks when exposed to an external network or serving multiple users on a local network.
+- If, in the future, the SSR template engine extracts inline scripts at build time or the application moves to a static SPA separation, the CSP policy can be freed from its `'unsafe-inline'` dependency and upgraded to a strict nonce- or hash-based model.
+- Unless multi-server deployment is a target, the in-memory rate limiter and database-level invitation tracking are architecturally sufficient and simple.

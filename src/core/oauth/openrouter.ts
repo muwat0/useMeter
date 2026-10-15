@@ -10,14 +10,16 @@ export interface OpenRouterAuthInitiateResult {
   sessionId: string;
 }
 
-export function initiateOpenRouterAuth(): OpenRouterAuthInitiateResult {
+export function initiateOpenRouterAuth(callbackUrl: string): OpenRouterAuthInitiateResult {
   const { verifier, challenge } = generatePKCE();
   const sessionId = randomUUID();
 
   const params = new URLSearchParams({
+    callback_url: callbackUrl,
     code_challenge: challenge,
     code_challenge_method: "S256",
     key_label: "useMeter",
+    state: sessionId,
   });
 
   return {
