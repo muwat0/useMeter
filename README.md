@@ -14,6 +14,18 @@ useMeter brings supported AI provider usage, quota windows, balances, and reset 
 
 Usage is limited to what each provider exposes and what the configured credential can access. Quota values, refresh intervals, available windows, and authorization behavior are provider-dependent; useMeter is not an authoritative billing record.
 
+## Public information pages
+
+The following informational pages are available without signing in:
+
+- `/privacy` — data storage, retention, deletion, and provider requests.
+- `/terms` — software-use, billing-data, and credential-responsibility notices.
+- `/security` — security controls and responsible vulnerability disclosure.
+- `/support` — community support, GitHub issues, and contact details.
+
+Each page supports Turkish and English through `?lang=tr` or `?lang=en`.
+
+
 ## Provider support and verification
 
 The catalog contains the repository's 17 canonical provider adapters. Its tier describes evidence, not an availability promise: `live_verified` means real-provider telemetry has been observed for the listed provider; `connection_verified` means a real connection succeeded but quota telemetry has not been observed; `synthetic_only` means implementation/tests exist without live verification. This does not establish support for every account, plan, region, or authorization path.

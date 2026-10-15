@@ -26,6 +26,10 @@ const RECOVERY_PAGE_I18N = {
     accountAccess: "GÜVENLİ HESAP ERİŞİMİ",
     themeLabel: "Temayı değiştir",
     languageLabel: "Dili değiştir",
+    legalPrivacy: "Gizlilik",
+    legalTerms: "Kullanım Koşulları",
+    legalSecurity: "Güvenlik",
+    legalSupport: "Destek",
   },
   en: {
     requestTitle: "Forgot your password?",
@@ -54,6 +58,10 @@ const RECOVERY_PAGE_I18N = {
     accountAccess: "SECURE ACCOUNT ACCESS",
     themeLabel: "Toggle theme",
     languageLabel: "Change language",
+    legalPrivacy: "Privacy",
+    legalTerms: "Terms",
+    legalSecurity: "Security",
+    legalSupport: "Support",
   },
 } as const;
 
@@ -437,14 +445,14 @@ export function renderAccountRecoveryPageHtml(options: {
     :root { color-scheme: dark; --page-bg:#090a0d; --surface:#111318; --border:#1f232b; --muted:#171a21; --text:#f4f4f6; --text-muted:#8e95a5; --accent:#ff9849; --accent-hover:#ea7c2b; --danger:#fb7185; }
     html.light { color-scheme: light; --page-bg:#f8fafc; --surface:#fff; --border:#e2e8f0; --muted:#f1f5f9; --text:#0f172a; --text-muted:#64748b; --accent:#ea580c; --accent-hover:#c2410c; --danger:#e11d48; }
     * { box-sizing:border-box; }
-    body { margin:0; min-height:100vh; background:var(--page-bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; -webkit-font-smoothing:antialiased; }
+    body { margin:0; min-height:100vh; display:flex; flex-direction:column; background:var(--page-bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; -webkit-font-smoothing:antialiased; }
     .topbar { height:64px; display:flex; align-items:center; justify-content:space-between; padding:0 max(20px,calc((100vw - 1120px)/2)); border-bottom:1px solid var(--border); background:color-mix(in srgb,var(--surface) 88%,transparent); }
     .brand { color:var(--text); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:18px; font-weight:800; letter-spacing:.04em; text-decoration:none; }
     .brand-accent { color:var(--accent); }
     .controls { display:flex; gap:8px; align-items:center; }
     .control { min-width:38px; height:36px; padding:0 10px; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); font:inherit; font-size:12px; font-weight:600; cursor:pointer; }
     .control:hover { border-color:var(--accent); }
-    main { min-height:calc(100vh - 64px); display:grid; place-items:center; padding:40px 16px; }
+    main { flex:1; min-height:calc(100vh - 112px); display:grid; place-items:center; padding:40px 16px; }
     .card { width:min(100%,440px); position:relative; overflow:hidden; border:1px solid var(--border); border-radius:18px; background:var(--surface); padding:30px; box-shadow:0 20px 55px rgba(0,0,0,.22); }
     .card::before { content:""; position:absolute; inset:0 0 auto; height:3px; background:linear-gradient(90deg,transparent,var(--accent),transparent); opacity:.8; }
     .mark { width:42px; height:42px; display:grid; place-items:center; margin-bottom:18px; border:1px solid color-mix(in srgb,var(--accent) 30%,var(--border)); border-radius:12px; background:color-mix(in srgb,var(--accent) 12%,var(--surface)); color:var(--accent); }
@@ -472,6 +480,10 @@ export function renderAccountRecoveryPageHtml(options: {
     .text-link:hover,.back-link a:hover { text-decoration:underline; }
     .success-panel { margin-top:14px; }
     .back-link { margin:22px 0 0; padding-top:16px; border-top:1px solid var(--border); text-align:center; }
+    .legal-footer { border-top:1px solid var(--border); padding:15px 16px 18px; text-align:center; }
+    .legal-footer nav { display:flex; flex-wrap:wrap; justify-content:center; gap:8px 18px; }
+    .legal-footer a { color:var(--text-muted); font-size:11px; font-weight:650; text-decoration:none; }
+    .legal-footer a:hover { color:var(--accent); text-decoration:underline; }
     [hidden] { display:none !important; }
     :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
     @media (max-width:480px) { .card { padding:25px 21px; } .topbar { padding:0 16px; } }
@@ -494,6 +506,14 @@ export function renderAccountRecoveryPageHtml(options: {
       ${content}
     </section>
   </main>
+  <footer class="legal-footer">
+    <nav aria-label="Information and support links">
+      <a href="/privacy" data-i18n="legalPrivacy">Gizlilik</a>
+      <a href="/terms" data-i18n="legalTerms">Kullanım Koşulları</a>
+      <a href="/security" data-i18n="legalSecurity">Güvenlik</a>
+      <a href="/support" data-i18n="legalSupport">Destek</a>
+    </nav>
+  </footer>
 </body>
 </html>`;
 }
