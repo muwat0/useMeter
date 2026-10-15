@@ -1,0 +1,31 @@
+[Unit]
+Description=useMeter Password Reset Mail Bridge (Rootless Sendmail Unix Socket)
+Documentation=https://github.com/muwat0/useMeter
+After=network.target
+
+[Service]
+Type=simple
+# Mandatory environment configuration: provides PUBLIC_ORIGIN and MAIL_SENDER.
+# No '-' prefix so systemd fails fast if configuration is missing.
+EnvironmentFile=%h/.config/usemeter/mail-bridge.env
+
+# Path to the helper script in the useMeter deployment directory.
+# Python reads PUBLIC_ORIGIN, MAIL_SENDER, ALLOWED_PEER_UIDS, SOCKET_GROUP_ID,
+# and SENDMAIL_BIN directly from the environment.
+ExecStart=/usr/bin/python3 %h/useMeter-deploy/deploy/mail-helper/usemeter-mail-bridge.py \
+    --socket-dir %h/usemeter-mail
+
+Restart=always
+RestartSec=3s
+UMask=0007
+
+# NOTE on Sandboxing:
+# Standard Postfix submission (/usr/sbin/sendmail -> /usr/sbin/postdrop) requires
+# setgid postdrop to write messages to the maildrop queue directory (/var/spool/postfix/maildrop).
+# NoNewPrivileges=true would suppress the required setgid transition on exec
+# and break postdrop submission. Mount restrictions must also preserve actual
+# Postfix spool access; this user unit does not apply those restrictions.
+# Access is restricted by socket permissions, SO_PEERCRED, strict input validation, and non-shell argv.
+
+[Install]
+WantedBy=default.target

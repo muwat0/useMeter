@@ -5,6 +5,7 @@ import { createDefaultRegistry } from "./core/providers/registry";
 import { PollerEngine } from "./core/poller/poller";
 import type { PollerOptions } from "./core/poller/poller";
 import { AuthService } from "./core/auth/auth";
+import { createUnixPasswordResetMailer } from "./core/auth/password-reset-mailer";
 import { createServer } from "./server/app";
 
 // Fail early in production if encryption key is insecure or absent
@@ -60,7 +61,13 @@ void snapshotRetention.start().catch((error: unknown) => {
   console.error("Usage snapshot retention failed:", error);
 });
 
-const authService = new AuthService(vault);
+const recoveryMailSocket = process.env["RECOVERY_MAIL_SOCKET"]?.trim();
+const authService = new AuthService(
+  vault,
+  recoveryMailSocket
+    ? { passwordResetMailer: createUnixPasswordResetMailer(recoveryMailSocket) }
+    : {},
+);
 const app = createServer(vault, poller, registry, authService);
 
 console.log(`⚡ useMeter started at http://localhost:${port}`);

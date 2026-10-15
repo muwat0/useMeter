@@ -51,6 +51,21 @@ Configure your reverse proxy to proxy the selected HTTPS domain to `127.0.0.1:31
 
 The application already emits security headers and uses conditional HSTS. Keep TLS termination at the reverse proxy and do not expose port 3100 publicly; the Compose file binds it to loopback by default.
 
+## Optional rootless password recovery mail bridge (source capability; host setup pending)
+
+The checked-in base `compose.yaml` forwards `RECOVERY_MAIL_SOCKET` with an empty default. With no helper socket configured, new password-reset requests return `503 RECOVERY_UNAVAILABLE`; the application does not create a log-only/fake delivery. A previously issued, still-valid reset token remains consumable after the sender is disabled.
+
+To enable the optional source overlay, prepare a **dedicated persistent host directory** for the socket and configure the host helper before recreating the container:
+
+- `deploy/compose.mail.yaml` mounts only `${MAIL_BRIDGE_HOST_DIR:-/opt/usemeter/mail}` at `/app/mail-bridge:ro`, adds `${MAIL_BRIDGE_HOST_GID:-1000}` to the container group list, and sets the app socket path to `/app/mail-bridge/bridge.sock`. The app container runs as UID 1000. The host directory must remain stable across service restarts; the helper recreates only the socket file. Do not mount the user's home directory, runtime/session directories, or the host filesystem.
+- The directory must be owned by the service user, mode `0770`, and use the same group ID as `MAIL_BRIDGE_HOST_GID` / helper `SOCKET_GROUP_ID`. The socket is mode `0660`; never relax either to world-writable. On the verified host the dedicated group ID is `1000`; select matching IDs on other systems.
+- Copy `deploy/mail-helper/mail-bridge.env.example` to `~/.config/usemeter/mail-bridge.env`, owned by the service user with mode `0600` in a private configuration directory. Set mandatory `PUBLIC_ORIGIN` to the canonical HTTPS origin only (no path, query, fragment, or trailing slash) and `MAIL_SENDER` to the operator-controlled sender. The example also supplies `ALLOWED_PEER_UIDS`, `SOCKET_GROUP_ID`, and `SENDMAIL_BIN`; the default sendmail path is `/usr/sbin/sendmail`.
+- Install/run `deploy/mail-helper/usemeter-mail-bridge.service` as the same unprivileged host user with `systemctl --user daemon-reload` and `systemctl --user enable --now usemeter-mail-bridge.service`. Its `EnvironmentFile` is mandatory. Its `ExecStart` expects the checkout at `%h/useMeter-deploy`; if the source lives elsewhere, point that unit directive at the actual helper path. A user service that must survive logout/reboot needs user lingering enabled.
+- The helper accepts only a newline-delimited JSON object with `recipient` and a 64-lowercase-hex `token`; peer UID is checked using `SO_PEERCRED`. It creates `/reset-password#token=...` using the fixed origin and invokes the configured sendmail argv as `sendmail -oi -f <sender> -- <recipient>` without a shell. It does not expose a generic command/mail interface or require SMTP credentials.
+- **Keep the sandbox distinction:** the useMeter container keeps Compose's `no-new-privileges:true`. Do not enable `NoNewPrivileges=true` on the rootless mail helper unit: standard `/usr/sbin/sendmail` invokes setgid `postdrop` to submit to Postfix's local maildrop, and the unit documents why that transition must remain available. Do not add root privileges, alter MTA network/authentication policy, or install a human SMTP password.
+
+The helper/client have a local IPC smoke test using a synthetic sendmail sink and no network or real email; it covers strict framing, peer rejection, reconnect after helper restart, and abort/stop descendant cleanup. This is not proof of host MTA acceptance, mailbox delivery, or a delivered DKIM signature. Host provisioning, socket/mount permission checks, helper restart reconnection, and a real message to a disposable owned mailbox are still required before claiming recovery delivery is operational. This source documentation does not assert that the production Compose file or running service currently has the overlay enabled.
+
 ## Updates and rollback
 
 ### Two-phase deployment & single-writer target SOP

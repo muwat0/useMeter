@@ -364,6 +364,15 @@ export class StorageVault {
       CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email COLLATE NOCASE);
       CREATE INDEX IF NOT EXISTS idx_invitations_created_by ON invitations(created_by);
     `);
+
+    this.#db.exec(`
+      CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        password_hash_at_issue TEXT NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+    `);
     if (this.#metadataEncryptionEnabled && currentVersion < 2) {
       this.#migrateCredentialMetadataToV2();
       currentVersion = 2;
@@ -604,6 +613,30 @@ export class StorageVault {
     };
   }
 
+  getUserByIdWithPasswordHash(id: string): (User & { passwordHash: string }) | null {
+    const row = this.#db.prepare(`
+      SELECT id, email, role, password_hash, created_at, updated_at
+      FROM users WHERE id = ?
+    `).get(id) as {
+      id: string;
+      email: string;
+      role: string;
+      password_hash: string;
+      created_at: number;
+      updated_at: number;
+    } | undefined;
+    if (!row) return null;
+    return {
+      id: row.id,
+      email: row.email,
+      role: (row.role as UserRole) || "user",
+      passwordHash: row.password_hash,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+
   getUserById(id: string): User | null {
     const row = this.#db.prepare(`
       SELECT id, email, role, created_at, updated_at
@@ -704,33 +737,33 @@ export class StorageVault {
   ): { success: boolean; error?: string } {
     if (this.#closed) return { success: false, error: "Database is closed" };
 
-    const admin = this.getUserById(adminUserId);
-    if (!admin || admin.role !== "admin") {
-      return { success: false, error: "Unauthorized" };
-    }
-
-    if (adminUserId === targetUserId) {
-      return { success: false, error: "Cannot delete your own account" };
-    }
-
-    const target = this.getUserById(targetUserId);
-    if (!target) {
-      return { success: false, error: "User not found" };
-    }
-
-    if (target.role === "admin") {
-      const adminCountRow = this.#db
-        .prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin'")
-        .get() as { count: number };
-      if (adminCountRow.count <= 1) {
-        return { success: false, error: "Cannot delete the last admin" };
+    const tx = this.#db.transaction(() => {
+      const admin = this.getUserById(adminUserId);
+      if (!admin || admin.role !== "admin") {
+        return { success: false, error: "Unauthorized" };
       }
-    }
+      if (adminUserId === targetUserId) {
+        return { success: false, error: "Cannot delete your own account" };
+      }
 
-    this.#db.prepare("DELETE FROM users WHERE id = ?").run(targetUserId);
+      const target = this.getUserById(targetUserId);
+      if (!target) return { success: false, error: "User not found" };
 
-    return { success: true };
+      if (target.role === "admin") {
+        const adminCountRow = this.#db
+          .prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin'")
+          .get() as { count: number };
+        if (adminCountRow.count <= 1) {
+          return { success: false, error: "Cannot delete the last admin" };
+        }
+      }
+
+      this.#db.prepare("DELETE FROM users WHERE id = ?").run(targetUserId);
+      return { success: true };
+    });
+    return tx.immediate();
   }
+
 
   getSystemStatsAdmin(pollerRunning: boolean): AdminSystemStats {
     const now = Date.now();
@@ -1046,6 +1079,166 @@ export class StorageVault {
       expiresAt,
       createdAt: now,
     };
+  }
+
+  createSessionIfPasswordHashMatches(
+    userId: string,
+    expectedPasswordHash: string,
+    tokenHash: string,
+    expiresAt: number,
+  ): Session | null {
+    if (this.#closed) return null;
+    const id = randomUUID();
+    const now = Date.now();
+    const tx = this.#db.transaction(() => {
+      const user = this.#db.prepare(
+        "SELECT password_hash FROM users WHERE id = ?",
+      ).get(userId) as { password_hash: string } | undefined;
+      if (!user || user.password_hash !== expectedPasswordHash) return null;
+      this.#db.prepare(`
+        INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(id, userId, tokenHash, expiresAt, now);
+      return { id, userId, tokenHash, expiresAt, createdAt: now };
+    });
+    return tx.immediate();
+  }
+
+  issuePasswordResetToken(userId: string, tokenHash: string, expiresAt: number): boolean {
+    if (this.#closed) return false;
+    const tx = this.#db.transaction(() => {
+      const user = this.#db.prepare(
+        "SELECT password_hash FROM users WHERE id = ?",
+      ).get(userId) as { password_hash: string } | undefined;
+      if (!user) return false;
+      this.#db.prepare("DELETE FROM password_reset_tokens WHERE user_id = ?").run(userId);
+      this.#db.prepare(`
+        INSERT INTO password_reset_tokens (user_id, token_hash, password_hash_at_issue, expires_at)
+        VALUES (?, ?, ?, ?)
+      `).run(userId, tokenHash, user.password_hash, expiresAt);
+      return true;
+    });
+    return tx.immediate();
+  }
+
+  getPasswordResetContext(tokenHash: string, now: number = Date.now()): {
+    userId: string;
+    passwordHash: string;
+    expiresAt: number;
+  } | null {
+    const row = this.#db.prepare(`
+      SELECT t.user_id, t.password_hash_at_issue, t.expires_at, u.password_hash
+      FROM password_reset_tokens t
+      INNER JOIN users u ON u.id = t.user_id
+      WHERE t.token_hash = ? AND t.expires_at > ?
+    `).get(tokenHash, now) as {
+      user_id: string;
+      password_hash_at_issue: string;
+      expires_at: number;
+      password_hash: string;
+    } | undefined;
+    if (!row || row.password_hash !== row.password_hash_at_issue) return null;
+    return {
+      userId: row.user_id,
+      passwordHash: row.password_hash,
+      expiresAt: row.expires_at,
+    };
+  }
+
+  changePasswordAtomic(
+    userId: string,
+    sessionTokenHash: string,
+    expectedPasswordHash: string,
+    nextPasswordHash: string,
+    now: number = Date.now(),
+  ): "updated" | "unauthenticated" | "conflict" {
+    if (this.#closed) return "unauthenticated";
+    const tx = this.#db.transaction(() => {
+      const user = this.#db.prepare(
+        "SELECT password_hash FROM users WHERE id = ?",
+      ).get(userId) as { password_hash: string } | undefined;
+      const activeSession = this.#db.prepare(`
+        SELECT 1 FROM sessions
+        WHERE user_id = ? AND token_hash = ? AND expires_at > ?
+      `).get(userId, sessionTokenHash, now);
+      if (!user || !activeSession) return "unauthenticated" as const;
+      if (user.password_hash !== expectedPasswordHash) return "conflict" as const;
+
+      const updated = this.#db.prepare(`
+        UPDATE users SET password_hash = ?, updated_at = ?
+        WHERE id = ? AND password_hash = ?
+      `).run(nextPasswordHash, now, userId, expectedPasswordHash);
+      if (updated.changes !== 1) return "conflict" as const;
+      this.#db.prepare(
+        "DELETE FROM sessions WHERE user_id = ? AND token_hash <> ?",
+      ).run(userId, sessionTokenHash);
+      this.#db.prepare("DELETE FROM password_reset_tokens WHERE user_id = ?").run(userId);
+      return "updated" as const;
+    });
+    return tx.immediate();
+  }
+
+  consumePasswordResetToken(
+    tokenHash: string,
+    expectedPasswordHash: string,
+    nextPasswordHash: string,
+    now: number = Date.now(),
+  ): string | null {
+    if (this.#closed) return null;
+    const tx = this.#db.transaction(() => {
+      const token = this.#db.prepare(`
+        SELECT user_id, password_hash_at_issue, expires_at
+        FROM password_reset_tokens WHERE token_hash = ?
+      `).get(tokenHash) as {
+        user_id: string;
+        password_hash_at_issue: string;
+        expires_at: number;
+      } | undefined;
+      if (
+        !token ||
+        token.expires_at <= now ||
+        token.password_hash_at_issue !== expectedPasswordHash
+      ) return null;
+
+      const updated = this.#db.prepare(`
+        UPDATE users SET password_hash = ?, updated_at = ?
+        WHERE id = ? AND password_hash = ?
+      `).run(nextPasswordHash, now, token.user_id, expectedPasswordHash);
+      if (updated.changes !== 1) return null;
+      this.#db.prepare("DELETE FROM sessions WHERE user_id = ?").run(token.user_id);
+      this.#db.prepare("DELETE FROM password_reset_tokens WHERE user_id = ?").run(token.user_id);
+      return token.user_id;
+    });
+    return tx.immediate();
+  }
+
+  deleteAccountWithSession(
+    userId: string,
+    sessionTokenHash: string,
+    expectedPasswordHash: string,
+    now: number = Date.now(),
+  ): "deleted" | "unauthenticated" | "conflict" | "last_admin" {
+    if (this.#closed) return "unauthenticated";
+    const tx = this.#db.transaction(() => {
+      const user = this.#db.prepare(
+        "SELECT role, password_hash FROM users WHERE id = ?",
+      ).get(userId) as { role: string; password_hash: string } | undefined;
+      const activeSession = this.#db.prepare(`
+        SELECT 1 FROM sessions
+        WHERE user_id = ? AND token_hash = ? AND expires_at > ?
+      `).get(userId, sessionTokenHash, now);
+      if (!user || !activeSession) return "unauthenticated" as const;
+      if (user.password_hash !== expectedPasswordHash) return "conflict" as const;
+      if (user.role === "admin") {
+        const admins = this.#db.prepare(
+          "SELECT COUNT(*) as count FROM users WHERE role = 'admin'",
+        ).get() as { count: number };
+        if (admins.count <= 1) return "last_admin" as const;
+      }
+      this.#db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+      return "deleted" as const;
+    });
+    return tx.immediate();
   }
 
   getSessionByTokenHash(tokenHash: string): (Session & { user: User }) | null {

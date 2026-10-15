@@ -70,7 +70,29 @@ const I18N: Record<string, Record<string, string>> = {
     summaryExhausted: "Kilitli/Biten Kota:", autoSync: "Otomatik Yenileme:",
     editModeActive: "✏️ Düzenleme Modu Aktif", editModeTitle: "Kart Düzenleme Modu",
     settingsTitle: "Ayarlar", themeTitle: "Koyu / Aydınlık Mod",
+    accountSecurityTitle: "Hesap Güvenliği", passwordChangeTitle: "Parolayı Değiştir",
+    currentPasswordLabel: "Mevcut parola", newPasswordLabel: "Yeni parola",
+    confirmNewPasswordLabel: "Yeni parolayı doğrula",
+    passwordPolicyHelp: "Parola en az 12 Unicode karakteri ve kod birimi içermeli; en fazla 256 karakteri, kod birimini ve UTF-8 baytını aşmamalı.",
+    passwordMismatch: "Yeni parolalar eşleşmiyor.",
+    passwordChangeSubmit: "Parolayı Değiştir", passwordChanging: "Değiştiriliyor...",
+    passwordChangeSuccess: "Parolanız değiştirildi. Bu oturum açık kalacak.",
+    accountDeletionTitle: "useMeter Hesabını Sil",
+    accountDeletionWarning: "Bu işlem useMeter hesabınızı ve burada saklanan bağlı sağlayıcı kimlik bilgileri ile kullanım geçmişini kalıcı olarak siler. Sağlayıcıların kendi hesapları etkilenmez. Bu işlem geri alınamaz.",
+    accountDeletionConfirm: "useMeter hesabımın ve useMeter'da saklanan verilerin kalıcı olarak silineceğini anlıyorum.",
+    accountDeletionSubmit: "useMeter Hesabını Kalıcı Olarak Sil",
+    accountDeleting: "Hesap siliniyor...",
+    accountErrorInvalidCredentials: "Mevcut parola doğru değil.",
+    accountErrorWeakPassword: "Parola güvenlik gereksinimlerini karşılamıyor.",
+    accountErrorUnauthenticated: "Oturumunuz sona erdi. Yeniden giriş yapın.",
+    accountErrorInvalidResetToken: "Parola sıfırlama bağlantısı geçersiz, süresi dolmuş veya kullanılmış. Yeni bağlantı isteyin.",
+    accountErrorLastAdmin: "Son yönetici hesabı silinemez. Önce başka bir yönetici ekleyin.",
+    accountErrorRecoveryUnavailable: "Parola kurtarma şu anda kullanılamıyor. Lütfen daha sonra tekrar deneyin.",
+    accountErrorRateLimited: "Çok fazla deneme yapıldı. Lütfen biraz bekleyip yeniden deneyin.",
+    accountErrorGeneral: "İşlem tamamlanamadı. Lütfen tekrar deneyin.",
+    accountErrorRequired: "Lütfen tüm zorunlu alanları doldurun.",
     deleteAccount: "Hesabı Kaldır", editLabel: "Etiketi Düzenle",
+
     save: "Kaydet", saveAndPoll: "Kaydet ve Sorgula", cancel: "İptal",
     noAccounts: 'Henüz kayıtlı bir AI hesabı bulunmuyor. Yukarıdaki <b>+ Hesap Bağla</b> butonuyla ekleyebilirsiniz.',
     lastUpdate: "Son Güncelleme", deleteConfirm: "Bu hesabın kimlik bilgisi ve kaydedilmiş kullanım geçmişi kalıcı olarak silinecek. Bu işlem geri alınamaz. Devam etmek istiyor musunuz?", deleteFailed: "Hesap kaldırılamadı. Lütfen tekrar deneyin.",
@@ -149,6 +171,27 @@ const I18N: Record<string, Record<string, string>> = {
     summaryExhausted: "Exhausted Quotas:", autoSync: "Auto-refresh:",
     editModeActive: "✏️ Edit Mode Active", editModeTitle: "Card Edit Mode",
     settingsTitle: "Settings", themeTitle: "Dark / Light Mode",
+    accountSecurityTitle: "Account Security", passwordChangeTitle: "Change Password",
+    currentPasswordLabel: "Current password", newPasswordLabel: "New password",
+    confirmNewPasswordLabel: "Confirm new password",
+    passwordPolicyHelp: "Use at least 12 Unicode characters and code units; the password must not exceed 256 characters, code units, or UTF-8 bytes.",
+    passwordMismatch: "The new passwords do not match.",
+    passwordChangeSubmit: "Change Password", passwordChanging: "Changing...",
+    passwordChangeSuccess: "Your password was changed. This session will remain signed in.",
+    accountDeletionTitle: "Delete useMeter Account",
+    accountDeletionWarning: "This permanently deletes your useMeter account, linked provider credentials stored in useMeter, and usage history. Your provider accounts themselves are not affected. This cannot be undone.",
+    accountDeletionConfirm: "I understand that my useMeter account and data stored in useMeter will be permanently deleted.",
+    accountDeletionSubmit: "Permanently Delete useMeter Account",
+    accountDeleting: "Deleting account...",
+    accountErrorInvalidCredentials: "The current password is incorrect.",
+    accountErrorWeakPassword: "The password does not meet the security requirements.",
+    accountErrorUnauthenticated: "Your session has expired. Please sign in again.",
+    accountErrorInvalidResetToken: "This password-reset link is invalid, expired, or already used. Request a new link.",
+    accountErrorLastAdmin: "The last administrator account cannot be deleted. Add another administrator first.",
+    accountErrorRecoveryUnavailable: "Password recovery is currently unavailable. Please try again later.",
+    accountErrorRateLimited: "Too many attempts. Wait a little and try again.",
+    accountErrorGeneral: "The operation could not be completed. Please try again.",
+    accountErrorRequired: "Please complete all required fields.",
     deleteAccount: "Remove Account", editLabel: "Edit Label",
     save: "Save", saveAndPoll: "Save & Poll", cancel: "Cancel",
     noAccounts: 'No AI accounts connected yet. Click <b>+ Connect Account</b> to add one.',
@@ -227,6 +270,34 @@ function t(key: string, lang: string): string {
   return I18N[lang]?.[key] || I18N['tr']?.[key] || key;
 }
 
+interface AccountApiResponse {
+  success?: boolean;
+  errorCode?: string;
+}
+
+function isPasswordWithinPolicy(value: string): boolean {
+  const unicodeCharacters = Array.from(value).length;
+  const codeUnits = value.length;
+  const utf8Bytes = new TextEncoder().encode(value).byteLength;
+  return unicodeCharacters >= 12 && codeUnits >= 12
+    && unicodeCharacters <= 256 && codeUnits <= 256 && utf8Bytes <= 256;
+}
+
+function accountErrorMessageKey(status: number, errorCode?: string): string {
+  switch (errorCode) {
+    case 'INVALID_CREDENTIALS': return 'accountErrorInvalidCredentials';
+    case 'WEAK_PASSWORD': return 'accountErrorWeakPassword';
+    case 'UNAUTHENTICATED': return 'accountErrorUnauthenticated';
+    case 'INVALID_RESET_TOKEN': return 'accountErrorInvalidResetToken';
+    case 'LAST_ADMIN': return 'accountErrorLastAdmin';
+    case 'RECOVERY_UNAVAILABLE': return 'accountErrorRecoveryUnavailable';
+    case 'RATE_LIMITED': return 'accountErrorRateLimited';
+    default:
+      if (status === 401) return 'accountErrorUnauthenticated';
+      if (status === 429) return 'accountErrorRateLimited';
+      return 'accountErrorGeneral';
+  }
+}
 function formatProviderTitle(provider: string): string {
   const p = (provider || '').toLowerCase();
   if (p === 'antigravity' || p === 'google-antigravity' || p === 'google') return 'Antigravity';
@@ -704,6 +775,9 @@ function Dashboard() {
 
   const [lang, setLang] = useState(detectInitialLang);
   const [mode, setMode] = useState(() => localStorage.getItem('usage_mode') || 'dark');
+  const successTextClass = mode === 'dark' ? 'text-emerald-400' : 'text-emerald-700';
+  const dangerTextClass = mode === 'dark' ? 'text-rose-400' : 'text-rose-700';
+  const dangerStrongTextClass = mode === 'dark' ? 'text-rose-300' : 'text-rose-800';
   const [accent, setAccent] = useState(() => localStorage.getItem('usage_accent') || 'amber');
   const [currentSort, setSort] = useState(() => localStorage.getItem('usage_sort') || 'custom');
   const [currentGroup, setGroup] = useState(() => localStorage.getItem('usage_group') || 'none');
@@ -717,6 +791,19 @@ function Dashboard() {
   const [showSettings, setShowSettings] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [modalTab, setModalTab] = useState<'oauth' | 'manual'>('oauth');
+  const [changeCurrentPassword, setChangeCurrentPassword] = useState('');
+  const [changeNewPassword, setChangeNewPassword] = useState('');
+  const [changeConfirmPassword, setChangeConfirmPassword] = useState('');
+  const [changePasswordSubmitting, setChangePasswordSubmitting] = useState(false);
+  const [changePasswordMessage, setChangePasswordMessage] = useState<string | null>(null);
+  const [changePasswordSucceeded, setChangePasswordSucceeded] = useState(false);
+  const [deleteAccountPassword, setDeleteAccountPassword] = useState('');
+  const [deleteAccountConfirmed, setDeleteAccountConfirmed] = useState(false);
+  const [deleteAccountSubmitting, setDeleteAccountSubmitting] = useState(false);
+  const [deleteAccountMessage, setDeleteAccountMessage] = useState<string | null>(null);
+
+  const accountDeletedRef = useRef(false);
+  const settingsFeedbackGenerationRef = useRef(0);
 
   // OAuth state
   const [oauthPanel, setOauthPanel] = useState<'list' | 'device' | 'browser'>('list');
@@ -788,6 +875,7 @@ function Dashboard() {
   // ── Sync status timer ──
   useEffect(() => {
     const interval = setInterval(() => {
+      if (accountDeletedRef.current) return;
       const elapsedSec = Math.max(0, Math.floor((Date.now() - lastPolledAt) / 1000));
       if (elapsedSec < 5) setSyncText(t('syncStatusJustNow', lang));
       else if (elapsedSec < 60) setSyncText(t('syncStatusSec', lang).replace('{n}', String(elapsedSec)));
@@ -798,11 +886,13 @@ function Dashboard() {
 
   // ── Polling ──
   const loadUsage = useCallback(async () => {
+    if (accountDeletedRef.current) return;
     try {
       const [dataRes, credsRes] = await Promise.all([
         fetch('/api/data'),
         fetch('/api/credentials').catch(() => null),
       ]);
+      if (accountDeletedRef.current) return;
       if (dataRes.ok) {
         const dataJson = await dataRes.json();
         let newReports: Report[] = dataJson.data || [];
@@ -819,11 +909,12 @@ function Dashboard() {
             });
           } catch { /* ignore */ }
         }
-        setReports(newReports);
+        if (accountDeletedRef.current) return;
+        setReports(prev => accountDeletedRef.current ? prev : newReports);
         setLastPolledAt(Date.now());
       }
     } catch (err) {
-      console.warn('Silent live sync failure:', err);
+      if (!accountDeletedRef.current) console.warn('Silent live sync failure:', err);
     }
   }, []);
 
@@ -901,22 +992,119 @@ function Dashboard() {
   }
 
   async function pollNow() {
+    if (accountDeletedRef.current) return;
     setPollSpinning(true);
     try {
       await fetch('/api/poll', { method: 'POST' });
       await loadUsage();
     } finally {
-      setPollSpinning(false);
+      if (!accountDeletedRef.current) setPollSpinning(false);
     }
   }
-
   async function logoutUser() {
     try { await fetch('/api/auth/logout', { method: 'POST' }); } catch { /* ignore */ }
     window.location.href = '/login';
   }
+  function closeSettings() {
+    settingsFeedbackGenerationRef.current += 1;
+    setShowSettings(false);
+    setChangeCurrentPassword('');
+    setChangeNewPassword('');
+    setChangeConfirmPassword('');
+    setChangePasswordMessage(null);
+    setChangePasswordSucceeded(false);
+    setDeleteAccountPassword('');
+    setDeleteAccountConfirmed(false);
+    setDeleteAccountMessage(null);
+  }
+
+
+  async function changePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (changePasswordSubmitting || accountDeletedRef.current) return;
+    setChangePasswordMessage(null);
+    setChangePasswordSucceeded(false);
+    if (!changeCurrentPassword) {
+      setChangePasswordMessage('accountErrorRequired');
+      return;
+    }
+
+    if (!isPasswordWithinPolicy(changeNewPassword)) {
+      setChangePasswordMessage('accountErrorWeakPassword');
+      return;
+    }
+    if (changeNewPassword !== changeConfirmPassword) {
+      setChangePasswordMessage('passwordMismatch');
+      return;
+    }
+
+    const feedbackGeneration = settingsFeedbackGenerationRef.current;
+    setChangePasswordSubmitting(true);
+    try {
+      const response = await fetch('/api/auth/password/change', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: changeCurrentPassword, newPassword: changeNewPassword }),
+      });
+      const result = await response.json().catch(() => null) as AccountApiResponse | null;
+      if (accountDeletedRef.current || feedbackGeneration !== settingsFeedbackGenerationRef.current) return;
+      if (!response.ok || result?.success !== true) {
+        setChangePasswordMessage(accountErrorMessageKey(response.status, result?.errorCode));
+        return;
+      }
+
+      setChangeCurrentPassword('');
+      setChangeNewPassword('');
+      setChangeConfirmPassword('');
+      setChangePasswordSucceeded(true);
+      setChangePasswordMessage('passwordChangeSuccess');
+    } catch {
+      if (!accountDeletedRef.current && feedbackGeneration === settingsFeedbackGenerationRef.current) {
+        setChangePasswordMessage('accountErrorGeneral');
+      }
+    } finally {
+      if (!accountDeletedRef.current) setChangePasswordSubmitting(false);
+    }
+  }
+
+  async function deleteUseMeterAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (deleteAccountSubmitting || accountDeletedRef.current) return;
+    if (!deleteAccountConfirmed) return;
+    const feedbackGeneration = settingsFeedbackGenerationRef.current;
+    setDeleteAccountMessage(null);
+    setDeleteAccountSubmitting(true);
+    try {
+      const response = await fetch('/api/auth/account', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: deleteAccountPassword }),
+      });
+      const result = await response.json().catch(() => null) as AccountApiResponse | null;
+      if (!response.ok || result?.success !== true) {
+        if (!accountDeletedRef.current && feedbackGeneration === settingsFeedbackGenerationRef.current) {
+          setDeleteAccountMessage(accountErrorMessageKey(response.status, result?.errorCode));
+        }
+        return;
+      }
+
+      setDeleteAccountPassword('');
+      setDeleteAccountConfirmed(false);
+      accountDeletedRef.current = true;
+      window.location.replace('/login');
+    } catch {
+      if (!accountDeletedRef.current && feedbackGeneration === settingsFeedbackGenerationRef.current) {
+        setDeleteAccountMessage('accountErrorGeneral');
+      }
+    } finally {
+      if (!accountDeletedRef.current) setDeleteAccountSubmitting(false);
+    }
+  }
+
 
   // ── Label/accent save ──
   async function saveAccountLabel(cardKey: string, newLabel: string) {
+    if (accountDeletedRef.current) return;
     const trimmed = (newLabel || '').trim();
     if (!cardKey || !trimmed) { setEditingCardId(null); return; }
     try {
@@ -925,17 +1113,19 @@ function Dashboard() {
         body: JSON.stringify({ accountLabel: trimmed }),
       });
       const json = await res.json();
+      if (accountDeletedRef.current) return;
       if (json.success) {
-        setReports(prev => prev.map(r => (r.credentialId || r.provider) === cardKey ? { ...r, accountLabel: trimmed } : r));
+        setReports(prev => accountDeletedRef.current ? prev : prev.map(r => (r.credentialId || r.provider) === cardKey ? { ...r, accountLabel: trimmed } : r));
       }
     } catch (err) { console.error('Failed to update account label:', err); }
-    finally { setEditingCardId(null); }
+    finally { if (!accountDeletedRef.current) setEditingCardId(null); }
   }
 
   async function saveAccountAccent(cardKey: string, accentKey: string) {
+    if (accountDeletedRef.current) return;
     if (!cardKey) return;
     const targetAccent = (!accentKey || accentKey === 'null' || accentKey === 'default') ? 'default' : accentKey;
-    setReports(prev => prev.map(r => (r.credentialId || r.provider) === cardKey ? { ...r, accent: targetAccent } : r));
+    setReports(prev => accountDeletedRef.current ? prev : prev.map(r => (r.credentialId || r.provider) === cardKey ? { ...r, accent: targetAccent } : r));
     try {
       const res = await fetch('/api/credentials/' + encodeURIComponent(cardKey), {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -947,17 +1137,18 @@ function Dashboard() {
   }
 
   const deleteAccount = useCallback(async (id: string) => {
-    if (!id || !window.confirm(t('deleteConfirm', lang))) return;
+    if (accountDeletedRef.current || !id || !window.confirm(t('deleteConfirm', lang))) return;
     try {
       const response = await fetch('/api/credentials/' + encodeURIComponent(id), { method: 'DELETE' });
       const result = await response.json() as { success?: boolean };
+      if (accountDeletedRef.current) return;
       if (!response.ok || result.success !== true) {
         window.alert(t('deleteFailed', lang));
         return;
       }
 
-      setReports(prev => prev.filter(r => r.credentialId !== id));
-      setEditingCardId(prev => prev === id ? null : prev);
+      setReports(prev => accountDeletedRef.current ? prev : prev.filter(r => r.credentialId !== id));
+      setEditingCardId(prev => accountDeletedRef.current ? prev : prev === id ? null : prev);
       if (draggedRef.current === id) draggedRef.current = null;
       try {
         const savedOrder = localStorage.getItem('usage_custom_order');
@@ -970,7 +1161,7 @@ function Dashboard() {
       } catch { /* ignore invalid or unavailable local ordering */ }
       await loadUsage();
     } catch {
-      window.alert(t('deleteFailed', lang));
+      if (!accountDeletedRef.current) window.alert(t('deleteFailed', lang));
     }
   }, [lang, loadUsage]);
 
@@ -1797,11 +1988,11 @@ function Dashboard() {
 
       {/* Settings Modal */}
       {showSettings && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={e => { if (e.target === e.currentTarget) setShowSettings(false); }}>
-          <div className="bg-appSurface border border-appBorder rounded-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 space-y-5 shadow-2xl transition-colors">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={e => { if (e.target === e.currentTarget) closeSettings(); }}>
+          <div className="bg-appSurface border border-appBorder rounded-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 space-y-5 shadow-2xl transition-colors">
             <div className="flex justify-between items-center pb-3 border-b border-appBorder">
               <h3 className="font-bold text-appText text-base">{t('settingsTitle', lang)}</h3>
-              <button onClick={() => setShowSettings(false)} className="text-appTextMuted hover:text-appText text-lg p-1">✕</button>
+              <button onClick={closeSettings} className="text-appTextMuted hover:text-appText text-lg p-1">✕</button>
             </div>
             <div className="space-y-4">
               <div>
@@ -1818,8 +2009,97 @@ function Dashboard() {
                 </div>
               </div>
             </div>
+            <section className="space-y-3.5 border-t border-appBorder pt-4">
+              <h4 className="text-sm font-bold text-appText">{t('accountSecurityTitle', lang)}</h4>
+              <form id="changePasswordForm" onSubmit={changePassword} noValidate className="space-y-3">
+                <div>
+                  <label htmlFor="currentPassword" className="block text-xs font-semibold text-appTextMuted mb-1.5">{t('currentPasswordLabel', lang)}</label>
+                  <input id="currentPassword" name="currentPassword" type="password" autoComplete="current-password" required
+                    value={changeCurrentPassword} onChange={e => {
+                      setChangeCurrentPassword(e.target.value);
+                      setChangePasswordMessage(null);
+                      setChangePasswordSucceeded(false);
+                    }}
+                    className="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none" />
+                </div>
+                <div>
+                  <label htmlFor="newPassword" className="block text-xs font-semibold text-appTextMuted mb-1.5">{t('newPasswordLabel', lang)}</label>
+                  <input id="newPassword" name="newPassword" type="password" autoComplete="new-password" minLength={12} maxLength={256} required
+                    value={changeNewPassword} onChange={e => {
+                      setChangeNewPassword(e.target.value);
+                      setChangePasswordMessage(null);
+                      setChangePasswordSucceeded(false);
+                    }}
+                    aria-describedby="passwordPolicyHelp"
+                    className="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none" />
+                  <p id="passwordPolicyHelp" className="text-[11px] text-appTextMuted mt-1">{t('passwordPolicyHelp', lang)}</p>
+                </div>
+                <div>
+                  <label htmlFor="confirmNewPassword" className="block text-xs font-semibold text-appTextMuted mb-1.5">{t('confirmNewPasswordLabel', lang)}</label>
+                  <input id="confirmNewPassword" name="confirmNewPassword" type="password" autoComplete="new-password" minLength={12} maxLength={256} required
+                    value={changeConfirmPassword} onChange={e => {
+                      setChangeConfirmPassword(e.target.value);
+                      setChangePasswordMessage(null);
+                      setChangePasswordSucceeded(false);
+                    }}
+                    className="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none" />
+                </div>
+                {changePasswordMessage && (
+                  <div id="changePasswordStatus" role={changePasswordSucceeded ? 'status' : 'alert'}
+                    className={`rounded-lg border px-3 py-2 text-xs ${changePasswordSucceeded
+                      ? `border-emerald-500/30 bg-emerald-500/10 ${successTextClass}`
+                      : `border-rose-500/30 bg-rose-500/10 ${dangerTextClass}`}`}>
+                    {t(changePasswordMessage, lang)}
+                  </div>
+                )}
+                <button id="changePasswordSubmit" type="submit" disabled={changePasswordSubmitting}
+                  className="w-full rounded-lg bg-appAccent px-4 py-2.5 text-xs font-semibold text-zinc-950 transition hover:bg-appAccentHover disabled:cursor-not-allowed disabled:opacity-50">
+                  {changePasswordSubmitting ? t('passwordChanging', lang) : t('passwordChangeSubmit', lang)}
+                </button>
+              </form>
+            </section>
+
+            <section className="space-y-3.5 border-t border-rose-500/30 pt-4">
+              <div>
+                <h4 className={`text-sm font-bold ${dangerTextClass}`}>{t('accountDeletionTitle', lang)}</h4>
+                <p id="accountDeletionWarning" className={`mt-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-xs leading-relaxed ${dangerStrongTextClass}`}>
+                  {t('accountDeletionWarning', lang)}
+                </p>
+              </div>
+              <form id="deleteUseMeterAccountForm" onSubmit={deleteUseMeterAccount} className="space-y-3">
+                <div>
+                  <label htmlFor="deleteAccountPassword" className="block text-xs font-semibold text-appTextMuted mb-1.5">{t('currentPasswordLabel', lang)}</label>
+                  <input id="deleteAccountPassword" name="password" type="password" autoComplete="current-password" required
+                    value={deleteAccountPassword}
+                    onChange={e => {
+                      setDeleteAccountPassword(e.target.value);
+                      setDeleteAccountMessage(null);
+                    }}
+                    aria-describedby="accountDeletionWarning"
+                    className="w-full bg-appMuted border border-appBorder rounded-lg px-3.5 py-2.5 text-sm text-appText focus:border-appAccent outline-none" />
+                </div>
+                <label htmlFor="confirmDeleteUseMeterAccount" className="flex items-start gap-2.5 rounded-lg border border-appBorder bg-appMuted/50 p-3 text-xs leading-relaxed text-appText cursor-pointer">
+                  <input id="confirmDeleteUseMeterAccount" name="confirmDeletion" type="checkbox" required checked={deleteAccountConfirmed}
+                    onChange={e => {
+                      setDeleteAccountConfirmed(e.target.checked);
+                      setDeleteAccountMessage(null);
+                    }}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-rose-500" />
+                  <span>{t('accountDeletionConfirm', lang)}</span>
+                </label>
+                {deleteAccountMessage && (
+                  <div id="deleteUseMeterAccountStatus" role="alert" className={`rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs ${dangerTextClass}`}>
+                    {t(deleteAccountMessage, lang)}
+                  </div>
+                )}
+                <button id="deleteUseMeterAccountSubmit" type="submit" disabled={deleteAccountSubmitting || !deleteAccountConfirmed}
+                  className={`w-full rounded-lg border border-rose-500/50 bg-rose-500/10 px-4 py-2.5 text-xs font-semibold ${dangerTextClass} transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-50`}>
+                  {deleteAccountSubmitting ? t('accountDeleting', lang) : t('accountDeletionSubmit', lang)}
+                </button>
+              </form>
+            </section>
             <div className="flex justify-end pt-3 border-t border-appBorder">
-              <button onClick={() => setShowSettings(false)} className="px-4 py-2 rounded-lg text-xs font-semibold bg-appAccent hover:bg-appAccentHover text-zinc-950 transition">{t('close', lang)}</button>
+              <button onClick={closeSettings} className="px-4 py-2 rounded-lg text-xs font-semibold bg-appAccent hover:bg-appAccentHover text-zinc-950 transition">{t('close', lang)}</button>
             </div>
           </div>
         </div>

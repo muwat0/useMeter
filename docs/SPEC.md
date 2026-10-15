@@ -14,52 +14,61 @@ Sistem, tek bir kullanıcının yerel masaüstü paneli olmaktan çıkarak kulla
 
 ---
 
-## 2. Kullanıcı Kimlik Doğrulama ve Oturum Yönetimi (Authentication & Session Lifecycle)
+## 2. Kimlik Doğrulama ve Hesap Yaşam Döngüsü
 
-### Temel İlkeler ve Kurallar
-1. **Kullanıcı Hesabı (User Identity):** Sisteme e-posta ve parola çifti ile kaydolunur (`register`) ve giriş yapılır (`login`).
-   - **E-posta Kuralları:** `trim().toLowerCase()` ile kanonikleştirilir. Büyük/küçük harf duyarsız benzersizdir (case-insensitively unique).
-   - **Parola Kuralları:** Minimum 12 karakter, maksimum 256 UTF-8 karakter/kod birimi. Deterministik girdi doğrulaması uygulanır.
-   - **Parola Hashleme:** Bun çalışma zamanının yerel `Bun.password` Argon2id algoritması kullanılır (`algorithm: "argon2id"`).
-2. **Oturum Modeli (Session Security):**
-   - Oturumlar durum bilgili (stateful) sunucu oturumlarıdır; durumu istemcide taşıyan JWT kullanılmaz.
-   - Giriş başarılı olduğunda istemciye `auth_session` çerezinde **32 baytlık kriptografik olarak güvenli rastgele opak belirteç (opaque token)** döndürülür (`crypto.getRandomValues`).
-   - **Kalıcılık:** Veritabanında oturum belirtecinin açık hali ASLA saklanmaz; yalnızca SHA-256 hash özeti (`token_hash`) saklanır.
-   - **Geçerlilik Süresi (TTL):** Oturumlar oluşturulduğu andan itibaren 30 gün geçerlidir (`2592000` saniye). Çıkış yapıldığında (`logout`) oturum kaydı veritabanından silinir.
-3. **Çerez Politikası (Cookie Posture):**
-   - `Name`: `auth_session`
-   - `HttpOnly`: `true` (JavaScript üzerinden okunamaz, XSS'e karşı korumalı).
-   - `SameSite`: `Lax` (CSRF koruması sağlar, üst düzey gezinmelerde çalışır).
-   - `Path`: `/`
-   - `Secure`: Production veya HTTPS ortamlarında `true`.
-4. **Zaman Aşımı ve Hata İzolasyonu (Security Enumeration Defense):**
-   - `login` işleminde geçersiz e-posta veya yanlış parola durumunda aynı genel etki alanı hatası (`Invalid email or password`) fırlatılır; saldırganın sistemde bir e-postanın kayıtlı olup olmadığını öğrenmesine (user enumeration) izin verilmez.
+### Kimlik ve parola
 
-### Kimlik Doğrulama Servis Arayüzü (`AuthService`)
-```typescript
-export interface User {
-  id: string;
-  email: string;
-  createdAt: number;
-  updatedAt: number;
-}
+- E-posta `trim().toLowerCase()` ile kanonikleştirilir ve `users.email` alanında `COLLATE NOCASE` benzersizliğiyle saklanır.
+- Yeni parolalarda aynı doğrulayıcı en az 12 Unicode karakteri **ve** en az 12 JavaScript kod birimini; en fazla 256 Unicode karakterini, 256 kod birimini ve 256 UTF-8 baytını şart koşar.
+- Parolalar Bun `Bun.password` Argon2id ile hash'lenir (`memoryCost: 65536`, `timeCost: 2`). Geçersiz e-posta/parola ile bilinmeyen kullanıcı için giriş yanıtı aynı genel kimlik doğrulama hatasını verir.
 
-export interface Session {
-  id: string;
-  userId: string;
-  tokenHash: string;
-  expiresAt: number;
-  createdAt: number;
-  lastUsedAt: number;
-}
+### Sunucu oturumları ve çerez
 
-export interface AuthService {
-  register(email: string, password: string): Promise<{ user: User; sessionToken: string }>;
-  login(email: string, password: string): Promise<{ user: User; sessionToken: string }>;
-  authenticate(token: string): Promise<User | null>;
-  logout(token: string): Promise<void>;
-}
-```
+- Oturumlar durum bilgili SQLite kayıtlarıdır; istemciye JWT verilmez. Oturum belirteci 32 rastgele bayttan üretilmiş opak metindir; kasada yalnız SHA-256 `token_hash` saklanır.
+- Çerez adı `usage_session`'dır; `HttpOnly`, `SameSite=Lax`, `Path=/` ve production/HTTPS ortamında `Secure` nitelikleri kullanılır. Oturum 30 gün (`2,592,000` saniye) geçerlidir.
+- `logout` yalnız o belirteci siler. Parola değişikliği işlemi yapan etkin oturumu korur ve aynı kullanıcının diğer oturumlarını atomik biçimde siler. Kurtarma parolasının başarılı yenilenmesi kullanıcının tüm oturumlarını siler ve kendiliğinden oturum açmaz.
+
+### Parola değiştirme, kurtarma ve hesap silme
+
+Kasa, geri döndürülemez SQL yazısından hemen önce doğrulama bağını yine kontrol eder. Parola değiştirme; etkin kullanıcı oturumu ve mevcut parola gerektirir, yeni parola ortak parola kuralından geçer. Hashleme sırasında parola veya oturum değişmiş/iptal edilmişse eski istek yazamaz. Başarılı değişiklik tüm reset kayıtlarını iptal eder ve kullanıcının bekleyen sağlayıcı yetkilendirme girişimlerini/sağlayıcı işleri iptal eder.
+
+Parola kurtarma, sunucuda kullanıcı varlığını araştırmadan önce her geçerli e-posta isteğini aynı sınırlı kuyruğa alır. Bilinmeyen e-posta için posta gönderilmez. İstek yanıtı bilinen/bilinmeyen kullanıcı ve arka plan teslimat hatası için aynı `202 {success:true}` yanıtıdır. Posta yapılandırılmamışsa veya kuyruk doluysa tüm hesaplar için `503 RECOVERY_UNAVAILABLE`; istek/onarım hız sınırı aşıldığında `429 RATE_LIMITED` ve `Retry-After` döner. Kurtarma isteği pahalı parola hash'i çalıştırmaz.
+
+Her kullanıcı için en yeni tek reset belirteci geçerlidir; belirteç 32 rastgele bayttır, veritabanında yalnız SHA-256 özeti bulunur, süresi 15 dakikadır ve tek kullanım içindir. Yeni bir istek önceki belirteci geçersiz kılar. Başarılı tüketim; token özeti, sona erme zamanı ve token verildiğindeki parola hash'ini transaction içinde yeniden doğrular; parola değişimi, bütün kullanıcı oturumlarının ve reset belirteçlerinin iptali aynı transaction'dadır. Henüz geçerli olan belirteç, posta hizmeti daha sonra yapılandırmadan çıkarılsa bile onaylanabilir. Reset bağlantısı zorunlu kanonik HTTPS origin'i üzerinde `/reset-password#token=...` biçimindedir; token query string'e veya sunucu API yanıtına konmaz.
+
+Reset token'ın sahibi hedef kullanıcıyı belirler; istekle birlikte başka kullanıcıya ait bir oturum çerezi sunulması yalnız token sahibinin parolasını/oturumlarını değiştirir, çerezi veya verileri etkilemez. API yanıtı token sahibinin kimliğini döndürmez.
+
+Öz-silme geçerli etkin oturum ve mevcut parolayı ister. Kullanıcının son yönetici olması transaction içindeki korumayla silme reddedilir. Başarılı silme user satırını kaldırır; SQLite FK cascade ile oturumlar, kimlik bilgileri, kullanım anlık görüntüleri, reset belirteçleri ve kullanıcının oluşturduğu davetiyeler silinir. Bekleyen OAuth/poller işleri iptal edilir; diğer sahiplerin verileri değişmez. Yönetici silme uç noktası aynı hedef-sahip iş temizliğini kullanır, ancak yönetici kendi hesabını yönetim uç noktasından silmez.
+
+### Servis ve posta sınırları
+
+- `AuthService` parola değişikliği, reset isteği/onayı, hesap silme ve `stopPasswordRecovery()` işlemlerini sunar. Uygulama kurtarma postasını yalnız `RECOVERY_MAIL_SOCKET` boş değilse enjekte edilen Unix-socket mailer üzerinden yollar; boş değer kurtarma isteğini kapatır, sahte/log-only teslimat kullanmaz.
+- Kuyrukta aynı anda en fazla 2 aktif iş ve 32 bekleyen iş vardır. Bekleyen iş 30 saniye sonra düşürülür; posta gönderimi 5 saniyede abort edilir; otomatik retry yoktur. Bu sayılar kod sabitleridir, konfigürasyon anahtarı değildir.
+- Mail bridge yalnız alıcı e-posta adresi ve 64 küçük harfli hex token kabul eder. Canonical public origin ve gönderici host tarafında yapılandırılır; bridge token'ı `/reset-password#token=...` bağlantısına koyar ve host `/usr/sbin/sendmail`'i shell olmadan çağırır. Yerel sentetik sendmail smoke testi gerçek posta teslimini veya DKIM'i kanıtlamaz.
+
+### HTTP API (hesap yaşam döngüsü)
+
+| Uç nokta | İstek | Başarı | Temel hatalar |
+| --- | --- | --- | --- |
+| `POST /api/auth/password/change` | `{currentPassword,newPassword}` | `200 {success:true}`; aynı oturum korunur | yanlış mevcut parola `401 INVALID_CREDENTIALS`; zayıf parola/girdi `400 WEAK_PASSWORD`; oturum yetkisizse `401 UNAUTHENTICATED`; hız sınırı `429 RATE_LIMITED` |
+| `POST /api/auth/password/reset-request` | `{email}` | yapılandırılmış mailerda `202 {success:true}` | geçersiz e-posta `400 INVALID_EMAIL`; yapılandırılmamış/dolu kuyruk `503 RECOVERY_UNAVAILABLE`; hız sınırı `429 RATE_LIMITED` |
+| `POST /api/auth/password/reset-confirm` | `{token,newPassword}` | `200 {success:true}`; yeni çerez atılmaz | geçersiz/kullanılmış/süresi dolmuş token `400 INVALID_RESET_TOKEN`; zayıf parola `400 WEAK_PASSWORD`; hız sınırı `429 RATE_LIMITED` |
+| `DELETE /api/auth/account` | `{password}` | `200 {success:true}` ve mevcut çerez süresi dolmuş olarak ayarlanır | yanlış parola `401 INVALID_CREDENTIALS`; geçersiz oturum `401 UNAUTHENTICATED`; son admin `409 LAST_ADMIN`; hız sınırı `429 RATE_LIMITED` |
+
+Yeni public sayfalar `GET /forgot-password` ve `GET /reset-password`'dır. Reset token URL fragment'inden yüklenir ve sayfa geçmişi hemen temizler; reset sayfasında harici script, stylesheet, font veya görsel yoktur ve `Referrer-Policy: no-referrer` uygulanır. API mutasyonları aynı-köken denetiminden geçer. Başarılı olmayan hesap yaşam döngüsü yanıtları `{success:false,error,errorCode}` biçimindedir; istemci yerelleştirmeyi `errorCode` üzerinden yapar.
+
+
+### Yerel hesap yaşam döngüsü yüzey doğrulaması (canlı teslimat kanıtı değildir)
+
+Hesap yaşam döngüsü, bellek içi SQLite `StorageVault`, gerçek `AuthService`/Hono route'ları ve derlenmiş React yüzeyiyle 1280×913 ve 720×965 headless görünüm alanlarında test edilmiştir. Posta göndericisi ve sağlayıcı adaptörü sentetiktir; dış sağlayıcıya, ağ mail sunucusuna veya gerçek kullanıcıya istek gönderilmemiştir.
+
+- EN/TR parola değiştirme, yanlış mevcut parola, eşleşmeyen parola, geçerli değişiklik, mevcut oturumun korunması ve diğer oturumların iptali çalıştı.
+- EN/TR reset isteği bilinen/bilinmeyen hesaplar için aynı genel yanıtı verdi. Token fragment'ten alındıktan sonra adres çubuğu geçmişi temizlendi; token DOM, browser storage veya `window` yüzeyine bırakılmadı. Reset tüm eski oturumları iptal etti, otomatik giriş yapmadı, replay ve yeniden yüklenmiş kullanılmış bağlantı reddedildi.
+- Settings panelini kapatıp yeniden açınca parola alanları ve silme onayı sıfırlandı; silme onayı olmadan işlem başlatılamadı. Son-yönetici silme denemesi reddedildi ve yönetici oturumu korundu.
+- Düzenli kullanıcının onaylı öz-silmesi sonrası kendi oturumu `401` oldu ve kendi credential/geçmişi temizlendi; diğer sahibin credential, geçmiş ve oturumu değişmeden kaldı.
+- Reset sayfası harici kaynak yüklemedi; browser console hatası gözlenmedi.
+
+Bu headless kanıt, gerçek mail kutusuna teslimatı, MTA kabulünü, DKIM imzasını, production host socket izinlerini veya canlı deploy'u doğrulamaz.
 
 ## 3. Modül Mimarisi ve Dikiş Noktaları (Deep Modules & Seams)
 
@@ -146,107 +155,106 @@ export interface ProviderAdapter {
 SQLite veritabanı (WAL modunda) üzerinde çalışır. Yabancı anahtarlar (`PRAGMA foreign_keys = ON;`) ve indeksler aktiftir.
 Hassas sağlayıcı alanları (API key, OAuth refresh token) **AES-256-GCM** ile şifrelenir.
 
-Tüm kimlik ve kullanım sorguları, arka plan yoklayıcısının açıkça tanımlanmış tek dahili metodu (`listAllCredentialsInternal`) hariç, zorunlu olarak **`ownerId`** parametresi gerektirir.
+Kullanıcı kimliği ve kullanım verisi sorguları `ownerId` ile sınırlandırılır. Daemon yalnızca açıkça dahili (`Internal`) kasametotlarıyla tüm credential referanslarını okuyabilir. `StorageVault`, Bun SQLite üzerinde senkron çalışan bir modüldür; sahibi verilen temel arayüzler şunlardır:
 
 ```typescript
-export interface StorageVault {
-  // Çok Kiracılı Kimlik Yönetimi
-  saveCredential(cred: InputCredential, ownerId: string): Promise<StoredCredential>;
-  listCredentials(ownerId: string, provider?: string): Promise<StoredCredential[]>;
-  getCredential(id: string, ownerId: string): Promise<StoredCredential | null>;
-  deleteCredential(id: string, ownerId: string): Promise<boolean>;
-
-  // Yalnızca Dahili Arka Plan Yoklayıcı İçin (Internal Poller Daemon Only)
-  listAllCredentialsInternal(): Promise<StoredCredential[]>;
-
-  // Kullanım Geçmişi ve Anlık Durum (Kullanıcı İzolasyonlu)
-  saveUsageSnapshot(report: UsageReport, ownerId: string): Promise<void>;
-  getLatestUsage(ownerId: string): Promise<UsageReport[]>;
-  getUsageHistory(ownerId: string, query: HistoryQuery): Promise<UsageHistoryRow[]>;
-
-  // Eski Veri Sahiplenme (Migration)
-  claimLegacyCredentials(newOwnerId: string): Promise<{ claimedCredentials: number; claimedSnapshots: number }>;
-
-  // Sağlık Kontrolü
-  checkIntegrity(): Promise<boolean>;
-}
+saveCredential(ownerId: string, input: InputCredential): StoredCredential
+listCredentials(ownerId: string, provider?: string): StoredCredential[]
+getCredential(ownerId: string, id: string): StoredCredential | null
+deleteCredential(ownerId: string, id: string): boolean
+saveUsageSnapshot(ownerId: string, report: UsageReport): boolean
+getLatestUsage(ownerId: string): UsageReport[]
 ```
 
+Bir kullanıcının kimlik bilgisi silindiğinde ilgili kullanım anlık görüntüleri SQLite `ON DELETE CASCADE` ile silinir. Kullanıcı öz-silmesi aynı şekilde kullanıcıya FK ile bağlı oturum, kimlik bilgisi, kullanım kaydı, reset belirteci ve oluşturduğu davetiyeleri cascade ile kaldırır.
+
+
 #### Veritabanı Şeması (SQLite)
+
 ```sql
--- Kullanıcılar Tablosu
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
-    email TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    email TEXT NOT NULL COLLATE NOCASE,
     password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users(email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
--- Oturumlar Tablosu
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_hash TEXT NOT NULL UNIQUE,
     expires_at INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    last_used_at INTEGER NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+    created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
 
--- Sağlayıcı Kimlik Bilgileri Tablosu
 CREATE TABLE IF NOT EXISTS credentials (
     id TEXT PRIMARY KEY,
-    owner_id TEXT, -- NULL ise eski tek kullanıcılı sistemden devrolacak kayıt
+    owner_id TEXT REFERENCES users(id) ON DELETE CASCADE,
     provider TEXT NOT NULL,
     account_label TEXT NOT NULL,
-    credential_type TEXT NOT NULL, -- 'api_key', 'oauth', 'cookie'
+    accent TEXT NOT NULL DEFAULT 'default',
+    credential_type TEXT NOT NULL,
     encrypted_secret TEXT NOT NULL,
     iv TEXT NOT NULL,
     tag TEXT NOT NULL,
-    metadata JSON,
+    metadata TEXT,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    FOREIGN KEY(owner_id) REFERENCES users(id) ON DELETE CASCADE
+    updated_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_credentials_owner_provider ON credentials(owner_id, provider);
 CREATE INDEX IF NOT EXISTS idx_credentials_owner_id ON credentials(owner_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_owner_prov_label
+    ON credentials(owner_id, provider, account_label);
 
--- Usage Snapshots Table
 CREATE TABLE IF NOT EXISTS usage_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_id TEXT REFERENCES users(id) ON DELETE CASCADE,
-    credential_id TEXT NOT NULL,
+    credential_id TEXT NOT NULL REFERENCES credentials(id) ON DELETE CASCADE,
     provider TEXT NOT NULL,
     account_label TEXT NOT NULL,
     report_json TEXT NOT NULL,
-    fetched_at INTEGER NOT NULL,
-    FOREIGN KEY(credential_id) REFERENCES credentials(id) ON DELETE CASCADE
+    fetched_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_snapshots_cred_time ON usage_snapshots(credential_id, fetched_at DESC);
-CREATE INDEX IF NOT EXISTS idx_snapshots_owner_time ON usage_snapshots(owner_id, fetched_at DESC);
-CREATE INDEX IF NOT EXISTS idx_snapshots_owner_cred_time ON usage_snapshots(owner_id, credential_id, fetched_at DESC);
-```
+CREATE INDEX IF NOT EXISTS idx_snapshots_cred_time
+    ON usage_snapshots(credential_id, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_snapshots_owner_time
+    ON usage_snapshots(owner_id, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_snapshots_owner_cred_time
+    ON usage_snapshots(owner_id, credential_id, fetched_at DESC);
 
--- Davetiyeler Tablosu
+CREATE TABLE IF NOT EXISTS system_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS invitations (
     id TEXT PRIMARY KEY,
-    email TEXT NOT NULL COLLATE NOCASE, -- Yönetici tarafından zorunlu atanan hedef e-posta
-    token_hash TEXT NOT NULL UNIQUE,     -- 32-bayt ham token'ın tek yönlü SHA-256 hash'i
-    created_by TEXT NOT NULL,           -- Davetiyeyi oluşturan admin user ID
-    expires_at INTEGER NOT NULL,        -- 24 saatlik süre sonu (Epoch ms)
-    accepted_at INTEGER,                -- Kullanıldığı zaman damgası (Epoch ms)
-    revoked_at INTEGER,                 -- İptal edildiği zaman damgası (Epoch ms)
-    created_at INTEGER NOT NULL,        -- Oluşturulma zamanı (Epoch ms)
-    FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE CASCADE
+    email TEXT NOT NULL COLLATE NOCASE,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    accepted_at INTEGER,
+    revoked_at INTEGER,
+    created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_invitations_token_hash ON invitations(token_hash);
 CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_invitations_created_by ON invitations(created_by);
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    password_hash_at_issue TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+);
+```
+
+`password_reset_tokens` user başına tek satırla latest-token kuralını uygular. Reset token'ın açık hali saklanmaz; kayıt kullanıcı silme cascade'ine ve parola değişimi/reset tüketimindeki atomik iptale tabidir. Bu tablo eklenmesi credential metadata `PRAGMA user_version` değerini değiştirmez.
 
 #### Eski Verilerin Atomik Sahiplenilmesi (First-User Legacy Claim)
 Tek kullanıcılı sürümden gelen ve `owner_id` değeri `NULL` olan tüm kayıtlar, sisteme kaydolan ilk gerçek kullanıcı (`users` tablosundaki ilk kayıt) tarafından tek bir SQLite transaction'ı içinde atomik olarak sahiplenilir:
@@ -371,37 +379,33 @@ export interface Notifier {
 
 ### Modül 6: HTTP API & Arayüz Katmanı (`src/server/`)
 
-Hono çerçevesi ile sunulan REST ve Server-Sent Events (SSE) rotaları. Tüm panel ve veri uç noktaları oturum doğrulaması (`auth_session` cookie) gerektirir; açık/anonim erişime kapalıdır.
+Hono ile sunulan REST rotaları ve server-rendered/authenticated React paneli. Login/register/recovery sayfaları ve açıkça listelenen davetiye/callback rotaları public'tir; kullanıcı verisi ve panel API'leri `usage_session` oturumu gerektirir.
 
-#### Açık (Public) Rotalar:
-- `POST /api/auth/register` → Yeni kullanıcı kaydı oluşturur, oturum çerezi atar (`auth_session`).
-- `POST /api/auth/login` → Kullanıcı girişi yapar, oturum çerezi atar.
-- `POST /api/auth/logout` → Aktif oturumu geçersiz kılar ve çerezi siler.
-- `GET /health` → Sistem durumu ve SQLite bütünlük kontrolü (hassas veri içermez).
-- `GET /invite/:token` → Davetiye kabul sayfası (token geçerliliği denetlenir, atanmış e-posta salt okunur kilitli gösterilir).
-- `POST /api/invitations/:token/accept` → Davetiyeyi kabul ederek yeni kullanıcı oluşturma (public registration kapalı olsa dahi çalışır).
+#### Açık (Public) Rotalar
+- `GET /login`, `GET /register`, `GET /forgot-password`, `GET /reset-password` → Giriş, kayıt ve parola kurtarma sayfaları.
+- `POST /api/auth/register` → Açık kayıt politikası izin veriyorsa kullanıcı oluşturur ve `usage_session` çerezi atar.
+- `POST /api/auth/login` → Başarılı girişte `usage_session` çerezi atar.
+- `POST /api/auth/logout` → Gönderilmiş oturum belirtecini siler ve çerezi süresi dolmuş olarak döndürür.
+- `POST /api/auth/password/reset-request` → `{email}` alır; yapılandırılmış mailer ve kullanılabilir kuyrukta bilinen/bilinmeyen adreslere aynı HTTP `202 {success:true}` yanıtını verir. Mailer yapılandırılmamışsa veya sınırlı kuyruk doluysa `503 RECOVERY_UNAVAILABLE` döndürür. Hesap/teslimat durumu yanıtla açıklanmaz.
+- `POST /api/auth/password/reset-confirm` → `{token,newPassword}` alır; geçerli belirteci atomik olarak tüketir ve `200 {success:true}` döndürür. Oturum çerezi atmaz; geçersiz, süresi dolmuş veya replay belirteç `400 INVALID_RESET_TOKEN` olur.
+- `GET /health` → Durum ve SQLite bütünlük kontrolü.
+- `GET /invite/:token`, `GET /invite`, `POST /api/invitations/:token/accept` → Yönetici davetiye kabul akışı.
 
-#### Korumalı (Protected) Rotalar (Geçerli Oturum Çerezi Zorunlu):
-- `GET /` → Canlı Web Dashboard arayüzü (oturum yoksa `/login` yönlendirmesi).
-- `GET /api/me` → Oturum açmış kullanıcının temel bilgileri (`id`, `email`).
-- `GET /api/usage` → Oturum açmış kullanıcının (`ownerId`) sağlayıcı bakiye ve kota listesi.
-- `GET /api/usage/:id/history` → Oturum açmış kullanıcının belirli bir hesabına ait trend verisi.
-- `POST /api/credentials` → Kullanıcıya ait yeni sağlayıcı kimliği kaydetme (`ownerId` oturumdan alınır).
-- `DELETE /api/credentials/:id` → Kullanıcıya ait kimliği silme (yalnızca sahibi silebilir); kimlik bilgisiyle ilişkili `usage_snapshots` satırları SQLite `ON DELETE CASCADE` nedeniyle kalıcı olarak silinir.
-- `POST /api/refresh` → Kullanıcının kendi hesaplarını anında manuel yenilemesi (Force refresh).
-- `GET /api/events` → SSE akışı (Dashboard açıkken kullanıcının kendi kotalarına ait canlı güncellemeler).
+#### Oturum Korumalı Rotalar
+- `GET /` → Dashboard; `GET /api/auth/me` → Aktif kullanıcının temel bilgileri.
+- `GET /api/usage`, `GET /api/data` → Kullanıcının owner-scoped güncel kota raporları (`/api/data`, usage yanıtının uyumlu alias'ıdır).
+- `POST /api/poll`, `POST /api/credentials/:id/poll` → Kullanıcıya ait hesapları veya bir credential'ı yoklar; her kalıcı yoklama yazısı commit öncesi request oturumunu doğrular.
+- `POST /api/credentials`, `PATCH /api/credentials/:id`, `DELETE /api/credentials/:id` → Yalnız oturum sahibinin credential'larını oluşturur, günceller veya siler.
+- `POST /api/auth/password/change` → `{currentPassword,newPassword}` alır; `200 {success:true}` ile başarılıdır, geçerli oturumu koruyup diğer oturumları iptal eder. Yanlış mevcut parola `401 INVALID_CREDENTIALS`, zayıf yeni parola `400 WEAK_PASSWORD`, sonradan geçersiz kalan oturum `401 UNAUTHENTICATED` olur.
+- `DELETE /api/auth/account` → `{password}` alır; başarılı yanıtta mevcut çerezi siler. Yanlış parola `401 INVALID_CREDENTIALS`, son yönetici `409 LAST_ADMIN`, geçersiz oturum `401 UNAUTHENTICATED` olur.
+- Sağlayıcı OAuth başlatma, durum, cihaz yoklama, manuel tamamlama ve owner-bound session iptali rotaları.
 
-#### Yönetici (Admin) Rotaları (`user.role === "admin"` Zorunlu, Yetkisizler 403):
-- `GET /admin` → Canlı Sistem Yönetici Paneli (kullanıcı tablosu, sistem istatistikleri, sağlayıcı dağılımı).
-- `GET /api/admin/stats` → Sistem genel telemetrisi (toplam kullanıcı, aktif oturum, DB boyutu, sağlayıcı hesap sayıları).
-- `GET /api/admin/users` → Sistemdeki tüm kullanıcıların listesi (hesap ve aktif oturum sayılarıyla).
-- `PATCH /api/admin/users/:id/role` → Kullanıcı rolünü güncelleme (`admin` / `user`). Son yönetici düşürülemez.
-- `DELETE /api/admin/users/:id` → Kullanıcıyı silme (ilişkili verileri cascade silinir; yönetici kendi hesabını veya son yöneticiyi silemez).
-- `GET /api/admin/settings` → Sistem ayarlarını sorgulama (`registrationAllowed`).
-- `PATCH /api/admin/settings/registration` → Genel dış kayıtları açma veya kapatma.
-- `GET /api/admin/invitations` → Sistemdeki tüm davetiyeleri listeleme (ham token_hash gizlenir).
-- `POST /api/admin/invitations` → Yeni tek kullanımlık davetiye üretme (hedef `email` zorunlu, 24 saat geçerli).
-- `DELETE /api/admin/invitations/:id` → Aktif bir davetiyeyi iptal etme (`revoked_at`).
+#### Yönetici (Admin) Rotaları (`user.role === "admin"`; yetkisizler 403)
+- `GET /admin` → Sistem yönetici paneli.
+- `GET /api/admin/stats`, `GET /api/admin/users`, `PATCH /api/admin/users/:id/role`, `DELETE /api/admin/users/:id` → Sistem telemetrisi ve yönetici kullanıcı yönetimi. Admin yönetim endpoint'i kendini silemez; last-admin koruması vardır.
+- `GET /api/admin/settings`, `PATCH /api/admin/settings/registration` → Kayıt politikası.
+- `GET /api/admin/invitations`, `POST /api/admin/invitations`, `DELETE /api/admin/invitations/:id` → Davetiye yönetimi.
+
 
 ---
 
@@ -429,7 +433,7 @@ export const MINIMAL_SSR_CSP = [
 - **Başlıklar:**
   - `X-Frame-Options: DENY` (Clickjacking koruması).
   - `X-Content-Type-Options: nosniff` (MIME sniffing engeli).
-  - `Referrer-Policy: strict-origin-when-cross-origin`.
+  - `Referrer-Policy`: normal panel `strict-origin-when-cross-origin`; recovery pages override to `no-referrer`.
   - `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()`.
   - `Strict-Transport-Security: max-age=31536000; includeSubDomains` (Yalnızca `secure: true` veya HTTPS üretim ortamlarında).
 - **CSP Tasarım Kararı ve Kısıt:** useMeter'ın sunucu taraflı HTML üretimi (SSR), gömülü tema/dil scriptleri ve Tailwind CDN kullanımını bozmamak için `'unsafe-inline'` direktifleri kasıtlı olarak tercih edilmiştir. Template motoru nonce enjekte etmediği için gerçekte var olmayan nonce/hash korumaları iddia edilmez.
@@ -437,19 +441,24 @@ export const MINIMAL_SSR_CSP = [
 ### 4.2. CORS İzin Listesi ve Güvenli Köken Çözümleme
 - **Ortam Değişkenleri:** `CORS_ALLOWED_ORIGINS` veya `USEMETER_ALLOWED_ORIGINS` (virgülle veya boşlukla ayrılmış origin listesi).
 - **Aynı Köken Varsayılanı (Same-Origin Default):** Değişken tanımlanmamışsa sistem yalnızca gelen isteğin kendi kökenine (`requestOrigin`) izin verir.
-- **Kimlikli İsteklerde Joker Karakter Yasağı:** `allowCredentials: true` (`auth_session` çerezi) geçerli olduğunda RFC 6454 gereği `*` (wildcard) kesinlikle reddedilir (`false`).
+- **Kimlikli İsteklerde Joker Karakter Yasağı:** `allowCredentials: true` (`usage_session` çerezi) geçerli olduğunda RFC 6454 gereği `*` (wildcard) kesinlikle reddedilir (`false`).
 
 ### 4.3. Güvenli İstemci IP Çözümlemesi (`TRUST_PROXY`)
 - **Varsayılan Davranış:** `trustProxy` kapalıdır (`false`). İstemci tarafından gönderilen `X-Forwarded-For` veya `X-Real-IP` başlıkları IP sahteciliği (spoofing) ve rate-limit atlatma risklerine karşı **kesinlikle yok sayılır**; doğrudan soket uzak adresi kullanılır.
 - **Ters Vekil Desteği:** Sistem Nginx, Caddy veya Cloudflare arkasında çalışıyorsa `TRUST_PROXY=true` veya `TRUST_PROXY=1` tanımlanmalıdır. Bu durumda `X-Forwarded-For` zincirindeki en soldaki (istemciye ait) geçerli IP adresi güvenle ayıklanır.
 
 ### 4.4. Sınırlandırılmış Bellek-İçi Hız Sınırlayıcı (Bounded In-Memory RateLimiter)
-Bellek sızıntılarını önlemek için en fazla 10.000 benzersiz anahtar tutan (`maxKeys: 10000`), kayan pencere (sliding window) ve deterministik zaman dikişi (`now()` seam) ile çalışan hız sınırlayıcı:
-- **Kimlik Doğrulama (`auth`):** `5 istek / dakika / IP` (`POST /api/auth/login`).
-- **Kayıt/Katılım (`registration`):** `5 istek / dakika / IP`; `POST /api/auth/register` ve `POST /api/invitations/:token/accept` aynı `registration:<IP>` kovasını tüketir. Sınır, gövde ayrıştırılmadan ve parola hash'lenmeden önce uygulanır; iki endpoint arasında geçiş limit aşımını atlatmaz.
-- **Manuel Kota Yoklama (`manualPoll`):** `1 istek / 30 saniye / kullanıcı + credential` (`POST /api/refresh`).
-- **OAuth Cihaz Akışı Yoklama (`oauthDevicePoll`):** `30 istek / dakika / kullanıcı + flow`.
-- **Hata Yanıtı:** Limit aşıldığında HTTP `429 Too Many Requests` ve `Retry-After` başlığı döndürülür.
+RateLimiter en fazla 10.000 anahtar tutar, kayan pencere uygular ve deterministik `now()` dikiş noktasını destekler:
+- **Kimlik Doğrulama (`auth`):** `5/dakika/IP` (`POST /api/auth/login`).
+- **Kayıt/Katılım (`registration`):** `5/dakika/IP`; kayıt ve davetiye kabulü aynı IP kovasını kullanır.
+- **Manuel Yoklama (`manualPoll`):** `1/30 saniye/kullanıcı+credential`; `POST /api/poll` için kullanıcı başına tüm credential kovası kullanılır.
+- **OAuth Cihaz Yoklama (`oauthDevicePoll`):** `30/dakika/kullanıcı+akış`.
+- **Parola Değiştirme (`passwordChange`):** `3/15 dakika/kullanıcı+IP`.
+- **Parola Kurtarma İsteği (`passwordResetRequest`):** `5/saat/IP` ve ayrıca `5/saat/SHA-256(normalized email)`.
+- **Reset Onayı (`passwordResetConfirm`):** `5/15 dakika/IP`.
+- **Öz-Silme (`accountDelete`):** `3/15 dakika/kullanıcı+IP`.
+
+Yeni parola/hesap rotalarında hız sınırı pahalı parola doğrulaması/hashlemesinden önce uygulanır. Aşımda HTTP `429` ve `Retry-After` başlığı döner; API istemcileri `RATE_LIMITED` kodunu kullanır.
 
 #### 4.4.1. Sınırlı OAuth Girişim Yaşam Döngüsü
 
@@ -461,6 +470,7 @@ Bellek sızıntılarını önlemek için en fazla 10.000 benzersiz anahtar tutan
 - Her başarılı initiate yanıtı bir `sessionId` içerir. Sahip `DELETE /api/oauth/sessions/:sessionId` ile pending veya terminal slotu silebilir (200); yabancı/bilinmeyen slot 404. Pending çalışma admission öncesinde iptal edilebilir; `cancel()` admitted senkron commit'i geri alamaz. Bu kısa çağrı yığını başka bir HTTP isteğine yield etmez ve dışarıdan uzun ömürlü iptal istisnası oluşturmaz. Google/Devin state, PKCE, frozen client ve tek kullanım korumaları sürer; terminal yanıtlarda veya public projeksiyonlarda verifier/token/client secret gösterilmez.
 - İptal/expiry signal'ı OAuth initiate/poll/exchange/profile isteklerine, loopback listener'a ve aday usage validation'a aktarılır. Sağlayıcı I/O ve aday doğrulaması bittikten sonra `beforeCommit` tek kullanımlık `admitCommit()` kontrolüyle yalnızca aynı current, owner-bound, claimed, pending ve süresi dolmamış session'ı hemen core commit öncesinde kabul eder; admission sonrası SQL/epoch/snapshot yazılarına kadar `await` veya provider I/O yoktur. Bu uzun ömürlü lease değildir: kabul edilmiş aynı senkron yazıyı OAuth pending expiry/cancel geriye dönük başarısız kılamaz; `complete`/`fail` admission'ı temizleyip normal 60 saniyelik terminal sonucu başlatır. Poller'ın ayrı monotonic attempt deadline'ı yine commit öncesinde denetlenir; o kapı reddederse SQL başlamaz ve failure normal biçimde terminalleşir. Admission öncesi expiry hiçbir aday credential/snapshot yazmaz.
 - Google/Kimi validation token yenilemeleri de aynı enjekte edilmiş `fetch`/session signal'ını kullanır. İptal, token/metadata mutasyonu veya refresh callback'i öncesi reddedilir; iptal edilmiş yenileme normal erişim token'ına fallback veya ikinci usage isteği başlatmaz.
+- Parola değişikliği, reset, öz-silme veya admin silmesi hedef kullanıcının bekleyen OAuth girişimlerini ve poller/provider işlerini iptal eder. Request/session owner yetkisi her `await` sonrasında kalıcı credential veya yoklama yazısından hemen önce doğrulanır; iptal edilmiş isteğin geç callback'i/token refresh'i yazamaz. `admitCommit()` ile kabul edilmiş senkron yazma geriye dönük iptal edilmez.
 - Callback teardown sadece kendi captured server örneğini kapatır; eski timer/abort daha yeni aynı-port listener'ı kapatamaz. Bu, diğer loopback-only sağlayıcıların hosted callback uyumluluğunu çözmüş sayılmaz.
 - Browser modal close/back/restart/error ve unmount bilinen session'ı owner-scoped DELETE ile iptal eder. Initiate yanıtı henüz gelmediyse HTTP isteği kısa 12 saniyelik istemci deadline'ıyla devam eder: geç gelen eski-run yanıtındaki sessionId silinir, yeni akış/UI etkilenmez. Poll/manual istekleri anında abort edilir; unmount generation ve poll timer'ını temizler. EN/TR kapasite, expiry, retry ve hata mesajları yerelleştirilir.
 - Test saati tek `ServerOptions.oauthNow` seam'idir; eski Google-only clock/map'ler kaldırılmıştır. Devin/Cursor usage validation'da keşfedilen kimlik adı provider-label modu ile kalıcılaşır; manuel kullanıcı etiketleri input-bound kalır.
@@ -471,6 +481,7 @@ Bellek sızıntılarını önlemek için en fazla 10.000 benzersiz anahtar tutan
 - OpenRouter [birinci parti headless S256 PKCE](https://openrouter.ai/docs/guides/overview/auth/oauth) kullanır: callback_url yok, kod tek kullanımlık/10 dakika, state headless modda dönmez. Ham opaque code yalnız bu sahibi/PKCE'si bağlı OpenRouter girişimi için kabul edilir.
 - Ortak authenticated `POST /api/oauth/manual` gövdesi `{sessionId, callbackInput}`; provider/redirect/verifier session'dan seçilir. Eski Google-only manual route ve kullanılmayan provider listener export'ları kaldırılmıştır. Google embedded URL paste ve isteğe bağlı custom Web public callback davranışı korunur.
 - URL modu exact origin/path/state, code XOR error ve duplicate-param kontrolü yapar; pasted URI fetch edilmez. State üretimi CSPRNG UUID'dir. Owner/claim/replay/expiry/abort/beforeCommit ile P0-2 güvenliği devam eder; iki kullanıcının aynı provider girişimi birbirinin listener'ını kapatamaz.
+- Manuel endpoint'te owner'ı bilinen terminal girişim HTTP `400` döner; süresi dolmuş girişimde mevcut hata kodu `Authorization session expired` olur. Bilinmeyen veya başka kullanıcıya ait `sessionId` HTTP `404` döner.
 - Başarısız exchange/validation mevcut credential, metadata, accent ve snapshot geçmişini korur. EN/TR manual URL/code formu provider'a uygun yönerge sunar; başarıdan sonra terminal receipt okunabilir kalır ve dashboard güncellenir. Sentetik exchange testleri, gerçek sağlayıcı hesap veya kota uyumluluğu kanıtı değildir.
 
 

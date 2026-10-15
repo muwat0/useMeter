@@ -220,6 +220,8 @@ export interface SecurityHeadersOptions {
   hsts?: boolean;
   /** HSTS max-age in seconds (default: 31536000 = 1 year) */
   hstsMaxAge?: number;
+  /** Override the default Referrer-Policy response header. */
+  referrerPolicy?: string;
 }
 
 /**
@@ -233,7 +235,7 @@ export function getSecurityHeaders(
   const headers: Record<string, string> = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Referrer-Policy": options.referrerPolicy ?? "strict-origin-when-cross-origin",
   };
 
   const csp = options.contentSecurityPolicy !== undefined ? options.contentSecurityPolicy : MINIMAL_SSR_CSP;
@@ -325,12 +327,20 @@ interface RateLimitEntry {
  * - registration: 5/min/IP
  * - manualPoll: 1/30s/user+credential
  * - oauthDevicePoll: 30/min/user+flow
+ * - passwordChange: 3/15m/user+IP
+ * - passwordResetRequest: 5/hour/IP and address
+ * - passwordResetConfirm: 5/15m/IP
+ * - accountDelete: 3/15m/user+IP
  */
 export const RATE_LIMIT_POLICIES = {
   auth: { max: 5, windowMs: 60_000 },
   registration: { max: 5, windowMs: 60_000 },
   manualPoll: { max: 1, windowMs: 30_000 },
   oauthDevicePoll: { max: 30, windowMs: 60_000 },
+  passwordChange: { max: 3, windowMs: 15 * 60_000 },
+  passwordResetRequest: { max: 5, windowMs: 60 * 60_000 },
+  passwordResetConfirm: { max: 5, windowMs: 15 * 60_000 },
+  accountDelete: { max: 3, windowMs: 15 * 60_000 },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export class RateLimiter {
