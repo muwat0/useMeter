@@ -3297,14 +3297,24 @@ function renderAdminForbiddenHtml(): string {
 <body class="min-h-screen flex items-center justify-center p-4">
   <div class="max-w-md w-full border border-rose-500/30 bg-[#111318] rounded-2xl p-8 text-center space-y-4 shadow-xl">
     <div class="w-12 h-12 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 mx-auto flex items-center justify-center text-xl font-bold font-mono">!</div>
-    <h1 class="text-lg font-bold text-[#f4f4f6]">403 - Erişim Yetkiniz Yok / Forbidden: Admin Access Required</h1>
-    <p class="text-xs text-[#8e95a5] leading-relaxed">Bu yönetim paneline ve sistem ayarlarına erişmek için yönetici (admin) rolüne sahip olmanız gerekmektedir.</p>
+    <h1 id="forbiddenTitle" class="text-lg font-bold text-[#f4f4f6]" data-admin-text-tr="403 - Erişim Yetkiniz Yok" data-admin-text-en="403 - Admin Access Forbidden">403 - Erişim Yetkiniz Yok</h1>
+    <p id="forbiddenDescription" class="text-xs text-[#8e95a5] leading-relaxed" data-admin-text-tr="Bu yönetim paneline ve sistem ayarlarına erişmek için yönetici (admin) rolüne sahip olmanız gerekmektedir." data-admin-text-en="You must have the administrator (admin) role to access this dashboard and its system settings.">Bu yönetim paneline ve sistem ayarlarına erişmek için yönetici (admin) rolüne sahip olmanız gerekmektedir.</p>
     <div class="pt-4">
       <a href="/" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold bg-[#1f232b] hover:bg-[#2a303c] text-[#f4f4f6] transition border border-[#1f232b]">
-        &larr; Panoya Dön / Back to Dashboard
+        &larr; <span id="forbiddenBackLink" data-admin-text-tr="Panoya Dön" data-admin-text-en="Back to Dashboard">Panoya Dön</span>
       </a>
     </div>
   </div>
+  <script>
+    const language = window.localStorage.getItem("usage_lang") === "en" ? "en" : "tr";
+    document.documentElement.lang = language;
+    document.title = language === "en"
+      ? "403 - Admin Access Forbidden | useMeter"
+      : "403 - Erişim Yetkiniz Yok | useMeter";
+    document.querySelectorAll("[data-admin-text-tr][data-admin-text-en]").forEach(element => {
+      element.textContent = element.getAttribute("data-admin-text-" + language) || "";
+    });
+  </script>
 </body>
 </html>`;
 }
@@ -3346,15 +3356,15 @@ function renderAdminDashboardHtml(params: {
     const isLastAdmin = u.role === "admin" && totalAdmins <= 1;
 
     const roleBadge = u.role === "admin"
-      ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30 font-mono">Admin</span>`
-      : `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-500/10 text-slate-300 border border-slate-500/30 font-mono">User</span>`;
+      ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30 font-mono" data-i18n="roleAdminLabel">Yönetici</span>`
+      : `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-500/10 text-slate-300 border border-slate-500/30 font-mono" data-i18n="roleUserLabel">Kullanıcı</span>`;
 
     let roleBtnHtml = "";
     if (u.role === "admin") {
       if (isSelf) {
-        roleBtnHtml = `<button disabled title="Kendi rolünüzü değiştiremezsiniz / Cannot demote self" class="px-2.5 py-1 rounded-lg text-xs font-semibold border border-appBorder text-appTextMuted opacity-40 cursor-not-allowed font-mono">Rolü Al</button>`;
+        roleBtnHtml = `<button disabled title="Kendi rolünüzü değiştiremezsiniz" data-i18n-title="hintCannotDemoteSelf" class="px-2.5 py-1 rounded-lg text-xs font-semibold border border-appBorder text-appTextMuted opacity-40 cursor-not-allowed font-mono"><span data-i18n="btnDemote">Kullanıcı Yap</span></button>`;
       } else if (isLastAdmin) {
-        roleBtnHtml = `<button disabled title="Sistemdeki son yönetici indirgenemez / Cannot demote the last admin" class="px-2.5 py-1 rounded-lg text-xs font-semibold border border-appBorder text-appTextMuted opacity-40 cursor-not-allowed font-mono">Rolü Al</button>`;
+        roleBtnHtml = `<button disabled title="Sistemdeki son yöneticinin rolü düşürülemez" data-i18n-title="hintCannotDemoteLastAdmin" class="px-2.5 py-1 rounded-lg text-xs font-semibold border border-appBorder text-appTextMuted opacity-40 cursor-not-allowed font-mono"><span data-i18n="btnDemote">Kullanıcı Yap</span></button>`;
       } else {
         roleBtnHtml = `<button type="button" onclick="updateRole('${u.id}', 'user')" class="px-2.5 py-1 rounded-lg text-xs font-semibold border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 transition font-mono cursor-pointer" data-i18n="btnDemote">Kullanıcı Yap</button>`;
       }
@@ -3364,9 +3374,9 @@ function renderAdminDashboardHtml(params: {
 
     let deleteBtnHtml = "";
     if (isSelf) {
-      deleteBtnHtml = `<button disabled title="Kendi hesabınızı silemezsiniz / Cannot delete own account" class="px-2.5 py-1 rounded-lg text-xs font-semibold border border-appBorder text-appTextMuted opacity-40 cursor-not-allowed font-mono">Sil</button>`;
+      deleteBtnHtml = `<button disabled title="Kendi hesabınızı silemezsiniz" data-i18n-title="hintCannotDeleteSelf" class="px-2.5 py-1 rounded-lg text-xs font-semibold border border-appBorder text-appTextMuted opacity-40 cursor-not-allowed font-mono"><span data-i18n="btnDelete">Sil</span></button>`;
     } else if (isLastAdmin) {
-      deleteBtnHtml = `<button disabled title="Sistemdeki son yönetici silinemez / Cannot delete the last admin" class="px-2.5 py-1 rounded-lg text-xs font-semibold border border-appBorder text-appTextMuted opacity-40 cursor-not-allowed font-mono">Sil</button>`;
+      deleteBtnHtml = `<button disabled title="Sistemdeki son yönetici silinemez" data-i18n-title="hintCannotDeleteLastAdmin" class="px-2.5 py-1 rounded-lg text-xs font-semibold border border-appBorder text-appTextMuted opacity-40 cursor-not-allowed font-mono"><span data-i18n="btnDelete">Sil</span></button>`;
     } else {
       deleteBtnHtml = `<button type="button" onclick="deleteUser('${u.id}', '${escapeHtml(u.email)}')" class="px-2.5 py-1 rounded-lg text-xs font-semibold border border-rose-500/40 text-rose-400 hover:bg-rose-500/10 transition font-mono cursor-pointer" data-i18n="btnDelete">Sil</button>`;
     }
@@ -3376,7 +3386,7 @@ function renderAdminDashboardHtml(params: {
         <td class="px-5 py-3.5">
           <div class="flex items-center gap-2">
             <span class="font-medium text-appText font-mono">${escapeHtml(u.email)}</span>
-            ${isSelf ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-appAccentSoft text-appAccent border border-appAccent/30 font-mono">SİZ</span>` : ""}
+            ${isSelf ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-appAccentSoft text-appAccent border border-appAccent/30 font-mono" data-i18n="selfBadge">SİZ</span>` : ""}
           </div>
           <span class="text-[11px] text-appTextMuted font-mono block mt-0.5">ID: ${escapeHtml(u.id)}</span>
         </td>
@@ -3438,7 +3448,7 @@ function renderAdminDashboardHtml(params: {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Yönetim Paneli | useMeter [ADMIN]</title>
+  <title data-i18n="documentTitle">Yönetim Paneli | useMeter [YÖNETİCİ]</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -3497,9 +3507,9 @@ function renderAdminDashboardHtml(params: {
     <div class="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
       <!-- Left Logo & Back Link -->
       <div class="flex items-center gap-2 sm:gap-3">
-        <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" title="System Operational"></span>
+        <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" title="Sistem çalışır durumda" data-i18n-title="systemOperational"></span>
         <span class="font-extrabold tracking-wider text-base text-appText font-mono">use<span class="text-appAccent">Meter</span></span>
-        <span class="px-2 py-0.5 text-[11px] font-extrabold uppercase tracking-wider rounded-md bg-amber-500/10 text-amber-500 border border-amber-500/30 font-mono">ADMIN</span>
+        <span class="px-2 py-0.5 text-[11px] font-extrabold uppercase tracking-wider rounded-md bg-amber-500/10 text-amber-500 border border-amber-500/30 font-mono" data-i18n="adminBadge">YÖNETİCİ</span>
         <a href="/" class="text-xs text-appTextMuted hover:text-appAccent transition flex items-center gap-1 border-l border-appBorder pl-2.5 sm:pl-3 ml-1">
           <span>&larr;</span>
           <span data-i18n="backToDashboard">Panoya Dön</span>
@@ -3509,12 +3519,12 @@ function renderAdminDashboardHtml(params: {
       <!-- Right Controls -->
       <div class="flex items-center gap-2 sm:gap-3">
         <!-- Dark / Light Mode Toggle -->
-        <button onclick="toggleLightDark()" id="lightDarkBtn" title="Koyu / Aydınlık Mod" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm cursor-pointer">
+        <button onclick="toggleLightDark()" id="lightDarkBtn" title="Temayı değiştir" aria-label="Temayı değiştir" data-i18n-title="themeToggle" class="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm cursor-pointer">
           <span id="lightDarkIcon">☀️</span>
         </button>
 
         <!-- Language Switcher -->
-        <button onclick="toggleLang()" id="langBtn" class="h-9 px-2.5 sm:px-3 rounded-lg border border-appBorder bg-appSurface text-appText text-xs font-semibold hover:border-appAccent/50 transition flex items-center gap-1.5 cursor-pointer font-mono">
+        <button onclick="toggleLang()" id="langBtn" title="Dili değiştir" aria-label="Dili değiştir" data-i18n-title="languageToggle" class="h-9 px-2.5 sm:px-3 rounded-lg border border-appBorder bg-appSurface text-appText text-xs font-semibold hover:border-appAccent/50 transition flex items-center gap-1.5 cursor-pointer font-mono">
           <span id="langFlag" class="text-base">🇹🇷</span>
           <span id="langLabel">TR</span>
         </button>
@@ -3528,7 +3538,7 @@ function renderAdminDashboardHtml(params: {
         </div>
 
         <!-- Logout Button -->
-        <button type="button" onclick="logoutUser()" id="logoutBtn" title="Oturumu Kapat" class="h-9 px-2.5 sm:px-3 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-rose-400 hover:border-rose-500/50 transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer">
+        <button type="button" onclick="logoutUser()" id="logoutBtn" title="Oturumu kapat" aria-label="Oturumu kapat" data-i18n-title="logoutTitle" class="h-9 px-2.5 sm:px-3 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-rose-400 hover:border-rose-500/50 transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
             <polyline points="16 17 21 12 16 7"></polyline>
@@ -3552,7 +3562,7 @@ function renderAdminDashboardHtml(params: {
       </div>
       <div class="text-xs font-mono text-appTextMuted flex items-center gap-2">
         <span class="w-2 h-2 rounded-full ${stats.integrity ? "bg-emerald-500" : "bg-rose-500"}"></span>
-        <span>PRAGMA quick_check: <strong class="${stats.integrity ? "text-emerald-400" : "text-rose-400"}">${stats.integrity ? "OK" : "CORRUPT"}</strong></span>
+        <span>PRAGMA quick_check: <strong class="${stats.integrity ? "text-emerald-400" : "text-rose-400"}" data-i18n="${stats.integrity ? "integrityHealthy" : "integrityFailed"}">${stats.integrity ? "Sağlam" : "Bozuk"}</strong></span>
       </div>
     </div>
 
@@ -3606,7 +3616,7 @@ function renderAdminDashboardHtml(params: {
           <h2 class="text-sm font-bold text-appText" data-i18n="providerDistTitle">Sağlayıcı Hesap Dağılımı</h2>
           <p class="text-xs text-appTextMuted mt-0.5" data-i18n="providerDistDesc">Sistem genelinde tüm kullanıcılar tarafından bağlanan hesap sayıları.</p>
         </div>
-        <span class="px-2 py-0.5 rounded-md bg-appMuted text-appText font-mono text-xs font-semibold border border-appBorder">${providerEntries.length} Sağlayıcı</span>
+        <span class="px-2 py-0.5 rounded-md bg-appMuted text-appText font-mono text-xs font-semibold border border-appBorder">${providerEntries.length} <span data-i18n="providerCountSuffix">Sağlayıcı</span></span>
       </div>
       <div class="flex flex-wrap gap-2 pt-1">
         ${providerPillsHtml}
@@ -3662,7 +3672,7 @@ function renderAdminDashboardHtml(params: {
             <span>✓</span>
             <span data-i18n="inviteCreatedSuccess">Davet bağlantısı oluşturuldu!</span>
           </div>
-          <button type="button" onclick="document.getElementById('createdInviteAlert').classList.add('hidden')" class="text-xs text-emerald-400/60 hover:text-emerald-400 font-mono">✕</button>
+          <button type="button" onclick="document.getElementById('createdInviteAlert').classList.add('hidden')" title="Davet oluşturma bildirimini kapat" aria-label="Davet oluşturma bildirimini kapat" data-i18n-title="dismissInviteSuccess" class="text-xs text-emerald-400/60 hover:text-emerald-400 font-mono">✕</button>
         </div>
         <p class="text-xs text-appTextMuted" data-i18n="inviteCopyHint">Bu bağlantı yalnızca bir kez gösterilir. Davet edilen kullanıcıya iletin:</p>
         <div class="flex items-center gap-2">
@@ -3721,7 +3731,7 @@ function renderAdminDashboardHtml(params: {
     <div class="w-full max-w-md border border-appBorder bg-appSurface rounded-2xl p-6 shadow-xl space-y-4">
       <div class="flex items-center justify-between">
         <h3 class="text-sm font-bold text-appText" data-i18n="modalInviteTitle">Yeni Kullanıcı Davet Et</h3>
-        <button type="button" onclick="closeInviteModal()" class="text-appTextMuted hover:text-appText text-sm font-mono cursor-pointer">✕</button>
+        <button type="button" onclick="closeInviteModal()" title="Davet penceresini kapat" aria-label="Davet penceresini kapat" data-i18n-title="closeInviteModal" class="text-appTextMuted hover:text-appText text-sm font-mono cursor-pointer">✕</button>
       </div>
       <p class="text-xs text-appTextMuted" data-i18n="modalInviteDesc">Davet edilecek kullanıcının e-posta adresini girin. 24 saat geçerli tek kullanımlık bir bağlantı oluşturulacaktır.</p>
       <form id="inviteForm" onsubmit="createInvitation(event)" class="space-y-4">
@@ -3802,6 +3812,47 @@ function renderAdminDashboardHtml(params: {
         labelInviteEmail: "E-posta Adresi",
         btnCancel: "İptal",
         btnSendInvite: "Davet Oluştur",
+        documentTitle: "Yönetim Paneli | useMeter [YÖNETİCİ]",
+        systemOperational: "Sistem çalışır durumda",
+        adminBadge: "YÖNETİCİ",
+        integrityHealthy: "Sağlam",
+        integrityFailed: "Bozuk",
+        themeToggle: "Temayı değiştir",
+        languageToggle: "Dili değiştir",
+        logoutTitle: "Oturumu kapat",
+        providerCountSuffix: "Sağlayıcı",
+        roleAdminLabel: "Yönetici",
+        roleUserLabel: "Kullanıcı",
+        selfBadge: "SİZ",
+        hintCannotDemoteSelf: "Kendi rolünüzü değiştiremezsiniz",
+        hintCannotDemoteLastAdmin: "Sistemdeki son yöneticinin rolü düşürülemez",
+        hintCannotDeleteSelf: "Kendi hesabınızı silemezsiniz",
+        hintCannotDeleteLastAdmin: "Sistemdeki son yönetici silinemez",
+        closeInviteModal: "Davet penceresini kapat",
+        dismissInviteSuccess: "Davet oluşturma bildirimini kapat",
+        confirmRoleChange: "Bu kullanıcının rolünü {role} olarak değiştirmek istediğinizden emin misiniz?",
+        copied: "Kopyalandı!",
+        networkError: "Bağlantı hatası",
+        roleUpdateFailed: "Rol güncellenemedi",
+        userDeleteFailed: "Kullanıcı silinemedi",
+        registrationUpdateFailed: "Ayar güncellenemedi",
+        invitationCreateFailed: "Davet oluşturulamadı",
+        invitationRevokeFailed: "Davet iptal edilemedi",
+        databaseClosed: "Veritabanı bağlantısı kapalı.",
+        unauthorized: "Bu işlemi gerçekleştirme yetkiniz yok.",
+        userNotFound: "Kullanıcı bulunamadı.",
+        cannotDemoteLastAdmin: "Sistemdeki son yöneticinin rolü düşürülemez.",
+        cannotDeleteOwnAccount: "Kendi hesabınızı silemezsiniz.",
+        cannotDeleteLastAdmin: "Sistemdeki son yönetici silinemez.",
+        invalidRole: "Geçersiz rol seçimi.",
+        registrationValueInvalid: "Kayıt ayarı geçersiz.",
+        requestPayloadInvalid: "İstek verileri geçersiz.",
+        emailRequired: "E-posta adresi gereklidir.",
+        emailInvalid: "E-posta adresi biçimi geçersiz.",
+        emailExists: "Bu e-posta adresiyle bir hesap zaten var.",
+        invitationIdRequired: "Davet kimliği gereklidir.",
+        onlyAdminsCreateInvitations: "Davetleri yalnızca yöneticiler oluşturabilir.",
+        onlyAdminsRevokeInvitations: "Davetleri yalnızca yöneticiler iptal edebilir.",
       },
       en: {
         flag: "🇬🇧",
@@ -3826,7 +3877,7 @@ function renderAdminDashboardHtml(params: {
         thRole: "Role",
         thCredentials: "Credentials",
         thSessions: "Sessions",
-        thRegistered: "Registered Date",
+        thRegistered: "Registration Date",
         thActions: "Actions",
         btnPromote: "Promote to Admin",
         btnDemote: "Demote to User",
@@ -3860,20 +3911,99 @@ function renderAdminDashboardHtml(params: {
         labelInviteEmail: "Email Address",
         btnCancel: "Cancel",
         btnSendInvite: "Create Invitation",
+        documentTitle: "System Administration | useMeter [ADMIN]",
+        systemOperational: "System operational",
+        adminBadge: "ADMIN",
+        integrityHealthy: "OK",
+        integrityFailed: "CORRUPT",
+        themeToggle: "Toggle theme",
+        languageToggle: "Change language",
+        logoutTitle: "Sign out",
+        providerCountSuffix: "Providers",
+        roleAdminLabel: "Administrator",
+        roleUserLabel: "User",
+        selfBadge: "YOU",
+        hintCannotDemoteSelf: "You cannot change your own role",
+        hintCannotDemoteLastAdmin: "The last administrator cannot be demoted",
+        hintCannotDeleteSelf: "You cannot delete your own account",
+        hintCannotDeleteLastAdmin: "The last administrator cannot be deleted",
+        closeInviteModal: "Close invitation dialog",
+        dismissInviteSuccess: "Dismiss invitation created notice",
+        confirmRoleChange: "Are you sure you want to change this user's role to {role}?",
+        copied: "Copied!",
+        networkError: "Network error",
+        roleUpdateFailed: "Failed to update role",
+        userDeleteFailed: "Failed to delete user",
+        registrationUpdateFailed: "Failed to update setting",
+        invitationCreateFailed: "Failed to create invitation",
+        invitationRevokeFailed: "Failed to revoke invitation",
+        databaseClosed: "The database connection is closed.",
+        unauthorized: "You are not authorized to perform this action.",
+        userNotFound: "User not found.",
+        cannotDemoteLastAdmin: "The last administrator cannot be demoted.",
+        cannotDeleteOwnAccount: "You cannot delete your own account.",
+        cannotDeleteLastAdmin: "The last administrator cannot be deleted.",
+        invalidRole: "The selected role is invalid.",
+        registrationValueInvalid: "The registration setting is invalid.",
+        requestPayloadInvalid: "The request data is invalid.",
+        emailRequired: "An email address is required.",
+        emailInvalid: "The email address format is invalid.",
+        emailExists: "An account with this email address already exists.",
+        invitationIdRequired: "An invitation ID is required.",
+        onlyAdminsCreateInvitations: "Only administrators can create invitations.",
+        onlyAdminsRevokeInvitations: "Only administrators can revoke invitations.",
       }
     };
+    const ADMIN_API_ERROR_KEYS = {
+      "Database is closed": "databaseClosed",
+      "Unauthorized": "unauthorized",
+      "User not found": "userNotFound",
+      "Cannot demote the last admin": "cannotDemoteLastAdmin",
+      "Cannot delete your own account": "cannotDeleteOwnAccount",
+      "Cannot delete the last admin": "cannotDeleteLastAdmin",
+      "Invalid role: must be 'admin' or 'user'": "invalidRole",
+      "Failed to update role": "roleUpdateFailed",
+      "Failed to delete user": "userDeleteFailed",
+      "Invalid allowRegistration: must be boolean": "registrationValueInvalid",
+      "Invalid request payload": "requestPayloadInvalid",
+      "Email address is required": "emailRequired",
+      "Invalid email address format": "emailInvalid",
+      "An account with this email address already exists": "emailExists",
+      "Only administrators can create invitations": "onlyAdminsCreateInvitations",
+      "Failed to create invitation": "invitationCreateFailed",
+      "Invitation ID is required": "invitationIdRequired",
+      "Only administrators can revoke invitations": "onlyAdminsRevokeInvitations",
+      "Failed to revoke invitation": "invitationRevokeFailed",
+    };
 
-    let currentLang = localStorage.getItem('usage_lang') || 'tr';
+    const savedLanguage = localStorage.getItem('usage_lang');
+    let currentLang = savedLanguage === 'en' ? 'en' : 'tr';
     let currentMode = localStorage.getItem('usage_mode') || 'dark';
 
     function t(key) {
-      return (I18N[currentLang] && I18N[currentLang][key]) || (I18N['tr'][key]) || key;
+      return (I18N[currentLang] && I18N[currentLang][key]) || I18N.tr[key] || key;
+    }
+
+    function translateAdminError(error, fallbackKey) {
+      const key = typeof error === 'string' && Object.prototype.hasOwnProperty.call(ADMIN_API_ERROR_KEYS, error)
+        ? ADMIN_API_ERROR_KEYS[error]
+        : undefined;
+      return t(key || fallbackKey);
     }
 
     function applyI18n() {
+      document.documentElement.lang = currentLang;
+      document.title = t('documentTitle');
       document.querySelectorAll('[data-i18n]').forEach(el => {
         const key = el.getAttribute('data-i18n');
-        if (key) el.innerHTML = t(key);
+        if (key) el.textContent = t(key);
+      });
+      document.querySelectorAll('[data-i18n-title]').forEach(el => {
+        const key = el.getAttribute('data-i18n-title');
+        if (!key) return;
+        const value = t(key);
+        el.setAttribute('title', value);
+        el.setAttribute('aria-label', value);
       });
       const flagEl = document.getElementById('langFlag');
       if (flagEl && I18N[currentLang]) flagEl.innerText = I18N[currentLang].flag;
@@ -3902,9 +4032,8 @@ function renderAdminDashboardHtml(params: {
     }
 
     function updateRole(userId, newRole) {
-      const confirmMsg = currentLang === 'tr'
-        ? ('Bu kullanıcının rolünü "' + newRole + '" olarak değiştirmek istediğinizden emin misiniz?')
-        : ('Are you sure you want to change user role to "' + newRole + '"?');
+      const roleLabel = t(newRole === 'admin' ? 'roleAdminLabel' : 'roleUserLabel');
+      const confirmMsg = t('confirmRoleChange').replace('{role}', roleLabel);
       if (!confirm(confirmMsg)) return;
 
       fetch('/api/admin/users/' + encodeURIComponent(userId) + '/role', {
@@ -3915,12 +4044,12 @@ function renderAdminDashboardHtml(params: {
       .then(async r => {
         const data = await r.json();
         if (!r.ok || !data.success) {
-          alert(data.error || (currentLang === 'tr' ? 'Rol güncellenemedi' : 'Failed to update role'));
+          alert(translateAdminError(data.error, 'roleUpdateFailed'));
         } else {
           window.location.reload();
         }
       })
-      .catch(err => alert(String(err)));
+      .catch(() => alert(t('networkError')));
     }
 
     function deleteUser(userId, email) {
@@ -3935,12 +4064,12 @@ function renderAdminDashboardHtml(params: {
       .then(async r => {
         const data = await r.json();
         if (!r.ok || !data.success) {
-          alert(data.error || (currentLang === 'tr' ? 'Kullanıcı silinemedi' : 'Failed to delete user'));
+          alert(translateAdminError(data.error, 'userDeleteFailed'));
         } else {
           window.location.reload();
         }
       })
-      .catch(err => alert(String(err)));
+      .catch(() => alert(t('networkError')));
     }
     function toggleRegistration(allow) {
       const confirmMsg = currentLang === 'tr'
@@ -3961,15 +4090,15 @@ function renderAdminDashboardHtml(params: {
       .then(async r => {
         const data = await r.json();
         if (!r.ok || !data.success) {
-          alert(data.error || (currentLang === 'tr' ? 'Ayar güncellenemedi' : 'Failed to update setting'));
+          alert(translateAdminError(data.error, 'registrationUpdateFailed'));
           if (btn) btn.disabled = false;
           if (spinner) spinner.classList.add('hidden');
         } else {
           window.location.reload();
         }
       })
-      .catch(err => {
-        alert(String(err));
+      .catch(() => {
+        alert(t('networkError'));
         if (btn) btn.disabled = false;
         if (spinner) spinner.classList.add('hidden');
       });
@@ -4005,7 +4134,7 @@ function renderAdminDashboardHtml(params: {
         });
         const data = await res.json();
         if (!res.ok || !data.success) {
-          errorEl.innerText = data.error || (currentLang === 'tr' ? 'Davet oluşturulamadı' : 'Failed to create invitation');
+          errorEl.innerText = translateAdminError(data.error, 'invitationCreateFailed');
           errorEl.classList.remove('hidden');
           return;
         }
@@ -4016,8 +4145,8 @@ function renderAdminDashboardHtml(params: {
         urlInput.value = data.inviteUrl || (window.location.origin + '/invite/' + data.token);
         alertBox.classList.remove('hidden');
         alertBox.scrollIntoView({ behavior: 'smooth' });
-      } catch (err) {
-        errorEl.innerText = currentLang === 'tr' ? 'Bağlantı hatası' : 'Network error';
+      } catch {
+        errorEl.innerText = t('networkError');
         errorEl.classList.remove('hidden');
       } finally {
         spinner.classList.add('hidden');
@@ -4030,9 +4159,8 @@ function renderAdminDashboardHtml(params: {
       input.select();
       navigator.clipboard.writeText(input.value).then(() => {
         const btn = document.getElementById('copyInviteBtn');
-        const orig = btn.innerText;
-        btn.innerText = currentLang === 'tr' ? 'Kopyalandı!' : 'Copied!';
-        setTimeout(() => { btn.innerText = orig; }, 2000);
+        btn.innerText = t('copied');
+        setTimeout(() => { btn.innerText = t('btnCopy'); }, 2000);
       });
     }
 
@@ -4048,13 +4176,13 @@ function renderAdminDashboardHtml(params: {
       .then(async r => {
         const data = await r.json();
         if (!r.ok || !data.success) {
-          alert(data.error || (currentLang === 'tr' ? 'Davet iptal edilemedi' : 'Failed to revoke invitation'));
+          alert(translateAdminError(data.error, 'invitationRevokeFailed'));
         } else {
           window.location.reload();
         }
       })
       .catch(() => {
-        alert(currentLang === 'tr' ? 'Bağlantı hatası' : 'Network error');
+        alert(t('networkError'));
       });
     }
 

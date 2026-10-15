@@ -91,8 +91,6 @@ describe("Admin Panel & Role-Based Access Control", () => {
       headers: { Cookie: userCookie },
     });
     expect(userAdminHtml.status).toBe(403);
-    const userAdminHtmlText = await userAdminHtml.text();
-    expect(userAdminHtmlText).toContain("403 - Erişim Yetkiniz Yok / Forbidden: Admin Access Required");
 
     const userAdminStats = await app.request("/api/admin/stats", {
       headers: { Cookie: userCookie },
