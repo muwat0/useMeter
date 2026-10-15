@@ -1,0 +1,16 @@
+[Unit]
+Description=Create and verify a protected useMeter SQLite backup
+
+[Service]
+Type=oneshot
+Environment=USEMETER_PROJECT_DIR=%h/useMeter-deploy
+Environment=USEMETER_COMPOSE_FILE=%h/useMeter-deploy/compose.yaml
+Environment=USEMETER_BACKUP_DIR=%h/usemeter-backups
+EnvironmentFile=-%h/.config/usemeter/backup.env
+WorkingDirectory=%h
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+TimeoutStartSec=30min
+ExecStart=%h/.local/lib/usemeter/backup/usemeter-backup.sh

@@ -99,6 +99,79 @@ describe("Server API Endpoints", () => {
     vault.close();
   });
 
+  it("protects operational metrics and reports health, poller, and storage state to admins", async () => {
+    const vault = new StorageVault(":memory:");
+    const registry = createDefaultRegistry();
+    const poller = new PollerEngine(vault, registry, { minProviderIntervalMs: 0 });
+    const app = createServer(vault, poller, registry);
+
+    const anonymous = await app.request("/api/admin/metrics");
+    expect(anonymous.status).toBe(401);
+
+    const adminRegister = await app.request("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "metrics-admin@example.test", password: "Password12345678!" }),
+    });
+    expect(adminRegister.status).toBe(201);
+    const adminCookie = adminRegister.headers.get("Set-Cookie")!.split(";")[0]!;
+
+    const userRegister = await app.request("/api/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "metrics-user@example.test", password: "Password12345678!" }),
+    });
+    expect(userRegister.status).toBe(201);
+    const userCookie = userRegister.headers.get("Set-Cookie")!.split(";")[0]!;
+    const forbidden = await app.request("/api/admin/metrics", {
+      headers: { Cookie: userCookie },
+    });
+    expect(forbidden.status).toBe(403);
+
+    const response = await app.request("/api/admin/metrics", {
+      headers: { Cookie: adminCookie },
+    });
+    expect(response.status).toBe(200);
+    const metrics = await response.json() as {
+      success: boolean;
+      health: { integrity: boolean };
+      poller: { running: boolean; lastSweepStatus: string; consecutiveSweepFailures: number };
+      storage: {
+        databaseSizeBytes: number;
+        walSizeBytes: number;
+        freePageCount: number;
+        totalSnapshots: number;
+        activeCredentials: number;
+      };
+      mailBridge: { configured: boolean; status: string };
+      alertThresholds: {
+        diskUsagePercent: number;
+        consecutivePollerFailures: number;
+        pollerMustBeRunning: boolean;
+        databaseIntegrityRequired: boolean;
+        mailBridgeReachabilityRequiredWhenConfigured: boolean;
+      };
+    };
+    expect(metrics.success).toBe(true);
+    expect(metrics.health.integrity).toBe(true);
+    expect(metrics.poller.running).toBe(false);
+    expect(metrics.poller.lastSweepStatus).toBe("never");
+    expect(metrics.poller.consecutiveSweepFailures).toBe(0);
+    expect(metrics.storage.databaseSizeBytes).toBeGreaterThanOrEqual(0);
+    expect(metrics.storage.walSizeBytes).toBeGreaterThanOrEqual(0);
+    expect(metrics.storage.freePageCount).toBeGreaterThanOrEqual(0);
+    expect(metrics.storage.totalSnapshots).toBe(0);
+    expect(metrics.storage.activeCredentials).toBe(0);
+    expect(["disabled", "available", "unavailable"]).toContain(metrics.mailBridge.status);
+    expect(metrics.alertThresholds.diskUsagePercent).toBe(90);
+    expect(metrics.alertThresholds.consecutivePollerFailures).toBe(3);
+    expect(metrics.alertThresholds.pollerMustBeRunning).toBe(true);
+    expect(metrics.alertThresholds.databaseIntegrityRequired).toBe(true);
+    expect(metrics.alertThresholds.mailBridgeReachabilityRequiredWhenConfigured).toBe(true);
+
+    vault.close();
+  });
+
   it("deletes an owner's credential and cascades usage history while rejecting other callers", async () => {
     const vault = new StorageVault(":memory:");
     const registry = createDefaultRegistry();

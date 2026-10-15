@@ -32,6 +32,15 @@ export interface PollerOptions {
   admissionTimeoutMs?: number;
 }
 
+export interface PollerOperationalStatus {
+  running: boolean;
+  sweepInProgress: boolean;
+  lastSweepStatus: "never" | "running" | "ok" | "degraded" | "error";
+  lastSweepDurationMs: number | null;
+  lastSweepCompletedAt: number | null;
+  consecutiveSweepFailures: number;
+}
+
 export type PollerAdmissionErrorCode = "QUEUE_FULL" | "ADMISSION_TIMEOUT";
 
 export class PollerAdmissionError extends Error {
@@ -432,6 +441,10 @@ export class PollerEngine {
   #timer?: Timer;
   #running = false;
   #sweepInFlight?: Promise<UsageReport[]>;
+  #lastSweepStatus: "never" | "running" | "ok" | "degraded" | "error" = "never";
+  #lastSweepDurationMs: number | null = null;
+  #lastSweepCompletedAt: number | null = null;
+  #consecutiveSweepFailures = 0;
   constructor(vault: StorageVault, registry: ProviderRegistry, options: PollerOptions = {}) {
     const pollTimeoutMs = options.pollTimeoutMs ?? DEFAULT_POLL_TIMEOUT_MS;
     if (
@@ -974,8 +987,26 @@ export class PollerEngine {
   pollAll(): Promise<UsageReport[]> {
     if (this.#sweepInFlight) return this.#sweepInFlight;
 
+    const startedAt = performance.now();
+    this.#lastSweepStatus = "running";
     let sweep!: Promise<UsageReport[]>;
-    sweep = this.#runSweep().finally(() => {
+    sweep = this.#runSweep().then(
+      reports => {
+        const failed = reports.some(report =>
+          report.health === "error" || report.health === "stale" || Boolean(report.error)
+        );
+        this.#lastSweepStatus = failed ? "degraded" : "ok";
+        this.#consecutiveSweepFailures = failed ? this.#consecutiveSweepFailures + 1 : 0;
+        return reports;
+      },
+      error => {
+        this.#lastSweepStatus = "error";
+        this.#consecutiveSweepFailures += 1;
+        throw error;
+      },
+    ).finally(() => {
+      this.#lastSweepDurationMs = Math.max(0, performance.now() - startedAt);
+      this.#lastSweepCompletedAt = Date.now();
       if (this.#sweepInFlight === sweep) {
         this.#sweepInFlight = undefined;
       }
@@ -991,4 +1022,15 @@ export class PollerEngine {
   isRunning(): boolean {
     return this.#running;
   }
+  getOperationalStatus(): PollerOperationalStatus {
+    return {
+      running: this.#running,
+      sweepInProgress: this.#sweepInFlight !== undefined,
+      lastSweepStatus: this.#lastSweepStatus,
+      lastSweepDurationMs: this.#lastSweepDurationMs,
+      lastSweepCompletedAt: this.#lastSweepCompletedAt,
+      consecutiveSweepFailures: this.#consecutiveSweepFailures,
+    };
+  }
 }
+

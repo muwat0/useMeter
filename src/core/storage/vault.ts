@@ -1,4 +1,6 @@
 import { Database } from "bun:sqlite";
+import { statfsSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { decryptSecret, encryptSecret } from "../crypto";
 import type {
@@ -16,6 +18,16 @@ import type {
   User,
   UserRole,
 } from "../../types";
+
+export interface StorageOperationalMetrics {
+  databaseSizeBytes: number;
+  walSizeBytes: number;
+  freePageCount: number;
+  totalSnapshots: number;
+  activeCredentials: number;
+  diskFreeBytes: number | null;
+  diskUsagePercent: number | null;
+}
 
 const CARD_ACCENTS: Record<string, true> = {
   default: true,
@@ -797,6 +809,59 @@ export class StorageVault {
       databaseSizeBytes,
       integrity,
       providerCounts,
+    };
+  }
+
+  getOperationalMetrics(): StorageOperationalMetrics {
+    const databaseRow: unknown = this.#db.prepare("PRAGMA database_list;").get();
+    let databasePath = "";
+    if (
+      typeof databaseRow === "object" &&
+      databaseRow !== null &&
+      "file" in databaseRow &&
+      typeof databaseRow.file === "string"
+    ) databasePath = databaseRow.file;
+
+    const freePages: unknown = this.#db.prepare("PRAGMA freelist_count;").get();
+    const credentialCount: unknown = this.#db.prepare("SELECT COUNT(*) AS count FROM credentials;").get();
+    const snapshotCount: unknown = this.#db.prepare("SELECT COUNT(*) AS count FROM usage_snapshots;").get();
+    if (
+      typeof freePages !== "object" || freePages === null || !("freelist_count" in freePages) ||
+      typeof freePages.freelist_count !== "number" ||
+      typeof credentialCount !== "object" || credentialCount === null || !("count" in credentialCount) ||
+      typeof credentialCount.count !== "number" ||
+      typeof snapshotCount !== "object" || snapshotCount === null || !("count" in snapshotCount) ||
+      typeof snapshotCount.count !== "number"
+    ) throw new Error("Storage metrics could not be read.");
+    let databaseSizeBytes = 0;
+    let walSizeBytes = 0;
+    let diskFreeBytes: number | null = null;
+    let diskUsagePercent: number | null = null;
+    if (databasePath) {
+      try {
+        databaseSizeBytes = statSync(databasePath).size;
+      } catch {}
+      try {
+        walSizeBytes = statSync(`${databasePath}-wal`).size;
+      } catch {}
+      try {
+        const filesystem = statfsSync(dirname(databasePath));
+        const totalBytes = filesystem.blocks * filesystem.bsize;
+        diskFreeBytes = filesystem.bavail * filesystem.bsize;
+        if (totalBytes > 0) {
+          diskUsagePercent = Math.round(((totalBytes - diskFreeBytes) / totalBytes) * 10_000) / 100;
+        }
+      } catch {}
+    }
+
+    return {
+      databaseSizeBytes,
+      walSizeBytes,
+      freePageCount: freePages.freelist_count,
+      totalSnapshots: snapshotCount.count,
+      activeCredentials: credentialCount.count,
+      diskFreeBytes,
+      diskUsagePercent,
     };
   }
 

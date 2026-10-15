@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily useMeter SQLite backup timer
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+RandomizedDelaySec=5m
+AccuracySec=1min
+Unit=usemeter-backup.service
+
+[Install]
+WantedBy=timers.target
