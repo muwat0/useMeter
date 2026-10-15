@@ -179,6 +179,56 @@ sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml up -d --no-build -
 
 The deployment is live on `production-server`. Keep the production `.env` file and the named Docker volume outside Git. Do not replace the `my_webapp` application; it is unrelated static/PHP hosting. Updates should be performed by fetching a reviewed release, rebuilding the image, and restarting the Compose service while preserving the named volume.
 
+## Automated secure backups and isolated restore drills
+
+`deploy/backup/usemeter-backup.sh` is intended to run as the unprivileged `murat` account through a systemd **user** service. It starts a one-shot Compose container with the same persistent data volume and application image, but runs only the direct Bun SQLite snapshot helper; it does not start `src/index.ts`, `StorageVault`, or the poller. SQLite `VACUUM INTO` creates a standalone snapshot from a consistent WAL view while the application remains the sole normal writer. The script never copies `usage.db` alone or explicitly issues `wal_checkpoint` or in-place `VACUUM` against the live path; SQLite coordinates WAL access and leaves the source database's logical contents unchanged.
+
+The one-shot snapshot is written temporarily inside `/app/data` with `umask 077`, checked for `user_version = 2`, `quick_check = 'ok'`, and `integrity_check = 'ok'`, copied to the host as `murat`, and removed from the volume. The host backup directory is mode `0700`; each completed backup is mode `0600`. The copied candidate must also pass the isolated restore drill before it is promoted to its timestamped name. If the schema or integrity gates fail, the run fails closed.
+
+The restore drill (`usemeter-restore-drill.sh BACKUP_FILE`) runs the candidate in a separate container with `--network none`, a read-only root filesystem, and only read-only bind mounts for the candidate and validator source. It has **no application data volume**, does not start the application, and cannot overwrite `/app/data/usage.db`. It verifies schema v2, both SQLite integrity checks, credential and snapshot counts, and the structure of every non-null encrypted metadata envelope (`$vault: 1`, ciphertext, IV, and tag). It does not decrypt credentials or prove provider authentication; it is a database restore-readiness check, not a production restore.
+
+When invoked independently, the drill obtains its image digest from a running Compose service container. If no useMeter container is running, set `USEMETER_DRILL_IMAGE` to the exact `sha256:<64 lowercase hex>` ID of the already-built image; the drill still creates no app-data mount.
+
+Retention keeps every backup from the last seven days, then the newest backup in each ISO week through age 28 days, and removes older generated backup files. A successful fresh backup and restore-drill result is required before pruning runs.
+
+Install the reviewed helper files on the host as `murat` and copy the systemd units into the user unit directory:
+
+```sh
+install -d -m 0700 ~/.local/lib/usemeter/backup ~/.config/systemd/user
+install -m 0700 deploy/backup/usemeter-backup.sh deploy/backup/usemeter-restore-drill.sh ~/.local/lib/usemeter/backup/
+install -m 0644 deploy/backup/snapshot.ts deploy/backup/restore-drill.ts ~/.local/lib/usemeter/backup/
+install -m 0644 deploy/backup/usemeter-backup.service deploy/backup/usemeter-backup.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now usemeter-backup.timer
+```
+
+The unit defaults expect the Compose project at `/opt/usemeter`, the file `compose.yaml`, the service `usemeter`, and backups under `${HOME}/usemeter-backups`. Override these with `USEMETER_PROJECT_DIR`, `USEMETER_COMPOSE_FILE`, `USEMETER_COMPOSE_SERVICE`, or `USEMETER_BACKUP_DIR` in `~/.config/usemeter/backup.env` if needed. Compose must read its protected interpolation environment (including `USAGE_MASTER_KEY`) to resolve the service configuration; the one-shot snapshot process overrides the master key and configured provider client secrets with empty values and never prints environment values. The timer runs daily at 03:30 UTC with up to five minutes of jitter. The user manager must remain active across logout/reboot (systemd lingering) for unattended runs. Inspect `systemctl --user status usemeter-backup.timer` and `journalctl --user -u usemeter-backup.service`; run the script manually as `murat` for an immediate backup.
+
+```sh
+BACKUP_FILE='${HOME}/usemeter-backups/REPLACE_WITH_TIMESTAMPED_BACKUP.sqlite'
+~/.local/lib/usemeter/backup/usemeter-restore-drill.sh "$BACKUP_FILE"
+```
+
+Never restore a drill candidate by copying it over a live database. A real recovery remains an explicitly offline operation that stops the sole writer and follows the database-and-sidecar rollback rules above.
+
+## Admin metrics and operational alerts
+
+`GET /api/admin/metrics` is protected by the existing authenticated admin-only middleware. It returns database and WAL file sizes, free pages, total snapshots, active credentials, disk free space/usage, quick integrity health, poller running/sweep status, last sweep duration/completion time, and the number of consecutive failed or degraded sweeps. It reports alert codes when filesystem usage reaches 90%, three consecutive sweeps fail/degrade, the poller is stopped, integrity is unhealthy, or a configured recovery-mail socket cannot be reached. A disabled mail bridge is reported as disabled rather than as an outage.
+
+The mail check only connects to the configured Unix socket and closes the connection; it sends no recipient, token, or email and does not invoke sendmail. Alert codes are exposed to an authenticated admin caller; this endpoint does not configure an external notification destination. Public `/health` remains a small readiness/integrity check and does not expose tenant or host storage counts.
+
+## Synthetic concurrent load benchmark
+
+`deploy/bench/synthetic-load-test.ts` sends synthetic GET traffic to `/health`, `/api/data`, `/api/providers/catalog`, `/forgot-password`, and `/privacy`. Defaults are 1,000 requests and 50 concurrent workers; concurrency is bounded to 50–100. The URL is restricted to plain HTTP `127.0.0.1`, redirects are not followed, and configured proxy variables cause the harness to refuse to run. It reports p50/p95/p99 latency, HTTP status/error rate, throughput, and start/peak/end RSS.
+
+Set `USEMETER_BENCH_SESSION_COOKIES` through a secure environment input using only disposable staging sessions, then run:
+
+```sh
+bun run deploy/bench/synthetic-load-test.ts
+```
+
+The harness requires `USEMETER_BENCH_SESSION_COOKIES` to be a JSON array of 2–100 `usage_session` cookies from distinct **synthetic staging tenants**. It verifies the identities through `/api/auth/me` without printing cookie or identity values; those preflight requests are excluded from the benchmark count. It does not create accounts, call provider adapters, or contact any non-loopback address. Expected error rate is 0%; run it only against a local/staging instance with disposable synthetic accounts, never against production user sessions. The reported RSS window is a measurement, not a leak-proof guarantee.
+
 ## Usage snapshot retention (source behavior; not a current-release claim)
 
 A release containing `UsageSnapshotRetention` prunes immediately after the vault and poller initialize, then runs hourly in the background. `SNAPSHOT_RETENTION_DAYS` defaults to `7` and must be a positive safe integer with a safely representable millisecond window; invalid day values are rejected during application startup. The storage method also validates `now` and the computed cutoff as safe integer epoch-millisecond values before reading snapshots. Each run preserves all snapshots with `fetched_at >= now - retentionDays * 86,400,000`, plus each credential's latest snapshot and latest last-good snapshot. Both anchors rank by `fetched_at DESC, id DESC`; a same-time tie therefore selects the larger snapshot ID. Last-good uses the same legacy-compatible health/error classification as the storage reader, including healthy quota-exhausted reports.

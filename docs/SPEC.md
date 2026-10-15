@@ -583,3 +583,33 @@ Genel kayıtların kapalı olduğu özel kurulumlarda güvenli kullanıcı katı
    - Public kabul endpoint'i, genel kayıtla ortak `registration` hız sınırına tabidir; aşımda HTTP 429 ve `Retry-After` döner. Davet kabulü, kayıt kapatma ayarından bağımsızdır; hız sınırından bağımsız değildir.
    - `AuthService.acceptInvitation`, token hash'iyle davetin varlığını, kabul/iptal durumunu ve süresini pahalı parola hashing'inden önce kontrol eder. Geçersiz, süresi dolmuş, iptal edilmiş veya tekrar kullanılan davetler aynı genel hatayla reddedilir.
    - Ön kontrol yalnız maliyet optimizasyonudur. Parola hash'i üretildikten sonra `acceptInvitationAtomic` aynı geçerlilik koşullarını transaction içinde yeniden doğrular; arada iptal/expiry veya eşzamanlı kabul ikinci kullanıcı oluşturamaz.
+
+## 6. Operasyonel Yedekleme, İzleme ve Sentetik Yük Tatbikatı
+
+### 6.1. Otomatik güvenli SQLite yedeği
+
+- `deploy/backup/usemeter-backup.service` ve `.timer`, `murat` kullanıcısının **systemd user manager**'ı altında her gün 03:30 UTC civarında çalışır; root servis veya root shell gerektirmez.
+- `usemeter-backup.sh`, canlı veritabanı için `StorageVault` başlatmadan bir defalık Compose/Bun süreciyle doğrudan SQLite `VACUUM INTO` kullanır. WAL içindeki commit edilmiş verileri tutarlı bir snapshot olarak alır; `usage.db` dosyasını tek başına kopyalamaz ve kaynak üzerinde açıkça `wal_checkpoint` ya da in-place `VACUUM` çalıştırmaz. SQLite WAL kilitlemesini yönetir ve kaynak veritabanının mantıksal içeriğini korur.
+- Snapshot şeması tam olarak `PRAGMA user_version = 2`, `quick_check = 'ok'` ve `integrity_check = 'ok'` olmalıdır. Host yedeği `murat` sahibinde, `0600` modunda; yedek dizini `0700` modundadır (`umask 077`). Yedek, doğrulama bitmeden adlandırılmış kalıcı dosya olarak yayımlanmaz.
+- Retention bütün son 7 günlük dosyaları, ardından yaş 28 günü geçmeyen her ISO haftanın en yeni dosyasını korur; daha eskileri kaldırır. Prune yalnızca yeni yedek restore-drill'i geçtiğinde çalışır.
+
+### 6.2. İzole restore-drill
+
+`usemeter-restore-drill.sh BACKUP_FILE` adayı `--network none`, salt okunur kök dosya sistemi ve salt okunur bind mount ile ayrı container içinde doğrular. Bu container üretim volume'unu **bağlamaz**, `src/index.ts`, `StorageVault`, migration, poller veya provider çalıştırmaz. Adayı salt-okunur/query-only SQLite bağlantısıyla açar; şema sürümünü, `quick_check`, `integrity_check`, credential/snapshot sayılarını ve her şifreli metadata zarfının `$vault: 1` yapısını denetler. Tatbikat gerçek bir canlı geri yükleme veya master-key ile credential decrypt testi değildir; üretim DB'sinin üzerine yazma yolu yoktur.
+
+### 6.3. Admin metrikleri ve eşikler
+
+`GET /api/admin/metrics` yalnızca mevcut admin yetkilendirmesinden sonra erişilir. Yanıt; ana DB ve WAL fiziksel boyutlarını, filesystem boş alan/kullanım oranını, SQLite free-page sayısını, snapshot ve aktif credential toplamlarını, quick integrity health'i, poller çalışma/sweep durumunu, son sweep süresini ve ardışık başarısız/degraded sweep sayısını taşır. Thresholds:
+
+- Disk kullanımı `>= 90%` → `DISK_USAGE_HIGH`.
+- Poller durdurulmuş → `POLLER_STOPPED`; ardışık en az 3 bozuk/başarısız sweep → `POLLER_FAILURES_CONSECUTIVE`.
+- Integrity başarısız → `DATABASE_INTEGRITY_FAILED`.
+- Mail socket yapılandırılmış ama bağlanılamıyor → `MAIL_BRIDGE_UNAVAILABLE`; socket yapılandırılmamışsa `disabled`.
+
+Mail bridge probu sadece Unix socket'e bağlanıp bağlantıyı kapatır; e-posta içeriği/token göndermez ve sendmail çalıştırmaz. Alert kodları admin yanıtında görünür; harici e-posta/webhook bildirim hedefi bu sözleşmenin parçası değildir. Public `/health` mevcut küçük readiness/integrity cevabını korur.
+
+### 6.4. Sentetik eşzamanlı yük testi
+
+`deploy/bench/synthetic-load-test.ts`, `/health`, `/api/data`, `/api/providers/catalog`, `/forgot-password` ve `/privacy` rotalarına sentetik GET trafiği gönderir. Varsayılan senaryo 1.000 istek/50 eşzamanlı worker'dır; concurrency 50–100 ile sınırlıdır. p50/p95/p99 gecikme, throughput, HTTP status/error oranı ve başlangıç/tepe/son RSS ölçülür; beklenen hata oranı `%0`'dır.
+
+Yalnız `http://127.0.0.1` hedefi kabul edilir; redirect takip edilmez, proxy ortam değişkenleri varsa çalışma reddedilir. En az iki ayrı sentetik staging kullanıcısına ait session cookie gereklidir; `/api/auth/me` ön kontrolüyle kullanıcıların farklı olduğu doğrulanır ve cookie/user ID çıktıya yazılmaz. Harness kullanıcı oluşturmaz, sağlayıcı adaptörlerini çağırmaz ve loopback dışına bağlanmaz. Benchmark production gerçek kullanıcı cookie'leriyle çalıştırılmaz; RSS ölçümü olası bellek sızıntısını tek başına kanıtlamaz veya çürütmez.

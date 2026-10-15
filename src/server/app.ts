@@ -23,6 +23,7 @@ import { join } from "path";
 import { renderAccountRecoveryPageHtml } from "./account-pages";
 import { renderLegalPageHtml } from "./legal-pages";
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
+import * as net from "node:net";
 import { createHash, randomUUID } from "crypto";
 import {
   initiateCodexDeviceAuth,
@@ -93,6 +94,40 @@ const LEGAL_PAGE_CSP = [
 ].join("; ");
 
 const POLLER_ADMISSION_RETRY_AFTER_SECONDS = 30;
+const DISK_USAGE_ALERT_THRESHOLD_PERCENT = 90;
+const POLLER_FAILURE_ALERT_THRESHOLD = 3;
+const MAIL_BRIDGE_CHECK_TIMEOUT_MS = 500;
+
+function isUnixSocketReachable(socketPath: string): Promise<boolean> {
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  let socket: net.Socket;
+  try {
+    socket = net.createConnection({ path: socketPath });
+  } catch {
+    resolve(false);
+    return promise;
+  }
+
+  let settled = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const finish = (reachable: boolean) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timeout);
+    resolve(reachable);
+  };
+  timeout = setTimeout(() => {
+    socket.destroy();
+    finish(false);
+  }, MAIL_BRIDGE_CHECK_TIMEOUT_MS);
+  socket.once("connect", () => {
+    finish(true);
+    socket.end();
+  });
+  socket.once("error", () => finish(false));
+  socket.once("close", () => finish(false));
+  return promise;
+}
 const POLLER_ADMISSION_MESSAGE = "Rate limit exceeded. Please wait before polling again.";
 
 const POLLER_ADMISSION_CALLBACK_COPY = {
@@ -1201,6 +1236,55 @@ export function createServer(
   app.get("/api/admin/stats", c => {
     const stats = vault.getSystemStatsAdmin(poller.isRunning());
     return c.json({ success: true, data: stats, ...stats });
+  });
+
+  app.get("/api/admin/metrics", async c => {
+    const storage = vault.getOperationalMetrics();
+    const pollerStatus = poller.getOperationalStatus();
+    const socketPath = process.env["RECOVERY_MAIL_SOCKET"]?.trim() || "";
+    const mailBridgeReachable = socketPath ? await isUnixSocketReachable(socketPath) : null;
+    const integrity = vault.checkIntegrity();
+    const alerts: Array<Record<string, string | number>> = [];
+
+    if (!integrity) alerts.push({ code: "DATABASE_INTEGRITY_FAILED" });
+    if (storage.diskUsagePercent !== null && storage.diskUsagePercent >= DISK_USAGE_ALERT_THRESHOLD_PERCENT) {
+      alerts.push({
+        code: "DISK_USAGE_HIGH",
+        thresholdPercent: DISK_USAGE_ALERT_THRESHOLD_PERCENT,
+        actualPercent: storage.diskUsagePercent,
+      });
+    }
+    if (!pollerStatus.running) alerts.push({ code: "POLLER_STOPPED" });
+    if (pollerStatus.consecutiveSweepFailures >= POLLER_FAILURE_ALERT_THRESHOLD) {
+      alerts.push({
+        code: "POLLER_FAILURES_CONSECUTIVE",
+        threshold: POLLER_FAILURE_ALERT_THRESHOLD,
+        actual: pollerStatus.consecutiveSweepFailures,
+      });
+    }
+    if (socketPath && mailBridgeReachable === false) alerts.push({ code: "MAIL_BRIDGE_UNAVAILABLE" });
+
+    return c.json({
+      success: true,
+      status: alerts.length === 0 ? "ok" : "degraded",
+      timestamp: Date.now(),
+      health: { status: integrity ? "ok" : "error", integrity },
+      poller: pollerStatus,
+      storage,
+      mailBridge: {
+        configured: Boolean(socketPath),
+        reachable: mailBridgeReachable,
+        status: !socketPath ? "disabled" : mailBridgeReachable ? "available" : "unavailable",
+      },
+      alertThresholds: {
+        diskUsagePercent: DISK_USAGE_ALERT_THRESHOLD_PERCENT,
+        consecutivePollerFailures: POLLER_FAILURE_ALERT_THRESHOLD,
+        pollerMustBeRunning: true,
+        databaseIntegrityRequired: true,
+        mailBridgeReachabilityRequiredWhenConfigured: true,
+      },
+      alerts,
+    });
   });
   app.get("/api/admin/settings", c => {
     const allowRegistration = vault.isRegistrationAllowed();
