@@ -87,7 +87,7 @@ The new public pages are `GET /forgot-password` and `GET /reset-password`. The r
 
 ### Public Information Pages
 
-The login-free `/privacy`, `/terms`, `/security`, and `/support` pages provide privacy, terms of use, security disclosure, and community support information. Pages can be displayed in Turkish or English (`?lang=tr` or `?lang=en`); they load no external resources other than their own inline styles and use a restrictive content security policy with `no-referrer`.
+The login-free `/privacy`, `/terms`, `/security`, and `/support` pages provide privacy, terms of use, security disclosure, and support information. Pages share the dashboard's stored language and theme preferences; an explicit `?lang=tr` or `?lang=en` takes precedence. The theme control always describes the next action: light mode offers “Dark theme” and dark mode offers “Light theme”, with equivalent Turkish labels. Its icon, tooltip, and accessible label update together after a toggle and when restoring the saved theme on page load. These pages load no external resources and allow only their fixed preference script's SHA-256 hash in the script CSP, with inline styles and `no-referrer`.
 
 
 
@@ -468,7 +468,7 @@ export const MINIMAL_SSR_CSP = [
   - `Referrer-Policy`: normal dashboard `strict-origin-when-cross-origin`; recovery pages override this with `no-referrer`.
   - `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()`.
   - `Strict-Transport-Security: max-age=31536000; includeSubDomains` (Only in production with `secure: true` or HTTPS).
-- **CSP Design Decision and Constraint:** `'unsafe-inline'` directives are deliberately used to avoid breaking useMeter's server-side HTML rendering (SSR), embedded theme/language scripts, and Tailwind CDN use. Since the template engine does not inject nonces, protections based on non-existent nonces/hashes are not claimed.
+- **CSP Design Decision and Constraint:** The general SSR policy deliberately uses `'unsafe-inline'` directives for embedded scripts, styles, and Tailwind CDN compatibility; it does not claim nonce protection. Public information pages instead authorize their fixed preference script by its exact SHA-256 hash, computed from the same script constant used to render the page.
 
 ### 4.2. CORS Allowlist and Secure Origin Resolution
 - **Environment Variables:** `CORS_ALLOWED_ORIGINS` or `USEMETER_ALLOWED_ORIGINS` (a comma- or space-separated list of origins).

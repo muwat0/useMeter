@@ -25,6 +25,8 @@ interface LegalCopy {
   navigationLabel: string;
   themeLabel: string;
   themeHelp: string;
+  darkThemeLabel: string;
+  darkThemeHelp: string;
   footerLabel: string;
   privacyLabel: string;
   termsLabel: string;
@@ -73,10 +75,24 @@ export const LEGAL_PAGE_PREFERENCE_SCRIPT = `(() => {
     const toggle = document.getElementById("theme-toggle");
     if (!(toggle instanceof HTMLInputElement)) return;
     toggle.checked = mode === "light";
+    const themeSwitch = toggle.closest(".theme-switch");
+    const themeLabel = themeSwitch?.querySelector(".theme-label");
+    const themeIcon = themeSwitch?.querySelector(".theme-icon");
+    if (!themeSwitch || !themeLabel || !themeIcon) return;
+    function updateThemeAction() {
+      const target = toggle.checked ? "dark" : "light";
+      const help = themeSwitch.getAttribute("data-" + target + "-help");
+      themeSwitch.title = help;
+      toggle.setAttribute("aria-label", help);
+      themeLabel.textContent = themeSwitch.getAttribute("data-" + target + "-label");
+      themeIcon.textContent = target === "light" ? "☼" : "☾";
+    }
+    updateThemeAction();
     toggle.addEventListener("change", () => {
       mode = toggle.checked ? "light" : "dark";
       root.dataset.theme = mode;
       try { window.localStorage.setItem("usage_mode", mode); } catch {}
+      updateThemeAction();
     });
   });
 })();`;
@@ -89,6 +105,8 @@ const LEGAL_COPY: Record<LegalLanguage, LegalCopy> = {
     navigationLabel: "Yasal ve destek sayfaları",
     themeLabel: "Aydınlık tema",
     themeHelp: "Aydınlık temaya geç",
+    darkThemeLabel: "Koyu tema",
+    darkThemeHelp: "Koyu temaya geç",
     footerLabel: "Bilgi sayfaları",
     privacyLabel: "Gizlilik",
     termsLabel: "Kullanım Koşulları",
@@ -195,6 +213,8 @@ const LEGAL_COPY: Record<LegalLanguage, LegalCopy> = {
     navigationLabel: "Legal and support pages",
     themeLabel: "Light theme",
     themeHelp: "Switch to light theme",
+    darkThemeLabel: "Dark theme",
+    darkThemeHelp: "Switch to dark theme",
     footerLabel: "Information pages",
     privacyLabel: "Privacy",
     termsLabel: "Terms",
@@ -381,9 +401,9 @@ export function renderLegalPageHtml(options: { page: LegalPage; lang?: LegalLang
         <a class="github-link" href="${GITHUB_REPOSITORY_URL}" aria-label="${copy.githubRepositoryLabel}" title="${copy.githubRepositoryLabel}">${GITHUB_ICON_HTML}</a>
       </div>
       <div class="controls">
-        <label class="control theme-switch" title="${copy.themeHelp}">
+        <label class="control theme-switch" title="${copy.themeHelp}" data-light-label="${copy.themeLabel}" data-light-help="${copy.themeHelp}" data-dark-label="${copy.darkThemeLabel}" data-dark-help="${copy.darkThemeHelp}">
           <input id="theme-toggle" type="checkbox" aria-label="${copy.themeHelp}">
-          <span aria-hidden="true">☼</span><span class="theme-label">${copy.themeLabel}</span>
+          <span class="theme-icon" aria-hidden="true">☼</span><span class="theme-label">${copy.themeLabel}</span>
         </label>
         <nav aria-label="${copy.languageLabel}">
           <a class="control" href="/${options.page}?lang=${alternateLanguage}" lang="${alternateLanguage}" hreflang="${alternateLanguage}" aria-label="${copy.languageSwitchLabel}" title="${copy.languageSwitchLabel}">
