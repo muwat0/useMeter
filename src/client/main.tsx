@@ -428,7 +428,6 @@ function translateLimitLabel(label: string | undefined, id: string | undefined, 
       premium_interactions: 'Premium İstekler (Claude 3.7 / o3-mini)', chat_quota: 'Copilot Chat Kotası',
       grok_credits: 'xAI Grok Kullanım Kotası', account_balance: 'Hesap Net Bakiyesi',
       total_credits: 'Hesap Net Bakiyesi', key_usage: 'API Anahtar Harcaması',
-      rate_limit: 'İstek Hız Sınırı', balance_usd: 'Kullanılabilir Bakiye (USD)',
       '5h': '5 Saatlik Kayan Kota', '7d': 'Haftalık Genel Kota',
       'kimi-code-5h': '5 Saatlik Kota', 'kimi-code-7d': 'Haftalık Kota',
       'kimi-code-monthly': 'Aylık Kota',
@@ -444,7 +443,6 @@ function translateLimitLabel(label: string | undefined, id: string | undefined, 
     premium_interactions: 'Premium Requests (Claude 3.7 / o3-mini)', chat_quota: 'Copilot Chat Quota',
     grok_credits: 'xAI Grok Usage Quota', account_balance: 'Account Net Balance',
     total_credits: 'Account Net Balance', key_usage: 'API Key Spending',
-    rate_limit: 'Rate Limit', balance_usd: 'Available Balance (USD)',
     '5h': '5-Hour Rolling Quota', '7d': 'Weekly Quota',
     'kimi-code-5h': '5-Hour Quota', 'kimi-code-7d': 'Weekly Quota',
     'kimi-code-monthly': 'Monthly Quota',
@@ -457,7 +455,6 @@ function translateLimitLabel(label: string | undefined, id: string | undefined, 
     .replaceAll('Kota Sıfırlama Hakkı (Usage Reset)', 'Usage Reset Allowance')
     .replaceAll('Hesap Net Bakiyesi', 'Account Net Balance')
     .replaceAll('Kullanılabilir Bakiye', 'Available Balance')
-    .replaceAll('İstek Hız Sınırı', 'Rate Limit');
 }
 
 function translateNote(note: string, lang: string): string {
@@ -685,9 +682,11 @@ function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStart
               );
             }
           } else if (l.amount.unit === 'usd') {
-            const rem = l.amount.remaining;
-            if (typeof rem === 'number' && Number.isFinite(rem)) {
-              valueEl = <span className="account-card-value font-bold text-sm">${rem.toFixed(2)}</span>;
+            const usdValue = r.provider === 'openrouter' && l.id === 'key_usage'
+              ? l.amount.used
+              : l.amount.remaining;
+            if (typeof usdValue === 'number' && Number.isFinite(usdValue)) {
+              valueEl = <span className="account-card-value font-bold text-sm">${usdValue.toFixed(2)}</span>;
             }
           } else if (l.amount.unit === 'credits') {
             const rem = l.amount.remaining;

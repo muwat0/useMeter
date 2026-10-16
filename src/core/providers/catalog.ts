@@ -36,11 +36,11 @@ export const PROVIDER_CATALOG = freezeCatalog([
     displayName: { en: "OpenRouter", tr: "OpenRouter" },
     aliases: [],
     authModes: ["oauth_callback", "api_key"],
-    supportTier: "synthetic_only",
+    supportTier: "live_verified",
     quotaKind: "balance_usd",
     helpHint: {
-      en: "Connect with an OpenRouter API key or complete the automatic same-origin PKCE callback. Balance and credit data depend on the provider response.",
-      tr: "OpenRouter API anahtarıyla bağlanın veya otomatik aynı-kaynaklı PKCE callback akışını tamamlayın. Bakiye ve kredi verileri sağlayıcı yanıtına bağlıdır.",
+      en: "Connect with an OpenRouter API key or complete the automatic same-origin PKCE callback. Live verification covers one observed OAuth-authorized account's USD balance/credit and API-key usage telemetry, not every account, plan, or authorization mode.",
+      tr: "OpenRouter API anahtarıyla bağlanın veya otomatik aynı-kaynaklı PKCE callback akışını tamamlayın. Canlı doğrulama, gözlenen tek bir OAuth hesabının USD hesap bakiyesi/kredisi ve API anahtarı kullanım telemetrisini kapsar; her hesabı, planı veya yetkilendirme modunu kapsamaz.",
     },
   },
   {

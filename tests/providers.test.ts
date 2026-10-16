@@ -51,46 +51,54 @@ describe("DeepSeekAdapter", () => {
 });
 
 describe("OpenRouterAdapter", () => {
-  it("parses auth/key and credits responses", async () => {
+  it("ignores deprecated rate_limit values while preserving account and key usage telemetry", async () => {
     const adapter = new OpenRouterAdapter();
     expect(adapter.supports("openrouter")).toBe(true);
 
-    const mockFetch = (async (url: string | URL | Request) => {
-      const urlStr = url.toString();
-      if (urlStr.includes("/auth/key")) {
-        return new Response(
-          JSON.stringify({
+    for (const legacyRequests of [20, 0, -1]) {
+      const calls: string[] = [];
+      const mockFetch = (async (url: string | URL | Request) => {
+        const urlStr = url.toString();
+        calls.push(urlStr);
+        if (urlStr.endsWith("/auth/key")) {
+          return new Response(JSON.stringify({
             data: {
               label: "Production Key",
               usage: 15.5,
-              limit: 50.0,
+              limit: 50,
               limit_remaining: 34.5,
               is_free_tier: false,
-              rate_limit: { requests: 20, interval: "10s" },
+              rate_limit: { requests: legacyRequests, interval: "10s" },
             },
-          }),
-        );
-      }
-      if (urlStr.includes("/credits")) {
-        return new Response(
-          JSON.stringify({
+          }));
+        }
+        if (urlStr.endsWith("/credits")) {
+          return new Response(JSON.stringify({
             data: {
-              total_credits: 100.0,
+              total_credits: 100,
               total_usage: 15.5,
             },
-          }),
-        );
-      }
-      return new Response("Not found", { status: 404 });
-    }) as unknown as typeof fetch;
+          }));
+        }
+        return new Response("Not found", { status: 404 });
+      }) as unknown as typeof fetch;
 
-    const report = await adapter.fetchUsage({ ...mockCred, provider: "openrouter" }, { fetch: mockFetch });
-    expect(report.provider).toBe("openrouter");
-    expect(report.limits.length).toBe(3); // account balance, key usage, rate limit
-
-    const accountLimit = report.limits.find(l => l.id === "account_balance");
-    expect(accountLimit?.amount.remaining).toBe(84.5);
-    expect(accountLimit?.status).toBe("ok");
+      const report = await adapter.fetchUsage({ ...mockCred, provider: "openrouter" }, { fetch: mockFetch });
+      expect(report.provider).toBe("openrouter");
+      expect(report.limits.map(limit => limit.id).sort()).toEqual(["account_balance", "key_usage"]);
+      expect(report.limits.find(limit => limit.id === "account_balance")).toMatchObject({
+        amount: { used: 15.5, limit: 100, remaining: 84.5, usedFraction: 0.155, unit: "usd" },
+        status: "ok",
+      });
+      expect(report.limits.find(limit => limit.id === "key_usage")).toMatchObject({
+        amount: { used: 15.5, limit: 50, remaining: 34.5, usedFraction: 0.31, unit: "usd" },
+        status: "ok",
+      });
+      expect(calls).toEqual([
+        "https://openrouter.ai/api/v1/auth/key",
+        "https://openrouter.ai/api/v1/credits",
+      ]);
+    }
   });
 });
 

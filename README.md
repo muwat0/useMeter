@@ -32,7 +32,7 @@ The catalog contains the repository's 17 canonical provider adapters. Its tier d
 
 | Provider (canonical ID) | Evidence tier | Auth modes | Telemetry kind | Onboarding notes |
 | --- | --- | --- | --- | --- |
-| OpenRouter (`openrouter`) | `synthetic_only` | `oauth_callback`, `api_key` | `balance_usd` | OAuth uses an automatic same-origin S256 PKCE callback; no code or callback URL is pasted. Reverse proxies terminating TLS must supply trusted HTTPS origin headers through the existing `TRUST_PROXY` setting. An API key is also accepted. |
+| OpenRouter (`openrouter`) | `live_verified` | `oauth_callback`, `api_key` | `balance_usd` | Live-verified on one observed OAuth-authorized account for USD balance/credit and API-key usage telemetry; this does not establish every account, plan, or authorization mode. OAuth uses an automatic same-origin S256 PKCE callback; reverse proxies terminating TLS must supply trusted HTTPS origin headers through the existing `TRUST_PROXY` setting. |
 | DeepSeek (`deepseek`) | `synthetic_only` | `api_key` | `balance_usd` | DeepSeek Platform API key; returned balance fields depend on the account. |
 | Anthropic Claude (`anthropic`) | `synthetic_only` | `oauth_loopback_paste` | `window_percent` | Use a compatible Claude Code OAuth token or paste the callback response. Anthropic API keys are not accepted by the usage endpoint. |
 | OpenAI ChatGPT / Codex (`openai-codex`) | `live_verified` | `oauth_device` | `window_percent` | Live verification covers observed Codex usage-window telemetry, not every plan or quota surface. |

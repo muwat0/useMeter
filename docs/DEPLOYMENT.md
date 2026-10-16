@@ -331,7 +331,7 @@ For manual URL inputs, the server checks the stored attempt's exact registered U
 
 OpenRouter uses its [official S256 PKCE callback flow](https://openrouter.ai/docs/guides/overview/auth/oauth): useMeter sends `callback_url` for the same-origin `/api/oauth/openrouter/callback` and a CSPRNG `state`, which OpenRouter returns unchanged after authorization. The server keeps the verifier and binds the callback to the owner’s session; neither the authorization code nor callback URL is pasted. Public callbacks require HTTPS, except for localhost development. When TLS terminates at the reverse proxy, set `TRUST_PROXY=true` only for the controlled proxy path and preserve `Host` and `X-Forwarded-Proto`; the application then derives the HTTPS callback origin from those trusted headers. Without a trustworthy HTTPS origin, initiation fails instead of emitting an internal HTTP callback.
 
-These hosted paths use synthetic exchanges and validation adapters. The OpenRouter automatic callback remains `synthetic_only`; actual provider-account eligibility, consent, and quota availability have not been verified, and no real-account or quota claim is made.
+Local tests exercise the hosted flows with synthetic exchanges and validation adapters; that test evidence alone does not verify a live provider account. Separately, one observed OpenRouter OAuth-authorized account returned real USD balance/credit and API-key usage telemetry, supporting `live_verified` for that observed surface only. This does not establish every account, plan, or authorization mode, and inference spendability has not been verified.
 
 ## Google OAuth in Docker
 

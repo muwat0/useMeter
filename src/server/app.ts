@@ -4230,13 +4230,17 @@ export function toPublicUsageReport(
       }
     }
   }
+  // Hide deprecated OpenRouter rows in the public projection without rewriting stored history.
+  const limits = report.provider === "openrouter" && report.limits.some(limit => limit.id === "rate_limit")
+    ? report.limits.filter(limit => limit.id !== "rate_limit")
+    : report.limits;
 
   return {
     provider: report.provider,
     credentialId: report.credentialId,
     accountLabel: mergedPresentation.accountLabel || report.accountLabel,
     fetchedAt: report.fetchedAt,
-    limits: report.limits,
+    limits,
     error: report.error ? String(report.error).slice(0, 200) : undefined,
     health: report.health,
     stale: report.stale,
