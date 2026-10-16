@@ -1,0 +1,15 @@
+[Unit]
+Description=Observe useMeter public health and host disk usage
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h
+UMask=0077
+# The service stays under the unprivileged user. Do not enable NoNewPrivileges
+# or mount-namespace sandboxing here: the host's sendmail/postdrop setgid handoff
+# must remain available, as documented by the rootless mail bridge unit.
+NoNewPrivileges=no
+TimeoutStartSec=30s
+TimeoutStopSec=5s
+ExecStart=%h/.local/lib/usemeter/monitor/usemeter-monitor.py
