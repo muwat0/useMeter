@@ -36,12 +36,13 @@ describe("Provider catalog", () => {
     };
     for (const entry of PROVIDER_CATALOG) counts[entry.supportTier] += 1;
 
-    expect(counts).toEqual({ live_verified: 4, connection_verified: 1, synthetic_only: 12 });
+    expect(counts).toEqual({ live_verified: 5, connection_verified: 1, synthetic_only: 11 });
+    expect(findCatalogEntry("openrouter")?.supportTier).toBe("live_verified");
     expect(findCatalogEntry("openrouter")?.authModes).toEqual(["oauth_callback", "api_key"]);
     expect(PROVIDER_CATALOG
       .filter(entry => entry.supportTier === "live_verified")
       .map(entry => entry.id)
-      .sort()).toEqual(["cursor", "github-copilot", "openai-codex", "xai-oauth"]);
+      .sort()).toEqual(["cursor", "github-copilot", "openai-codex", "openrouter", "xai-oauth"]);
     expect(PROVIDER_CATALOG
       .filter(entry => entry.supportTier === "connection_verified")
       .map(entry => entry.id)).toEqual(["kimi-code"]);

@@ -8,10 +8,6 @@ interface OpenRouterKeyResponse {
     limit?: number | null;
     limit_remaining?: number | null;
     is_free_tier?: boolean;
-    rate_limit?: {
-      requests?: number;
-      interval?: string;
-    };
   };
 }
 
@@ -65,18 +61,6 @@ export class OpenRouterAdapter implements ProviderAdapter {
           notes: d.is_free_tier ? ["Free tier hesabı"] : undefined,
         });
 
-        if (d.rate_limit?.requests) {
-          limits.push({
-            id: "rate_limit",
-            label: "İstek Hız Sınırı",
-            amount: {
-              limit: d.rate_limit.requests,
-              unit: "requests",
-            },
-            status: "ok",
-            notes: [`Aralık: ${d.rate_limit.interval || "10s"}`],
-          });
-        }
       }
     }
 

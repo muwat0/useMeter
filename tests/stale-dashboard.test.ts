@@ -76,10 +76,23 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
       error: "HTTP 429 Rate limit exceeded. Try again in 60s",
       limits: [
         {
-          id: "daily_quota",
-          label: "Daily Request Quota",
-          amount: { used: 75, limit: 100, remaining: 25, usedFraction: 0.75, unit: "percent" },
-          status: "warning",
+          id: "account_balance",
+          label: "Account Net Balance",
+          amount: { used: 15.5, limit: 100, remaining: 84.5, usedFraction: 0.155, unit: "usd" },
+          status: "ok",
+        },
+        {
+          id: "key_usage",
+          label: "API Key Spending",
+          amount: { used: 15.5, limit: 50, remaining: 34.5, usedFraction: 0.31, unit: "usd" },
+          status: "ok",
+        },
+        {
+          id: "rate_limit",
+          label: "İstek Hız Sınırı",
+          amount: { limit: -1, unit: "requests" },
+          status: "ok",
+          notes: ["Aralık: 10s"],
         },
       ],
       raw: { internalTrace: "leak-check-stale" },
@@ -153,7 +166,9 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
     const exhausted = bootstrap.reports.find(r => r.credentialId === credExhausted.id)!;
     expect(stale.health).toBe("stale");
     expect(stale.stale).toBe(true);
-    expect(stale.limits[0]?.amount.used).toBe(75);
+    expect(stale.limits.map(limit => limit.id)).toEqual(["account_balance", "key_usage"]);
+    expect(stale.limits[0]?.amount.remaining).toBe(84.5);
+    expect(stale.limits[1]?.amount.used).toBe(15.5);
     expect(stale.error).toContain("429");
     expect(broken.health).toBe("error");
     expect(broken.limits).toHaveLength(0);
@@ -199,10 +214,23 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
       error: "502 Bad Gateway from upstream provider",
       limits: [
         {
-          id: "tokens",
-          label: "Monthly Token Limit",
-          amount: { used: 500000, limit: 1000000, remaining: 500000, unit: "tokens" },
+          id: "account_balance",
+          label: "Account Net Balance",
+          amount: { used: 15.5, limit: 100, remaining: 84.5, usedFraction: 0.155, unit: "usd" },
           status: "ok",
+        },
+        {
+          id: "key_usage",
+          label: "API Key Spending",
+          amount: { used: 15.5, limit: 50, remaining: 34.5, usedFraction: 0.31, unit: "usd" },
+          status: "ok",
+        },
+        {
+          id: "rate_limit",
+          label: "İstek Hız Sınırı",
+          amount: { limit: -1, unit: "requests" },
+          status: "ok",
+          notes: ["Aralık: 10s"],
         },
       ],
       raw: { superSecretToken: "raw-secret-stale-token" },
@@ -247,9 +275,10 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
     expect(staleItem?.source).toBe("stale");
     expect(staleItem?.lastGoodFetchedAt).toBe(1700000000000);
     expect(staleItem?.error).toBe("502 Bad Gateway from upstream provider");
-    expect(staleItem?.limits.length).toBe(1);
-    expect(staleItem?.limits[0]?.label).toBe("Monthly Token Limit");
-    expect(staleItem?.limits[0]?.amount.remaining).toBe(500000);
+    expect(staleItem?.limits.map(limit => limit.id)).toEqual(["account_balance", "key_usage"]);
+    expect(staleItem?.limits[0]?.amount.remaining).toBe(84.5);
+    expect(staleItem?.limits[1]?.amount.used).toBe(15.5);
+    expect(staleItem?.limits.some(limit => limit.id === "rate_limit")).toBe(false);
 
     const errorItem = dataJson.data.find(r => r.credentialId === credError.id);
     expect(errorItem).toBeDefined();
@@ -266,6 +295,8 @@ describe("Stale Dashboard SSR and Client Telemetry", () => {
     expect(usageRes.status).toBe(200);
     const usageJson = (await usageRes.json()) as { success: boolean; data: UsageReport[] };
     expect(usageJson.data.length).toBe(dataJson.data.length);
+    const staleUsageItem = usageJson.data.find(r => r.credentialId === credStale.id);
+    expect(staleUsageItem?.limits.map(limit => limit.id)).toEqual(["account_balance", "key_usage"]);
 
     // Verify raw is stripped and confidential payloads are never exposed
     for (const rep of dataJson.data) {

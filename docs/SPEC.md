@@ -18,7 +18,7 @@ The system has evolved from a local desktop dashboard for a single user to opera
 
 | Provider (canonical ID) | Evidence level | Authentication modes | Telemetry type |
 | --- | --- | --- | --- |
-| OpenRouter (`openrouter`) | `synthetic_only` | `oauth_callback`, `api_key` | `balance_usd` |
+| OpenRouter (`openrouter`) | `live_verified` | `oauth_callback`, `api_key` | `balance_usd` |
 | DeepSeek (`deepseek`) | `synthetic_only` | `api_key` | `balance_usd` |
 | Anthropic Claude (`anthropic`) | `synthetic_only` | `oauth_loopback_paste` | `window_percent` |
 | OpenAI ChatGPT / Codex (`openai-codex`) | `live_verified` | `oauth_device` | `window_percent` |
@@ -37,6 +37,8 @@ The system has evolved from a local desktop dashboard for a single user to opera
 | Alibaba Qwen (`alibaba-token-plan`) | `synthetic_only` | `api_key`, `session_cookie` | `window_percent` |
 
 `window_percent` denotes percentage-based quota windows, `balance_usd` denotes monetary balance, and `token_credits` denotes provider-reported token/credit/request counters. Kimi's known neutral result is **“Account connected; provider does not report quota”**; this is not an inference about a paid plan or region. Devin does not support `cog_` V3 PATs, and hosted OAuth redirection is experimental/unverified. Antigravity's embedded desktop OAuth client requires manually pasting the full loopback callback URL; an automatic hosted callback requires the operator's own Google OAuth Web client and matching HTTPS URI.
+
+For OpenRouter, live verification is limited to one observed OAuth-authorized account's USD balance/credit and API-key usage telemetry; it does not establish every account, plan, or authorization mode.
 
 The canonical catalog can be read without authentication through `GET /api/providers/catalog`; the response contains provider metadata only, not secrets or tokens. Before connecting, the client displays the evidence level and telemetry type.
 
@@ -510,7 +512,7 @@ Rate limits on new password/account routes are applied before expensive password
 #### 4.4.2. Hosted OAuth Completion Modes
 
 - Claude, Gemini CLI, and Z.ai retain their registered loopback redirect URIs; no fixed-port listener is opened on the server. Those flows require the user to provide the full return URL from the browser to their own attempt. Claude also accepts a state-carrying `code#state` input.
-- OpenRouter uses [first-party S256 PKCE](https://openrouter.ai/docs/guides/overview/auth/oauth) with a same-origin `/api/oauth/openrouter/callback`. The server derives the callback origin from the request URL and, only when `TRUST_PROXY=true` or `1`, the existing trusted forwarded-protocol/host convention; it does not accept a browser-supplied redirect target. Non-loopback callbacks require HTTPS, so TLS-terminating reverse proxies must supply trusted HTTPS origin headers. The flow binds the callback to the owner’s bounded session, sends a CSPRNG `state` that OpenRouter echoes unchanged, exchanges the callback code with the stored PKCE verifier, and stages validation before one-time commit admission. No authorization code or callback URL is pasted. An API key is also supported; the provider remains `synthetic_only`.
+- OpenRouter uses [first-party S256 PKCE](https://openrouter.ai/docs/guides/overview/auth/oauth) with a same-origin `/api/oauth/openrouter/callback`. The server derives the callback origin from the request URL and, only when `TRUST_PROXY=true` or `1`, the existing trusted forwarded-protocol/host convention; it does not accept a browser-supplied redirect target. Non-loopback callbacks require HTTPS, so TLS-terminating reverse proxies must supply trusted HTTPS origin headers. The flow binds the callback to the owner’s bounded session, sends a CSPRNG `state` that OpenRouter echoes unchanged, exchanges the callback code with the stored PKCE verifier, and stages validation before one-time commit admission. No authorization code or callback URL is pasted. An API key is also supported. Live verification covers one observed OAuth-authorized account's USD balance/credit and API-key usage telemetry only; it does not establish every account, plan, or authorization mode, or key inference spendability.
 - The shared authenticated `POST /api/oauth/manual` body is `{sessionId, callbackInput}` for manual callback providers; provider, redirect URI, and verifier are selected from the session. OpenRouter completes through its public callback route instead. Google embedded URL paste and optional custom Web public callback behavior are preserved.
 - Manual URL mode checks exact origin/path/state, code XOR error, and duplicate parameters; the pasted URI is not fetched. Public OAuth callbacks parse unique code/state or provider-error parameters, resolve only a server-created state-bound session, and enforce its owner authority, expiry, one-time claim, cancellation, staged validation, and commit admission.
 - A terminal attempt submitted to the generic manual endpoint returns HTTP `400` when its owner is known; an unknown or foreign `sessionId` returns HTTP `404`. The unauthenticated OpenRouter callback returns HTTP `400` for invalid, expired, foreign-state, or replayed callback state and does not expose secrets.
