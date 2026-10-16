@@ -211,6 +211,64 @@ BACKUP_FILE='${HOME}/usemeter-backups/REPLACE_WITH_TIMESTAMPED_BACKUP.sqlite'
 
 Never restore a drill candidate by copying it over a live database. A real recovery remains an explicitly offline operation that stops the sole writer and follows the database-and-sidecar rollback rules above.
 
+## Host health and disk notifications
+
+`deploy/monitor/usemeter-monitor.py` is a standalone Python-standard-library monitor intended to run as the unprivileged deployment user. It does not connect to the application database, use an admin session, inspect accounts/providers, or change the running application. Each check directly requests the configured public `/health` URL (no proxy environment, redirects, cookies, or credentials) and measures the root filesystem through the user's home directory using `statvfs`. A health response is healthy only for HTTP 200 JSON with `status: "ok"`, `integrity: true`, and `pollerRunning: true`; the body is capped at 4 KiB and the full health request has a five-second deadline. Transfer-encoded responses are treated as unhealthy so malformed chunk lengths cannot bypass that bound. Disk alerting starts at `>= 90%` using `(blocks - bavail) / blocks`, matching the application metric.
+
+The deployment timer checks every five minutes. Messages are deduplicated by the last alert set accepted by local sendmail, include only the public service URL and disk/health status, and are globally rate-limited to at most one automatic message per ten minutes. A changed condition remains pending until a successful sendmail submission; recovery is submitted after the cooldown if the condition remains clear. Before invoking sendmail, the monitor durably records an absolute pending-retry deadline. If that admission write exceeds its five-second budget, or the remaining bounded send window expires, the run fails closed without submitting mail. Only sendmail exit code 0 updates the accepted alert set. A failure before the mail process starts leaves the accepted alert set unchanged and retries after the ordinary cooldown; any ambiguous post-launch outcome retains the pending deadline and waits at least the ten-minute cooldown plus the five-second admission budget and ten-second sendmail timeout before reconciliation. If sendmail accepted a message but the post-acceptance state write failed or the process was interrupted, a later reconciliation can duplicate that message; the local queue and state file cannot be updated atomically. Once acceptance state is committed, delayed inbox receipt does not trigger retries. A healthy first check sends nothing. The monitor cannot report total host power loss or a network outage that prevents this same host from running; an independent external watcher is required for those failures.
+
+Install the source separately from the application and do not use `sudo`:
+
+```sh
+mkdir -p -m 0700 ~/.local/lib/usemeter/monitor ~/.config/systemd/user
+install -m 0700 deploy/monitor/usemeter-monitor.py ~/.local/lib/usemeter/monitor/
+install -m 0644 deploy/monitor/usemeter-monitor.service deploy/monitor/usemeter-monitor.timer ~/.config/systemd/user/
+```
+
+Create `~/.config/usemeter` as the service user with mode `0700` if it does not already exist; verify rather than chmod an existing directory. Create `~/.config/usemeter/monitor.env` owned by that user with mode `0600`. Do not overwrite an existing configuration. Its strict, non-shell `KEY=value` format accepts only these settings:
+
+```env
+USEMETER_MONITOR_ENABLED=0
+USEMETER_MONITOR_HEALTH_URL=https://usemeter.example.com/health
+USEMETER_MONITOR_RECIPIENT=
+USEMETER_MONITOR_SENDER=
+```
+
+The source default is delivery-disabled (`ENABLED=0`) with loopback health URL `http://127.0.0.1:3100/health`. For production, configure the actual public HTTPS URL shown above. Set the recipient and an operator-controlled sender address; automatic delivery remains disabled until both addresses are valid and `USEMETER_MONITOR_ENABLED=1`. The config file is read directly without shell evaluation. Per-process `USEMETER_MONITOR_*` environment values override file entries.
+
+Run a real observation without sending or changing the last-submitted alert state. Output reports `wouldNotify` based on current observations, enabled configuration, and the stored local-MTA acceptance state:
+
+```sh
+/usr/bin/python3 ~/.local/lib/usemeter/monitor/usemeter-monitor.py --check-only
+```
+
+After the recipient and sender are set in the secure config, this shows whether the observed conditions differ from the accepted state while automatic delivery remains disabled. Temporarily override only that invocation; `--check-only` never sends or advances state:
+
+```sh
+USEMETER_MONITOR_ENABLED=1 /usr/bin/python3 ~/.local/lib/usemeter/monitor/usemeter-monitor.py --check-only
+```
+
+`--send-test` is a separate manual-only mode; the timer never invokes it. After configuring the approved recipient and sender, an operator may run it once to submit the fixed `[useMeter ops] Delivery test` message. Its body is exactly:
+
+```text
+This is the approved useMeter operational alert delivery test.
+Service: https://usemeter.example.com
+No account, credential, or usage data is included.
+```
+
+It does not write notification state. A successful command exit means the local sendmail interface accepted the message for submission; it does not establish inbox delivery. Confirm mailbox receipt independently. Mail receipt is never polled for automatic retry. Enable periodic notifications only after reviewing the configuration, completing check-only observation, and confirming the explicitly approved delivery test:
+
+```sh
+/usr/bin/python3 ~/.local/lib/usemeter/monitor/usemeter-monitor.py --send-test
+systemctl --user daemon-reload
+systemctl --user enable --now usemeter-monitor.timer
+systemctl --user list-timers usemeter-monitor.timer
+```
+
+Inspect `journalctl --user -u usemeter-monitor.service` for sanitized status/error messages. The user systemd manager must remain active across logout/reboot (user lingering). The service has a 30-second execution bound and submits through `/usr/sbin/sendmail -oi -f <sender> -- <recipient>` without a shell; it stays unprivileged and does not grant Docker or sudo access. `NoNewPrivileges` and mount-namespace sandboxing are intentionally not enabled because the host's setgid `postdrop` handoff may otherwise fail, matching the existing rootless mail-bridge constraint.
+
+The monitor stores only the last alert set accepted by local sendmail, its submission timestamp, and a private pending-attempt retry deadline in `~/.local/state/usemeter-monitor` (directory `0700`, files `0600`, umask `077`). The deadline is durably admitted before automatic send; failed/pre-acceptance state is not recorded as submitted. It refuses symlinks, unsafe existing permissions, invalid state/configuration, and overlapping runs rather than repairing or replacing existing user data. No current host installation, enabled timer, mail submission, or mailbox receipt is implied by these source files.
+
 ## Admin metrics and operational alerts
 
 `GET /api/admin/metrics` is protected by the existing authenticated admin-only middleware. It returns database and WAL file sizes, free pages, total snapshots, active credentials, disk free space/usage, quick integrity health, poller running/sweep status, last sweep duration/completion time, and the number of consecutive failed or degraded sweeps. It reports alert codes when filesystem usage reaches 90%, three consecutive sweeps fail/degrade, the poller is stopped, integrity is unhealthy, or a configured recovery-mail socket cannot be reached. A disabled mail bridge is reported as disabled rather than as an outage.

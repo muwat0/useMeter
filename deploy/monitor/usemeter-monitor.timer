@@ -1,0 +1,11 @@
+[Unit]
+Description=Check useMeter public health and host disk every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=1min
+Unit=usemeter-monitor.service
+
+[Install]
+WantedBy=timers.target
