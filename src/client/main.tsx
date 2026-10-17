@@ -77,6 +77,8 @@ const I18N: Record<string, Record<string, string>> = {
     summaryExhausted: "Kilitli/Biten Kota:", autoSync: "Otomatik Yenileme:",
     editModeActive: "✏️ Düzenleme Modu Aktif", editModeTitle: "Kart Düzenleme Modu",
     settingsTitle: "Ayarlar", themeTitle: "Koyu / Aydınlık Mod",
+    privacyHideTitle: "Hassas Bilgileri ve Bakiyeleri Gizle",
+    privacyShowTitle: "Hassas Bilgileri ve Bakiyeleri Göster",
     accountSecurityTitle: "Hesap Güvenliği", passwordChangeTitle: "Parolayı Değiştir",
     currentPasswordLabel: "Mevcut parola", newPasswordLabel: "Yeni parola",
     confirmNewPasswordLabel: "Yeni parolayı doğrula",
@@ -184,6 +186,8 @@ const I18N: Record<string, Record<string, string>> = {
     accountSecurityTitle: "Account Security", passwordChangeTitle: "Change Password",
     currentPasswordLabel: "Current password", newPasswordLabel: "New password",
     confirmNewPasswordLabel: "Confirm new password",
+    privacyHideTitle: "Hide Sensitive Info & Balances",
+    privacyShowTitle: "Show Sensitive Info & Balances",
     passwordPolicyHelp: "Use at least 12 Unicode characters and code units; the password must not exceed 256 characters, code units, or UTF-8 bytes.",
     passwordMismatch: "The new passwords do not match.",
     passwordChangeSubmit: "Change Password", passwordChanging: "Changing...",
@@ -535,9 +539,10 @@ function getCleanLabel(r: Report): string {
 }
 
 // ── AccountCard ──
-function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStartEditLabel, onCancelEditLabel, onSaveLabel, onSaveAccent, onDeleteAccount, onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd }: {
+function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, hideSensitives, onStartEditLabel, onCancelEditLabel, onSaveLabel, onSaveAccent, onDeleteAccount, onDragStart, onDragOver, onDragLeave, onDrop, onDragEnd }: {
   r: Report; lang: string; isEditMode: boolean; editingCardId: string | null;
   currentGroup: string;
+  hideSensitives: boolean;
   onStartEditLabel: (key: string) => void; onCancelEditLabel: () => void;
   onSaveLabel: (key: string, label: string) => void; onSaveAccent: (key: string, accent: string) => void;
   onDeleteAccount: (id: string) => void;
@@ -610,7 +615,7 @@ function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStart
                 </div>
               ) : (
                 <div className="flex items-center gap-2 mt-1" draggable={false} onMouseDown={e => e.stopPropagation()}>
-                  <span className="account-card-badge text-xs font-semibold px-2.5 py-0.5 rounded-md">{cleanLabel}</span>
+                  <span className="account-card-badge text-xs font-semibold px-2.5 py-0.5 rounded-md">{hideSensitives ? '••••••••' : cleanLabel}</span>
                   <button type="button" onClick={() => onStartEditLabel(cardKey)}
                     className="text-[11px] font-medium text-appAccent hover:underline flex items-center gap-1">
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
@@ -619,7 +624,7 @@ function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStart
                 </div>
               )
             ) : (
-              <span className="account-card-badge text-xs font-semibold px-2.5 py-0.5 rounded-md">{cleanLabel}</span>
+              <span className="account-card-badge text-xs font-semibold px-2.5 py-0.5 rounded-md">{hideSensitives ? '••••••••' : cleanLabel}</span>
             )}
             {/* Stale badge */}
             {isStale && (
@@ -686,18 +691,18 @@ function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStart
               ? l.amount.used
               : l.amount.remaining;
             if (typeof usdValue === 'number' && Number.isFinite(usdValue)) {
-              valueEl = <span className="account-card-value font-bold text-sm">${usdValue.toFixed(2)}</span>;
+              valueEl = <span className="account-card-value font-bold text-sm tracking-wide">{hideSensitives ? '••••••' : `$${usdValue.toFixed(2)}`}</span>;
             }
           } else if (l.amount.unit === 'credits') {
             const rem = l.amount.remaining;
             if (typeof rem === 'number' && Number.isFinite(rem)) {
               const labelText = lang === 'tr' ? `${rem} Hak Mevcut` : `${rem} Available`;
-              valueEl = <span className="account-card-badge font-semibold text-xs px-2.5 py-0.5 rounded-md">{labelText}</span>;
+              valueEl = <span className="account-card-badge font-semibold text-xs px-2.5 py-0.5 rounded-md">{hideSensitives ? '••••••' : labelText}</span>;
             }
           } else {
             const quantityText = formatCountUsage(l.amount, lang);
             if (quantityText) {
-              valueEl = <span className="account-card-value font-bold text-sm">{quantityText}</span>;
+              valueEl = <span className="account-card-value font-bold text-sm">{hideSensitives ? '••••••' : quantityText}</span>;
             }
           }
 
@@ -724,7 +729,11 @@ function AccountCard({ r, lang, isEditMode, editingCardId, currentGroup, onStart
               </div>
               {barEl}
               <div className="flex justify-between items-center pt-1">{countdownEl}</div>
-              {cleanNotes.map((n, ni) => <span key={ni} className="text-xs text-appTextMuted block mt-0.5">{translateNote(n, lang)}</span>)}
+              {cleanNotes.map((n, ni) => {
+                const translated = translateNote(n, lang);
+                const displayText = hideSensitives ? translated.replace(/\$[\d,]+(?:\.\d+)?/g, '$••••') : translated;
+                return <span key={ni} className="text-xs text-appTextMuted block mt-0.5">{displayText}</span>;
+              })}
             </div>
           );
         })}
@@ -977,6 +986,24 @@ function Dashboard() {
 
   // Poll spinner
   const [pollSpinning, setPollSpinning] = useState(false);
+
+  // Privacy mode (mask sensitive credentials & balances)
+  const [hideSensitives, setHideSensitives] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('usage_hide_sensitive') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const toggleHideSensitives = useCallback(() => {
+    setHideSensitives(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('usage_hide_sensitive', String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
 
   // ── Apply mode and document language ──
   useEffect(() => {
@@ -2026,6 +2053,25 @@ function Dashboard() {
               className="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             </button>
+            {/* Privacy Toggle (Eye) */}
+            <button type="button" onClick={toggleHideSensitives} id="privacyModeBtn"
+              title={t(hideSensitives ? 'privacyShowTitle' : 'privacyHideTitle', lang)}
+              aria-label={t(hideSensitives ? 'privacyShowTitle' : 'privacyHideTitle', lang)}
+              className={`h-9 w-9 rounded-lg border transition flex items-center justify-center text-sm ${hideSensitives ? 'bg-appAccent/15 text-appAccent border-appAccent/40' : 'border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent'}`}>
+              {hideSensitives ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/>
+                  <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/>
+                  <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/>
+                  <line x1="2" x2="22" y1="2" y2="22"/>
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/>
+                  <circle cx="12" cy="12" r="3"/>
+                </svg>
+              )}
+            </button>
             {/* Dark/Light */}
             <button onClick={() => setMode(m => m === 'dark' ? 'light' : 'dark')} id="lightDarkBtn" title={t('themeTitle', lang)}
               className="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
@@ -2058,7 +2104,7 @@ function Dashboard() {
                     <span>{t('adminLink', lang)}</span>
                   </a>
                 )}
-                <span className="text-xs text-appTextMuted hidden md:inline-block max-w-[150px] truncate" title={user.email}>{user.email}</span>
+                <span className="text-xs text-appTextMuted hidden md:inline-block max-w-[150px] truncate" title={user.email}>{hideSensitives ? '••••••••' : user.email}</span>
                 <button type="button" onClick={logoutUser} id="logoutBtn" title={t('logoutTitle', lang)}
                   className="h-9 px-2.5 sm:px-3 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-rose-400 hover:border-rose-500/50 transition flex items-center gap-1.5 text-xs font-semibold cursor-pointer">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -2080,7 +2126,7 @@ function Dashboard() {
             </div>
             <div className="flex items-center gap-2 border-l border-appBorder pl-4 sm:pl-6">
               <span className="text-appTextMuted">{t('summaryBalance', lang)}</span>
-              <span id="statTotalBalance" className="font-bold text-emerald-500 text-sm">${totalBalance.toFixed(2)}</span>
+              <span id="statTotalBalance" className="font-bold text-emerald-500 text-sm">{hideSensitives ? '••••••' : `$${totalBalance.toFixed(2)}`}</span>
             </div>
             <div className="flex items-center gap-2 border-l border-appBorder pl-4 sm:pl-6">
               <span className="text-appTextMuted">{t('summaryExhausted', lang)}</span>
@@ -2111,7 +2157,7 @@ function Dashboard() {
                 </div>
                 {groupedReports[p].map(r => (
                   <AccountCard key={getCardKey(r)} r={r} lang={lang} isEditMode={isEditMode} editingCardId={editingCardId}
-                    currentGroup={currentGroup}
+                    currentGroup={currentGroup} hideSensitives={hideSensitives}
                     onStartEditLabel={setEditingCardId} onCancelEditLabel={() => setEditingCardId(null)}
                     onSaveLabel={saveAccountLabel} onSaveAccent={saveAccountAccent} onDeleteAccount={deleteAccount}
                     onDragStart={onDragStart} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop} onDragEnd={onDragEnd} />
@@ -2121,7 +2167,7 @@ function Dashboard() {
           ) : (
             sortedReports.map(r => (
               <AccountCard key={getCardKey(r)} r={r} lang={lang} isEditMode={isEditMode} editingCardId={editingCardId}
-                currentGroup={currentGroup}
+                currentGroup={currentGroup} hideSensitives={hideSensitives}
                 onStartEditLabel={setEditingCardId} onCancelEditLabel={() => setEditingCardId(null)}
                 onSaveLabel={saveAccountLabel} onSaveAccent={saveAccountAccent} onDeleteAccount={deleteAccount}
                 onDragStart={onDragStart} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop} onDragEnd={onDragEnd} />
