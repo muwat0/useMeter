@@ -6,6 +6,8 @@ stages:
 quality:
   stage: quality
   timeout: 10 minutes
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends python3
   script:
     - bun install --frozen-lockfile
     - bun x tsc --noEmit
