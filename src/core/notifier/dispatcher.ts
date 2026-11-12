@@ -1,8 +1,62 @@
 import type { AlertEvent, ChannelConfig } from "../../types";
+import dns from "node:dns/promises";
+import fs from "node:fs";
+import net from "node:net";
 
 export interface DispatcherOptions {
   fetch?: typeof fetch;
   timeoutMs?: number;
+}
+
+function getContainerGateway(): string | null {
+  try {
+    const route = fs.readFileSync("/proc/net/route", "utf8");
+    for (const line of route.split("\n")) {
+      const parts = line.trim().split(/\s+/);
+      if (parts[1] === "00000000" && parts[2]) {
+        const hex = parts[2];
+        const o1 = parseInt(hex.slice(6, 8), 16);
+        const o2 = parseInt(hex.slice(4, 6), 16);
+        const o3 = parseInt(hex.slice(2, 4), 16);
+        const o4 = parseInt(hex.slice(0, 2), 16);
+        return `${o1}.${o2}.${o3}.${o4}`;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+export async function resolveDispatcherTarget(rawUrl: string): Promise<{ targetUrl: string; hostHeader?: string }> {
+  try {
+    const parsed = new URL(rawUrl);
+    const hostname = parsed.hostname;
+
+    if (net.isIP(hostname)) {
+      if ((hostname === "127.0.0.1" || hostname === "::1" || hostname.startsWith("127.")) && (fs.existsSync("/.dockerenv") || process.env["DOCKER_CONTAINER"])) {
+        const gw = process.env["HOST_GATEWAY"] || getContainerGateway();
+        if (gw) {
+          parsed.hostname = gw;
+          return { targetUrl: parsed.toString() };
+        }
+      }
+      return { targetUrl: rawUrl };
+    }
+
+    const addresses = await dns.lookup(hostname, { all: true }).catch(() => []);
+    const isLoopback = addresses.some(a => a.address === "127.0.0.1" || a.address === "::1" || a.address.startsWith("127."));
+
+    if (isLoopback && (fs.existsSync("/.dockerenv") || process.env["DOCKER_CONTAINER"] || process.env["NODE_ENV"] === "production")) {
+      const gw = process.env["HOST_GATEWAY"] || getContainerGateway();
+      if (gw) {
+        parsed.hostname = gw;
+        return {
+          targetUrl: parsed.toString(),
+          hostHeader: hostname,
+        };
+      }
+    }
+  } catch {}
+  return { targetUrl: rawUrl };
 }
 
 export class NotificationDispatcher {
@@ -69,16 +123,17 @@ export class NotificationDispatcher {
     const title = `${titlePrefix}: ${event.accountLabel} (${event.provider})`;
     const body = this.#formatTextBody(event);
 
+    const { targetUrl, hostHeader } = await resolveDispatcherTarget(config.url);
     const headers: Record<string, string> = {
       Title: title,
       Priority: priority,
       Tags: tags,
+      "User-Agent": "useMeter/1.0 (+https://usemeter.example.com)",
     };
-    if (config.token) {
-      headers["Authorization"] = `Bearer ${config.token}`;
-    }
+    if (hostHeader) headers["Host"] = hostHeader;
+    if (config.token) headers["Authorization"] = `Bearer ${config.token}`;
 
-    const res = await this.#fetch(config.url, {
+    const res = await this.#fetch(targetUrl, {
       method: "POST",
       headers,
       body,
@@ -98,10 +153,17 @@ export class NotificationDispatcher {
 
     const text = this.#formatMarkdownTelegram(event);
     const url = `https://api.telegram.org/bot${config.botToken}/sendMessage`;
+    const { targetUrl, hostHeader } = await resolveDispatcherTarget(url);
 
-    const res = await this.#fetch(url, {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "User-Agent": "useMeter/1.0 (+https://usemeter.example.com)",
+    };
+    if (hostHeader) headers["Host"] = hostHeader;
+
+    const res = await this.#fetch(targetUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         chat_id: config.chatId,
         text,
@@ -121,6 +183,17 @@ export class NotificationDispatcher {
   async #dispatchDiscord(config: { url: string }, event: AlertEvent, signal: AbortSignal) {
     if (!config.url || !config.url.startsWith("http")) {
       return { success: false, error: "Invalid Discord webhook URL" };
+    }
+
+    if (config.url.includes("discord.com/api/webhooks/") || config.url.includes("discordapp.com/api/webhooks/")) {
+      const afterWebhooks = config.url.split("/webhooks/")[1]?.split("?")[0];
+      const parts = afterWebhooks?.split("/").filter(Boolean);
+      if (!parts || parts.length < 2 || parts[1].includes("...")) {
+        return {
+          success: false,
+          error: "Invalid Discord webhook URL: must include both webhook ID and token (e.g. https://discord.com/api/webhooks/{id}/{token})",
+        };
+      }
     }
 
     let color = 0x3b82f6; // blue
@@ -148,9 +221,16 @@ export class NotificationDispatcher {
       footer: { text: "useMeter AI Usage Tracker" },
     };
 
-    const res = await this.#fetch(config.url, {
+    const { targetUrl, hostHeader } = await resolveDispatcherTarget(config.url);
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "User-Agent": "useMeter/1.0 (+https://usemeter.example.com)",
+    };
+    if (hostHeader) headers["Host"] = hostHeader;
+
+    const res = await this.#fetch(targetUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({ embeds: [embed] }),
       signal,
     });
@@ -166,9 +246,16 @@ export class NotificationDispatcher {
       return { success: false, error: "Invalid webhook URL" };
     }
 
-    const res = await this.#fetch(config.url, {
+    const { targetUrl, hostHeader } = await resolveDispatcherTarget(config.url);
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "User-Agent": "useMeter/1.0 (+https://usemeter.example.com)",
+    };
+    if (hostHeader) headers["Host"] = hostHeader;
+
+    const res = await this.#fetch(targetUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         event: "quota_alert",
         alert: event,

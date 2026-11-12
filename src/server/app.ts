@@ -1602,14 +1602,16 @@ export function createServer(
         }
         finalConfig = { channel: "telegram", botToken, chatId };
       } else if (channel === "ntfy") {
-        const url = config.url || "";
+        const rawUrl = typeof config.url === "string" ? config.url.trim() : "";
+        const url = rawUrl && !rawUrl.endsWith("...") ? rawUrl : (existing?.config.channel === "ntfy" ? existing.config.url : "");
         const token = config.token || (existing?.config.channel === "ntfy" ? existing.config.token : undefined);
         if (enabled && (!url || !url.startsWith("http"))) {
           return c.json({ success: false, error: "A valid ntfy URL (e.g. https://ntfy.sh/my-topic) is required" }, 400);
         }
         finalConfig = { channel: "ntfy", url, token: token || undefined };
       } else if (channel === "discord") {
-        const url = config.url || (existing?.config.channel === "discord" ? existing.config.url : "");
+        const rawUrl = typeof config.url === "string" ? config.url.trim() : "";
+        const url = rawUrl && !rawUrl.endsWith("...") ? rawUrl : (existing?.config.channel === "discord" ? existing.config.url : "");
         if (enabled && (!url || !url.startsWith("http"))) {
           return c.json({ success: false, error: "A valid Discord webhook URL is required" }, 400);
         }
@@ -1661,10 +1663,13 @@ export function createServer(
           const botToken = body.config.botToken || (existing?.config.channel === "telegram" ? existing.config.botToken : "");
           targetConfig = { channel: "telegram", botToken, chatId: body.config.chatId };
         } else if (channel === "ntfy") {
+          const rawUrl = typeof body.config.url === "string" ? body.config.url.trim() : "";
+          const url = rawUrl && !rawUrl.endsWith("...") ? rawUrl : (existing?.config.channel === "ntfy" ? existing.config.url : "");
           const token = body.config.token || (existing?.config.channel === "ntfy" ? existing.config.token : undefined);
-          targetConfig = { channel: "ntfy", url: body.config.url, token };
+          targetConfig = { channel: "ntfy", url, token };
         } else if (channel === "discord") {
-          const url = body.config.url || (existing?.config.channel === "discord" ? existing.config.url : "");
+          const rawUrl = typeof body.config.url === "string" ? body.config.url.trim() : "";
+          const url = rawUrl && !rawUrl.endsWith("...") ? rawUrl : (existing?.config.channel === "discord" ? existing.config.url : "");
           targetConfig = { channel: "discord", url };
         } else {
           targetConfig = { channel: "webhook", url: body.config.url };
