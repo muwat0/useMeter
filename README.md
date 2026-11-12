@@ -1,5 +1,11 @@
 # useMeter - Self-hosted AI usage and quota tracking
 
+[![GitHub Release](https://img.shields.io/github/v/release/muwat0/useMeter?color=blue)](https://github.com/muwat0/useMeter/releases)
+[![Quality CI](https://github.com/muwat0/useMeter/actions/workflows/quality.yml/badge.svg)](https://github.com/muwat0/useMeter/actions/workflows/quality.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Bun](https://img.shields.io/badge/Runtime-Bun%201.4+-black?logo=bun)](https://bun.sh)
+[![TypeScript](https://img.shields.io/badge/Language-TypeScript%20strict-blue?logo=typescript)](https://www.typescriptlang.org)
+
 useMeter brings supported AI provider usage, quota windows, balances, and reset times into one self-hosted dashboard. It stores account data in a local SQLite database and refreshes provider reports in the background.
 
 > **Dashboard preview:** This screenshot uses synthetic demo accounts and usage values; it does not show real credentials or a live account.
