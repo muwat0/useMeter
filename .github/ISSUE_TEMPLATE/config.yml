@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security Disclosure
+    url: https://github.com/muwat0/useMeter/blob/main/docs/DEPLOYMENT.md
+    about: Please report security vulnerabilities responsibly via email to murat@muwat.org.
