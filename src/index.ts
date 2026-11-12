@@ -6,6 +6,7 @@ import { PollerEngine } from "./core/poller/poller";
 import type { PollerOptions } from "./core/poller/poller";
 import { AuthService } from "./core/auth/auth";
 import { createUnixPasswordResetMailer } from "./core/auth/password-reset-mailer";
+import { AlertEvaluator, NotificationDispatcher } from "./core/notifier";
 import { createServer } from "./server/app";
 
 // Fail early in production if encryption key is insecure or absent
@@ -52,6 +53,15 @@ const poller = new PollerEngine(vault, registry, {
 
 // Start background polling daemon
 poller.start();
+
+// Initialize notification dispatcher & alert evaluator
+const notificationDispatcher = new NotificationDispatcher();
+const alertEvaluator = new AlertEvaluator(vault, notificationDispatcher);
+poller.onReport((report) => {
+  void alertEvaluator.evaluateReport(report).catch((error: unknown) => {
+    console.error("Alert evaluation failed:", error);
+  });
+});
 
 const snapshotRetention = new UsageSnapshotRetention(vault, {
   retentionDays: snapshotRetentionDays,

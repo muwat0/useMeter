@@ -196,12 +196,82 @@ export interface InputCredential {
   metadata?: Record<string, unknown>;
 }
 
+export type NotificationChannelType = "ntfy" | "telegram" | "webhook" | "discord";
+
+export interface NtfyConfig {
+  channel: "ntfy";
+  url: string; // e.g. "https://ntfy.sh/my-topic" or custom ntfy instance
+  token?: string; // Optional auth token
+}
+
+export interface TelegramConfig {
+  channel: "telegram";
+  botToken: string;
+  chatId: string;
+}
+
+export interface WebhookConfig {
+  channel: "webhook";
+  url: string;
+}
+
+export interface DiscordConfig {
+  channel: "discord";
+  url: string;
+}
+
+export type ChannelConfig = NtfyConfig | TelegramConfig | WebhookConfig | DiscordConfig;
+
+export interface UserNotificationConfig {
+  userId: string;
+  enabled: boolean;
+  channel: NotificationChannelType;
+  config: ChannelConfig;
+  warningThresholdPercent: number; // e.g. 80 for 80%
+  notifyOnWarning: boolean;
+  notifyOnExhausted: boolean;
+  notifyOnReset: boolean;
+  updatedAt: number;
+}
+
+export interface UserNotificationConfigView {
+  enabled: boolean;
+  channel: NotificationChannelType;
+  config: {
+    channel: NotificationChannelType;
+    url?: string;
+    chatId?: string;
+    hasBotToken?: boolean;
+    hasToken?: boolean;
+  };
+  warningThresholdPercent: number;
+  notifyOnWarning: boolean;
+  notifyOnExhausted: boolean;
+  notifyOnReset: boolean;
+  updatedAt: number;
+}
+
+export interface AlertState {
+  userId: string;
+  credentialId: string;
+  metric: string;
+  lastState: "normal" | "warning" | "exhausted";
+  lastNotifiedAt: number;
+  lastValue: number;
+}
+
 export interface AlertEvent {
+  userId?: string;
   provider: string;
   accountLabel: string;
   metric: string;
+  metricId?: string;
   currentValue: number;
+  currentValueFormatted: string;
   threshold: number;
+  thresholdFormatted?: string;
   resetsAt?: number;
-  type: "warning" | "exhausted" | "recovered";
+  resetLabel?: string;
+  type: "warning" | "exhausted" | "recovered" | "test";
+  timestamp: number;
 }

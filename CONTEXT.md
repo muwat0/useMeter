@@ -94,6 +94,13 @@ Yalnızca yöneticiler (`admin`) tarafından üretilen, yeni bir kullanıcının
 - **Zorunlu E-posta Bağlayıcılığı (Strict Email Binding):** Davetiye oluşturulurken yönetici tarafından geçerli bir hedef e-posta adresi (`email`) verilmesi zorunludur; useMeter bünyesinde anonim veya e-postasız serbest davetiye bulunmaz. Davetiye kabul edildiğinde yeni kullanıcı hesabı doğrudan bu kanonik e-posta adresi ile oluşturulur (`COLLATE NOCASE`).
 - **Dış Kayıt Politikasını Aşma (Registration Bypass):** Sistem genelinde genel kayıtlar kapatılmış olsa dahi (`isRegistrationAllowed() === false`), geçerli bir davetiye belirteci taşıyan kullanıcılar sisteme başarıyla kaydolabilir.
 - **Manuel Davet Teslimi (Manual Invitation Delivery):** Yönetici oluşturulan davet bağlantısını (`/invite/:token`) panodan kopyalar ve kullanıcıya harici güvenli kanallardan kendisi iletir. Parola Kurtarma Girişiminin posta teslimi ayrı bir iş akışıdır; davetiyenin otomatik gönderileceği anlamına gelmez.
+
+### Kota Bildirim ve Alarm Sistemi (Quota Notification & Alert System)
+Sağlayıcı kotalarının tükenmesi, eşik aşımı veya pencere sıfırlanması durumunda kullanıcılara dış kanallardan asenkron sinyal ileten alt sistem.
+- **Alarm Olayı (Alert Event):** Bir sağlayıcı hesabındaki kota doluluk oranının, kalan bakiyenin veya sıfırlanma anının kullanıcı tanımlı eşikleri tetiklemesiyle üretilen etki alanı olayıdır (`warning`, `exhausted`, `recovered`, `test`).
+- **Alarm Durum Geçişi (Alert State Transition & Deduplication):** Arka plan yoklayıcının periyodik döngülerinde aynı durum için sürekli spam bildirim gitmesini önleyen durum makinesidir (`normal` -> `warning` -> `exhausted` -> `recovered`). Yalnızca gerçek durum değiştiğinde veya belirlenen soğuma süresi (cooldown) aşıldığında bildirim gönderilir.
+- **Bildirim Kanalı (Notification Channel):** Dış dünyaya bildirim ileten servis adaptörüdür: `ntfy` (anlık HTTP push), `telegram` (Telegram Bot API Markdown mesajı), `discord` (Discord Webhook gömülü mesaj) veya `webhook` (standart JSON POST).
+- **Kullanıcı Bildirim Tercihleri (User Notification Config):** Kiracı mülkiyet sınırında (`owner_id`) saklanan kanal türü, hedef parametreleri, uyarı eşiği yüzdesi (%80, %90 vb.) ve sıfırlanma bildirimi açık/kapalı anahtarlarıdır.
 ### Sağlayıcı (Provider)
 Yapay zeka modellerini veya API altyapısını sunan bağımsız servis kuruluşu (örn. `openai`, `anthropic`, `openrouter`, `deepseek`, `google`, `cursor`). Her sağlayıcının kendine özgü kimlik doğrulama, hız sınırı (rate limit) ve kota politikası vardır.
 

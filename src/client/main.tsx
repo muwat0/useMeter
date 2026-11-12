@@ -132,6 +132,36 @@ const I18N: Record<string, Record<string, string>> = {
     patNeverExpires: "Süresiz",
     patRevokeBtn: "Kaldır",
     patRevokeConfirm: "Bu API anahtarını iptal etmek istediğinize emin misiniz? Bu anahtarı kullanan script'lerin erişimi hemen kesilecektir.",
+    notifSectionTitle: "Kota ve Sıfırlanma Bildirimleri",
+    notifSectionDesc: "Kotalarınız tükendiğinde (%100), uyarı eşiğine ulaştığında veya pencere sıfırlandığında anlık bildirim alın.",
+    notifEnabledLabel: "Bildirimleri Etkinleştir",
+    notifChannelLabel: "Bildirim Kanalı",
+    notifChannelNtfy: "ntfy (Anlık Mobil / Masaüstü)",
+    notifChannelTelegram: "Telegram Bot",
+    notifChannelDiscord: "Discord Webhook",
+    notifChannelWebhook: "Özel Webhook (JSON POST)",
+    notifNtfyUrlLabel: "ntfy Konu URL'si",
+    notifNtfyUrlPlaceholder: "https://ntfy.sh/benim_gizli_konum",
+    notifNtfyTokenLabel: "Yetkilendirme Belirteci (İsteğe bağlı)",
+    notifNtfyTokenPlaceholder: "tk_...",
+    notifTgBotTokenLabel: "Telegram Bot Token",
+    notifTgBotTokenPlaceholder: "123456789:ABCdefGHI...",
+    notifTgChatIdLabel: "Telegram Chat ID",
+    notifTgChatIdPlaceholder: "123456789",
+    notifWebhookUrlLabel: "Webhook URL'si",
+    notifDiscordUrlLabel: "Discord Webhook URL'si",
+    notifThresholdLabel: "Uyarı Eşiği (%)",
+    notifThresholdDesc: "Kullanım bu yüzdeye ulaştığında bildirim gönderilir.",
+    notifTriggerWarning: "Uyarı eşiğine (%{pct}) ulaşıldığında bildir",
+    notifTriggerExhausted: "Kota tamamen tükendiğinde (%100) bildir",
+    notifTriggerReset: "Kota sıfırlandığında / hak yenilendiğinde bildir (OpenAI 5h vb.)",
+    notifSaveBtn: "Bildirim Ayarlarını Kaydet",
+    notifSaving: "Kaydediliyor...",
+    notifSaved: "Bildirim ayarları kaydedildi.",
+    notifTestBtn: "Test Bildirimi Gönder",
+    notifTesting: "Gönderiliyor...",
+    notifTestSuccess: "Test bildirimi başarıyla iletildi!",
+    notifTestFailed: "Test bildirimi gönderilemedi: ",
     deleteAccount: "Hesabı Kaldır", editLabel: "Etiketi Düzenle",
 
     save: "Kaydet", saveAndPoll: "Kaydet ve Sorgula", cancel: "İptal",
@@ -262,6 +292,36 @@ const I18N: Record<string, Record<string, string>> = {
     patNeverExpires: "Never",
     patRevokeBtn: "Revoke",
     patRevokeConfirm: "Are you sure you want to revoke this API token? Any scripts using it will immediately lose access.",
+    notifSectionTitle: "Quota & Reset Notifications",
+    notifSectionDesc: "Receive real-time alerts when quotas are exhausted (100%), reach warning thresholds, or reset.",
+    notifEnabledLabel: "Enable Notifications",
+    notifChannelLabel: "Notification Channel",
+    notifChannelNtfy: "ntfy (Mobile & Desktop Push)",
+    notifChannelTelegram: "Telegram Bot",
+    notifChannelDiscord: "Discord Webhook",
+    notifChannelWebhook: "Custom Webhook (JSON POST)",
+    notifNtfyUrlLabel: "ntfy Topic URL",
+    notifNtfyUrlPlaceholder: "https://ntfy.sh/my_secret_topic",
+    notifNtfyTokenLabel: "Access Token (Optional)",
+    notifNtfyTokenPlaceholder: "tk_...",
+    notifTgBotTokenLabel: "Telegram Bot Token",
+    notifTgBotTokenPlaceholder: "123456789:ABCdefGHI...",
+    notifTgChatIdLabel: "Telegram Chat ID",
+    notifTgChatIdPlaceholder: "123456789",
+    notifWebhookUrlLabel: "Webhook URL",
+    notifDiscordUrlLabel: "Discord Webhook URL",
+    notifThresholdLabel: "Warning Threshold (%)",
+    notifThresholdDesc: "Alert sent when quota usage reaches this percentage.",
+    notifTriggerWarning: "Notify when reaching warning threshold (%{pct})",
+    notifTriggerExhausted: "Notify when quota is completely exhausted (100%)",
+    notifTriggerReset: "Notify when quota resets / capacity is regenerated (OpenAI 5h, etc.)",
+    notifSaveBtn: "Save Notification Settings",
+    notifSaving: "Saving...",
+    notifSaved: "Notification settings saved.",
+    notifTestBtn: "Send Test Notification",
+    notifTesting: "Sending...",
+    notifTestSuccess: "Test notification sent successfully!",
+    notifTestFailed: "Failed to send test notification: ",
     deleteAccount: "Remove Account", editLabel: "Edit Label",
     save: "Save", saveAndPoll: "Save & Poll", cancel: "Cancel",
     noAccounts: 'No AI accounts connected yet. Click <b>+ Connect Account</b> to add one.',
@@ -1013,6 +1073,35 @@ function Dashboard() {
   const [patCreateError, setPatCreateError] = useState<string | null>(null);
   const [patCreatedRawToken, setPatCreatedRawToken] = useState<string | null>(null);
   const [patCopied, setPatCopied] = useState(false);
+
+  // Notification settings state
+  interface NotifState {
+    enabled: boolean;
+    channel: "ntfy" | "telegram" | "webhook" | "discord";
+    url: string;
+    token: string;
+    botToken: string;
+    chatId: string;
+    warningThresholdPercent: number;
+    notifyOnWarning: boolean;
+    notifyOnExhausted: boolean;
+    notifyOnReset: boolean;
+  }
+  const [notifState, setNotifState] = useState<NotifState>({
+    enabled: false,
+    channel: "ntfy",
+    url: "",
+    token: "",
+    botToken: "",
+    chatId: "",
+    warningThresholdPercent: 80,
+    notifyOnWarning: true,
+    notifyOnExhausted: true,
+    notifyOnReset: true,
+  });
+  const [notifSaving, setNotifSaving] = useState(false);
+  const [notifTesting, setNotifTesting] = useState(false);
+  const [notifFeedback, setNotifFeedback] = useState<{ success: boolean; message: string } | null>(null);
   const accountDeletedRef = useRef(false);
   const settingsFeedbackGenerationRef = useRef(0);
 
@@ -1250,6 +1339,7 @@ function Dashboard() {
     setPatCreateError(null);
     setPatCopied(false);
     setPatNewName('');
+    setNotifFeedback(null);
   }
 
   async function loadPatTokens() {
@@ -1319,6 +1409,115 @@ function Dashboard() {
   function openSettings() {
     setShowSettings(true);
     loadPatTokens();
+    loadNotificationConfig();
+  }
+
+  async function loadNotificationConfig() {
+    try {
+      const res = await fetch('/api/notifications/config');
+      if (res.ok) {
+        const json = (await res.json()) as { success: boolean; config?: any };
+        if (json.success && json.config) {
+          const c = json.config;
+          setNotifState(prev => ({
+            ...prev,
+            enabled: Boolean(c.enabled),
+            channel: c.channel || "ntfy",
+            url: c.config?.url || "",
+            chatId: c.config?.chatId || "",
+            warningThresholdPercent: c.warningThresholdPercent ?? 80,
+            notifyOnWarning: c.notifyOnWarning !== false,
+            notifyOnExhausted: c.notifyOnExhausted !== false,
+            notifyOnReset: c.notifyOnReset !== false,
+          }));
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function saveNotificationConfig(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (notifSaving) return;
+    setNotifSaving(true);
+    setNotifFeedback(null);
+
+    let channelConfig: any = { channel: notifState.channel };
+    if (notifState.channel === "telegram") {
+      channelConfig.botToken = notifState.botToken;
+      channelConfig.chatId = notifState.chatId;
+    } else if (notifState.channel === "ntfy") {
+      channelConfig.url = notifState.url;
+      if (notifState.token) channelConfig.token = notifState.token;
+    } else {
+      channelConfig.url = notifState.url;
+    }
+
+    try {
+      const res = await fetch('/api/notifications/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: notifState.enabled,
+          channel: notifState.channel,
+          config: channelConfig,
+          warningThresholdPercent: notifState.warningThresholdPercent,
+          notifyOnWarning: notifState.notifyOnWarning,
+          notifyOnExhausted: notifState.notifyOnExhausted,
+          notifyOnReset: notifState.notifyOnReset,
+        }),
+      });
+      const json = (await res.json()) as { success: boolean; error?: string };
+      if (!res.ok || !json.success) {
+        setNotifFeedback({ success: false, message: json.error || t('accountErrorGeneral', lang) });
+      } else {
+        setNotifFeedback({ success: true, message: t('notifSaved', lang) });
+        await loadNotificationConfig();
+      }
+    } catch {
+      setNotifFeedback({ success: false, message: t('accountErrorGeneral', lang) });
+    } finally {
+      setNotifSaving(false);
+    }
+  }
+
+  async function sendTestNotification() {
+    if (notifTesting) return;
+    setNotifTesting(true);
+    setNotifFeedback(null);
+
+    let channelConfig: any = { channel: notifState.channel };
+    if (notifState.channel === "telegram") {
+      channelConfig.botToken = notifState.botToken;
+      channelConfig.chatId = notifState.chatId;
+    } else if (notifState.channel === "ntfy") {
+      channelConfig.url = notifState.url;
+      if (notifState.token) channelConfig.token = notifState.token;
+    } else {
+      channelConfig.url = notifState.url;
+    }
+
+    try {
+      const res = await fetch('/api/notifications/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: notifState.channel,
+          config: channelConfig,
+        }),
+      });
+      const json = (await res.json()) as { success: boolean; error?: string };
+      if (!res.ok || !json.success) {
+        setNotifFeedback({ success: false, message: t('notifTestFailed', lang) + (json.error || "") });
+      } else {
+        setNotifFeedback({ success: true, message: t('notifTestSuccess', lang) });
+      }
+    } catch {
+      setNotifFeedback({ success: false, message: t('notifTestFailed', lang) + "Network error" });
+    } finally {
+      setNotifTesting(false);
+    }
   }
 
 
@@ -2442,6 +2641,212 @@ function Dashboard() {
                   </div>
                 )}
               </div>
+            </section>
+            {/* Quota & Reset Notifications */}
+            <section className="space-y-3.5 border-t border-appBorder pt-4">
+              <div>
+                <h4 className="text-sm font-bold text-appText">{t('notifSectionTitle', lang)}</h4>
+                <p className="text-xs text-appTextMuted mt-1">{t('notifSectionDesc', lang)}</p>
+              </div>
+
+              <form onSubmit={saveNotificationConfig} className="space-y-3 bg-appMuted/40 border border-appBorder/80 rounded-xl p-3.5">
+                {/* Enable toggle */}
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={notifState.enabled}
+                    onChange={e => {
+                      setNotifState(prev => ({ ...prev, enabled: e.target.checked }));
+                      setNotifFeedback(null);
+                    }}
+                    className="h-4 w-4 rounded border-appBorder accent-appAccent"
+                  />
+                  <span className="text-xs font-bold text-appText">{t('notifEnabledLabel', lang)}</span>
+                </label>
+
+                {/* Channel select */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-appTextMuted mb-1">{t('notifChannelLabel', lang)}</label>
+                    <select
+                      value={notifState.channel}
+                      onChange={e => {
+                        setNotifState(prev => ({ ...prev, channel: e.target.value as any }));
+                        setNotifFeedback(null);
+                      }}
+                      className="w-full bg-appSurface border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none"
+                    >
+                      <option value="ntfy">{t('notifChannelNtfy', lang)}</option>
+                      <option value="telegram">{t('notifChannelTelegram', lang)}</option>
+                      <option value="discord">{t('notifChannelDiscord', lang)}</option>
+                      <option value="webhook">{t('notifChannelWebhook', lang)}</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-appTextMuted mb-1">
+                      {t('notifThresholdLabel', lang)} ({notifState.warningThresholdPercent}%)
+                    </label>
+                    <input
+                      type="range"
+                      min="50"
+                      max="95"
+                      step="5"
+                      value={notifState.warningThresholdPercent}
+                      onChange={e => {
+                        setNotifState(prev => ({ ...prev, warningThresholdPercent: Number(e.target.value) }));
+                        setNotifFeedback(null);
+                      }}
+                      className="w-full accent-appAccent h-2 bg-appSurface rounded-lg cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                {/* Channel specific inputs */}
+                {notifState.channel === 'ntfy' && (
+                  <div className="space-y-2">
+                    <div>
+                      <label className="block text-xs font-semibold text-appTextMuted mb-1">{t('notifNtfyUrlLabel', lang)}</label>
+                      <input
+                        type="url"
+                        placeholder={t('notifNtfyUrlPlaceholder', lang)}
+                        value={notifState.url}
+                        onChange={e => {
+                          setNotifState(prev => ({ ...prev, url: e.target.value }));
+                          setNotifFeedback(null);
+                        }}
+                        className="w-full bg-appSurface border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-appTextMuted mb-1">{t('notifNtfyTokenLabel', lang)}</label>
+                      <input
+                        type="password"
+                        placeholder={t('notifNtfyTokenPlaceholder', lang)}
+                        value={notifState.token}
+                        onChange={e => {
+                          setNotifState(prev => ({ ...prev, token: e.target.value }));
+                          setNotifFeedback(null);
+                        }}
+                        className="w-full bg-appSurface border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {notifState.channel === 'telegram' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-appTextMuted mb-1">{t('notifTgBotTokenLabel', lang)}</label>
+                      <input
+                        type="password"
+                        placeholder={t('notifTgBotTokenPlaceholder', lang)}
+                        value={notifState.botToken}
+                        onChange={e => {
+                          setNotifState(prev => ({ ...prev, botToken: e.target.value }));
+                          setNotifFeedback(null);
+                        }}
+                        className="w-full bg-appSurface border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-appTextMuted mb-1">{t('notifTgChatIdLabel', lang)}</label>
+                      <input
+                        type="text"
+                        placeholder={t('notifTgChatIdPlaceholder', lang)}
+                        value={notifState.chatId}
+                        onChange={e => {
+                          setNotifState(prev => ({ ...prev, chatId: e.target.value }));
+                          setNotifFeedback(null);
+                        }}
+                        className="w-full bg-appSurface border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {(notifState.channel === 'discord' || notifState.channel === 'webhook') && (
+                  <div>
+                    <label className="block text-xs font-semibold text-appTextMuted mb-1">
+                      {notifState.channel === 'discord' ? t('notifDiscordUrlLabel', lang) : t('notifWebhookUrlLabel', lang)}
+                    </label>
+                    <input
+                      type="url"
+                      placeholder="https://..."
+                      value={notifState.url}
+                      onChange={e => {
+                        setNotifState(prev => ({ ...prev, url: e.target.value }));
+                        setNotifFeedback(null);
+                      }}
+                      className="w-full bg-appSurface border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none font-mono"
+                    />
+                  </div>
+                )}
+
+                {/* Trigger checkboxes */}
+                <div className="space-y-1.5 pt-1">
+                  <label className="flex items-center gap-2 cursor-pointer text-xs text-appText">
+                    <input
+                      type="checkbox"
+                      checked={notifState.notifyOnWarning}
+                      onChange={e => setNotifState(prev => ({ ...prev, notifyOnWarning: e.target.checked }))}
+                      className="h-3.5 w-3.5 rounded border-appBorder accent-appAccent"
+                    />
+                    <span>{t('notifTriggerWarning', lang).replace('{pct}', String(notifState.warningThresholdPercent))}</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer text-xs text-appText">
+                    <input
+                      type="checkbox"
+                      checked={notifState.notifyOnExhausted}
+                      onChange={e => setNotifState(prev => ({ ...prev, notifyOnExhausted: e.target.checked }))}
+                      className="h-3.5 w-3.5 rounded border-appBorder accent-appAccent"
+                    />
+                    <span>{t('notifTriggerExhausted', lang)}</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer text-xs text-appText">
+                    <input
+                      type="checkbox"
+                      checked={notifState.notifyOnReset}
+                      onChange={e => setNotifState(prev => ({ ...prev, notifyOnReset: e.target.checked }))}
+                      className="h-3.5 w-3.5 rounded border-appBorder accent-appAccent"
+                    />
+                    <span>{t('notifTriggerReset', lang)}</span>
+                  </label>
+                </div>
+
+                {/* Feedback */}
+                {notifFeedback && (
+                  <div
+                    role="alert"
+                    className={`rounded-lg border px-3 py-2 text-xs ${
+                      notifFeedback.success
+                        ? `border-emerald-500/30 bg-emerald-500/10 ${successTextClass}`
+                        : `border-rose-500/30 bg-rose-500/10 ${dangerTextClass}`
+                    }`}
+                  >
+                    {notifFeedback.message}
+                  </div>
+                )}
+
+                {/* Action buttons */}
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button
+                    type="submit"
+                    disabled={notifSaving}
+                    className="rounded-lg bg-appAccent px-3.5 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-appAccentHover disabled:opacity-50"
+                  >
+                    {notifSaving ? t('notifSaving', lang) : t('notifSaveBtn', lang)}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={sendTestNotification}
+                    disabled={notifTesting}
+                    className="rounded-lg border border-appBorder bg-appSurface px-3.5 py-2 text-xs font-semibold text-appText transition hover:border-appAccent disabled:opacity-50"
+                  >
+                    {notifTesting ? t('notifTesting', lang) : t('notifTestBtn', lang)}
+                  </button>
+                </div>
+              </form>
             </section>
             <section className="space-y-3.5 border-t border-appBorder pt-4">
               <h4 className="text-sm font-bold text-appText">{t('accountSecurityTitle', lang)}</h4>
