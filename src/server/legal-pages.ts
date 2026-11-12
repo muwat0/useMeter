@@ -423,7 +423,7 @@ export function renderLegalPageHtml(options: { page: LegalPage; lang?: LegalLang
   </main>
   <footer class="page-footer">
     <div class="footer-inner">
-      <span>${copy.footerLabel} &middot; v${APP_VERSION}</span>
+      <span>${copy.footerLabel} &middot; <a href="/changelog?lang=${language}" style="color:inherit;text-decoration:none;" title="Changelog">v${APP_VERSION}</a></span>
       <nav class="page-nav" aria-label="${copy.navigationLabel}">${renderNavigation(options.page, language, copy)}</nav>
     </div>
   </footer>

@@ -37,6 +37,7 @@ import { getProviderCatalog } from "../core/providers/catalog";
 import { join } from "path";
 import { renderAccountRecoveryPageHtml } from "./account-pages";
 import { LEGAL_PAGE_PREFERENCE_SCRIPT, renderLegalPageHtml } from "./legal-pages";
+import { renderChangelogPageHtml } from "./changelog";
 import { existsSync, readFileSync, realpathSync, statSync } from "fs";
 import * as net from "node:net";
 import { createHash, randomUUID } from "crypto";
@@ -718,16 +719,17 @@ export function createServer(
     const requestPath = new URL(c.req.url).pathname;
     const recoveryPage = requestPath === "/forgot-password" || requestPath === "/reset-password";
     const legalPage = requestPath === "/privacy" || requestPath === "/terms" || requestPath === "/security" || requestPath === "/support";
+    const changelogPage = requestPath === "/changelog";
     const csp = requestPath === "/"
       ? DASHBOARD_CSP
       : recoveryPage
         ? ACCOUNT_RECOVERY_CSP
-        : legalPage
+        : legalPage || changelogPage
           ? LEGAL_PAGE_CSP
           : undefined;
     const securityOptions = {
       contentSecurityPolicy: csp,
-      referrerPolicy: recoveryPage || legalPage ? "no-referrer" : undefined,
+      referrerPolicy: recoveryPage || legalPage || changelogPage ? "no-referrer" : undefined,
     };
     const secHeaders = getSecurityHeaders(secure, securityOptions);
     for (const [k, v] of Object.entries(secHeaders)) {
@@ -762,7 +764,7 @@ export function createServer(
       path === "/api/oauth/devin/callback" ||
       path === "/api/oauth/openrouter/callback" ||
       ((path === "/login" || path === "/register" || path === "/forgot-password" || path === "/reset-password") && c.req.method === "GET") ||
-      ((path === "/privacy" || path === "/terms" || path === "/security" || path === "/support") && c.req.method === "GET") ||
+      ((path === "/privacy" || path === "/terms" || path === "/security" || path === "/support" || path === "/changelog") && c.req.method === "GET") ||
       ((path === "/invite" || path.startsWith("/invite/")) && c.req.method === "GET") ||
       (path.startsWith("/api/invitations/") && c.req.method === "POST" && path.endsWith("/accept")) ||
       path === "/api/auth/login" ||
@@ -843,6 +845,7 @@ export function createServer(
   app.get("/terms", c => c.html(renderLegalPageHtml({ page: "terms", lang: c.req.query("lang") === "en" ? "en" : "tr" })));
   app.get("/security", c => c.html(renderLegalPageHtml({ page: "security", lang: c.req.query("lang") === "en" ? "en" : "tr" })));
   app.get("/support", c => c.html(renderLegalPageHtml({ page: "support", lang: c.req.query("lang") === "en" ? "en" : "tr" })));
+  app.get("/changelog", c => c.html(renderChangelogPageHtml({ lang: c.req.query("lang") === "en" ? "en" : "tr" })));
 
   // Static asset serving for React client build
   const ASSET_MIME: Record<string, string> = {
@@ -3228,7 +3231,7 @@ function renderAuthPageHtml(options: { mode: "login" | "register"; registrationD
   </main>
   <footer class="w-full border-t border-appBorder px-4 sm:px-6 py-4 mt-auto">
     <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs text-appTextMuted">
-      <span class="text-[11px] font-mono opacity-70">useMeter v${APP_VERSION}</span>
+      <a href="/changelog" class="text-[11px] font-mono opacity-70 hover:opacity-100 hover:text-appAccent transition">useMeter v${APP_VERSION}</a>
       <nav aria-label="Information and support" class="flex flex-wrap gap-x-5 gap-y-2">
         <a href="/privacy" class="hover:text-appText transition" data-i18n="authLegalPrivacy">Gizlilik</a>
         <a href="/terms" class="hover:text-appText transition" data-i18n="authLegalTerms">Kullanım Koşulları</a>

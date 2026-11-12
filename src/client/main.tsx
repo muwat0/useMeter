@@ -2517,7 +2517,7 @@ function Dashboard() {
         <div className="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <span className="text-[11px] text-appTextMuted">{lang === 'tr' ? 'Bilgi ve destek' : 'Information & support'}</span>
-            <span className="text-[10px] font-mono text-appTextMuted/70 bg-appSurface/50 px-1.5 py-0.5 rounded border border-appBorder/50">v{APP_VERSION}</span>
+            <a href={`/changelog?lang=${lang}`} className="text-[10px] font-mono text-appTextMuted/70 bg-appSurface/50 px-1.5 py-0.5 rounded border border-appBorder/50 hover:text-appText hover:border-appAccent transition" title={lang === 'tr' ? 'Sürüm Notları (Changelog)' : 'Release Notes (Changelog)'}>v{APP_VERSION}</a>
           </div>
           <nav aria-label={lang === 'tr' ? 'Yasal ve destek bağlantıları' : 'Legal and support links'} className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-appTextMuted">
             <a href={`/privacy?lang=${lang}`} className="hover:text-appText transition">{lang === 'tr' ? 'Gizlilik' : 'Privacy'}</a>
@@ -2942,7 +2942,7 @@ function Dashboard() {
               </form>
             </section>
             <div className="flex justify-between items-center pt-3 border-t border-appBorder">
-              <span className="text-[11px] font-mono text-appTextMuted/70">useMeter v{APP_VERSION}</span>
+              <a href={`/changelog?lang=${lang}`} target="_blank" rel="noreferrer" className="text-[11px] font-mono text-appTextMuted/70 hover:text-appAccent hover:underline transition">useMeter v{APP_VERSION}</a>
               <button onClick={closeSettings} className="px-4 py-2 rounded-lg text-xs font-semibold bg-appAccent hover:bg-appAccentHover text-zinc-950 transition">{t('close', lang)}</button>
             </div>
           </div>
