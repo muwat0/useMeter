@@ -11,6 +11,7 @@ useMeter brings supported AI provider usage, quota windows, balances, and reset 
 - Keeps a history of usage snapshots and displays stale/error states rather than treating a failed refresh as a current reading.
 - Supports multiple accounts and labels, dashboard organization and appearance preferences, and English/Turkish UI text.
 - Supports multiple users with separate accounts and usage data; the first account becomes the administrator, who can invite other users.
+- Exposes a versioned External API (`/api/v1/summary`, `/api/v1/usage`) with Personal Access Tokens (PAT) for desktop status bars (Waybar, Polybar, tmux) and automation scripts.
 
 Usage is limited to what each provider exposes and what the configured credential can access. Quota values, refresh intervals, available windows, and authorization behavior are provider-dependent; useMeter is not an authoritative billing record.
 
@@ -24,6 +25,16 @@ The following informational pages are available without signing in:
 - `/support` — community support, GitHub issues, and contact details.
 
 Each page supports Turkish and English through `?lang=tr` or `?lang=en`.
+
+## External API & Desktop Widgets
+
+useMeter provides a versioned external HTTP API (`/api/v1/*`) authenticated via Personal Access Tokens (`Authorization: Bearer um_pat_...`) for desktop status bars (Waybar, Polybar, tmux), terminal scripts, and cURL access:
+
+- `GET /api/v1/summary` — compact totals (total prepaid balance, key spending, active accounts, health status) optimized for desktop widgets.
+- `GET /api/v1/usage` — normalized, secrets-redacted usage telemetry across all connected accounts.
+- `POST /api/v1/poll` — trigger an on-demand provider refresh (rate-limited).
+
+Tokens can be created and managed directly in the dashboard under **Settings (⚙️) → API & External Access**. For complete endpoint specifications, JSON response schemas, and copy-paste integration recipes (Waybar, tmux, CLI scripts), see **[docs/API.md](docs/API.md)**.
 
 
 ## Provider support and verification
