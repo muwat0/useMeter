@@ -434,6 +434,12 @@ REST routes served with Hono and a server-rendered/authenticated React dashboard
 - `DELETE /api/auth/account` → Accepts `{password}`; a successful response deletes the current cookie. An incorrect password returns `401 INVALID_CREDENTIALS`, the last administrator returns `409 LAST_ADMIN`, and an invalid session returns `401 UNAUTHENTICATED`.
 - Provider OAuth initiation, status, device polling, manual completion, and owner-bound session cancellation routes.
 
+
+#### External & Token-Protected API Routes (`Authorization: Bearer <token>` or Session Cookie)
+- `GET /api/v1/usage` → Versioned, normalized usage telemetry across all connected accounts for the authenticated identity.
+- `GET /api/v1/summary` → Compact metrics summary for desktop widgets (Waybar, Polybar, tmux) and terminal scripts: total balance USD, total spent USD, active provider counts, and health counts.
+- `POST /api/v1/poll` → Triggers an on-demand poll for the authenticated user's credentials (rate-limited).
+- `GET /api/tokens`, `POST /api/tokens`, `DELETE /api/tokens/:id` → Personal Access Token (PAT) management. Raw tokens (`um_pat_<hex>`) are returned only once upon creation; only SHA-256 hashes are persisted at rest.
 #### Admin Routes (`user.role === "admin"`; unauthorized users receive 403)
 - `GET /admin` → System administration dashboard.
 - `GET /api/admin/stats`, `GET /api/admin/users`, `PATCH /api/admin/users/:id/role`, `DELETE /api/admin/users/:id` → System telemetry and admin user management. The admin management endpoint cannot delete itself; a last-admin guard applies.

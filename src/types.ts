@@ -48,6 +48,8 @@ export type AuthErrorCode =
   | "RECOVERY_UNAVAILABLE"
   | "RATE_LIMITED"
   | "LAST_ADMIN"
+  | "TOKEN_LIMIT_REACHED"
+  | "INVALID_TOKEN"
   | "INTERNAL_ERROR";
 
 export type InvitationStatus = "pending" | "accepted" | "revoked" | "expired";
@@ -77,6 +79,31 @@ export interface InvitationView {
 export interface CreateInvitationResult {
   invitation: InvitationView;
   token: string;
+}
+
+export interface PersonalAccessToken {
+  id: string;
+  userId: string;
+  name: string;
+  tokenHash: string;
+  tokenPrefix: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+  expiresAt: number | null;
+}
+
+export interface PersonalAccessTokenView {
+  id: string;
+  name: string;
+  tokenPrefix: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+  expiresAt: number | null;
+}
+
+export interface CreatePersonalAccessTokenResult {
+  token: PersonalAccessTokenView;
+  rawToken: string;
 }
 export type AuthResult<T> =
   | { success: true; data: T }

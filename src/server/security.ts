@@ -341,6 +341,8 @@ export const RATE_LIMIT_POLICIES = {
   passwordResetRequest: { max: 5, windowMs: 60 * 60_000 },
   passwordResetConfirm: { max: 5, windowMs: 15 * 60_000 },
   accountDelete: { max: 3, windowMs: 15 * 60_000 },
+  apiTokenManagement: { max: 15, windowMs: 60_000 },
+  apiRead: { max: 120, windowMs: 60_000 },
 } as const satisfies Record<string, RateLimitPolicy>;
 
 export class RateLimiter {

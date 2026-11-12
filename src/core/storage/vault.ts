@@ -12,6 +12,8 @@ import type {
   Invitation,
   InvitationStatus,
   InvitationView,
+  PersonalAccessToken,
+  PersonalAccessTokenView,
   Session,
   StoredCredential,
   UsageReport,
@@ -384,6 +386,19 @@ export class StorageVault {
         password_hash_at_issue TEXT NOT NULL,
         expires_at INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS personal_access_tokens (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        token_prefix TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        expires_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_pat_token_hash ON personal_access_tokens(token_hash);
+      CREATE INDEX IF NOT EXISTS idx_pat_user_id ON personal_access_tokens(user_id);
     `);
     if (this.#metadataEncryptionEnabled && currentVersion < 2) {
       this.#migrateCredentialMetadataToV2();
@@ -1355,6 +1370,144 @@ export class StorageVault {
     if (this.#closed) return 0;
     const res = this.#db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now);
     return res.changes;
+  }
+
+  // ==================== Personal Access Tokens ====================
+
+  createPersonalAccessToken(
+    userId: string,
+    name: string,
+    tokenHash: string,
+    tokenPrefix: string,
+    expiresAt: number | null,
+  ): PersonalAccessTokenView {
+    if (this.#closed) throw new Error("Vault is closed.");
+    const trimmedName = name.trim();
+    if (!trimmedName || trimmedName.length > 100) {
+      throw new Error("Token name must be between 1 and 100 characters");
+    }
+
+    const user = this.getUserById(userId);
+    if (!user) throw new Error("User not found");
+
+    const countRow = this.#db
+      .prepare("SELECT COUNT(*) as count FROM personal_access_tokens WHERE user_id = ?")
+      .get(userId) as { count: number };
+    if (countRow.count >= 25) {
+      throw new Error("Token limit reached (maximum 25 tokens per user)");
+    }
+
+    const id = randomUUID();
+    const now = Date.now();
+    this.#db.prepare(`
+      INSERT INTO personal_access_tokens (id, user_id, name, token_hash, token_prefix, created_at, last_used_at, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+    `).run(id, userId, trimmedName, tokenHash, tokenPrefix, now, expiresAt);
+
+    return {
+      id,
+      name: trimmedName,
+      tokenPrefix,
+      createdAt: now,
+      lastUsedAt: null,
+      expiresAt,
+    };
+  }
+
+  listPersonalAccessTokens(userId: string): PersonalAccessTokenView[] {
+    if (this.#closed) return [];
+    interface PatRow {
+      id: string;
+      name: string;
+      token_prefix: string;
+      created_at: number;
+      last_used_at: number | null;
+      expires_at: number | null;
+    }
+
+    const rows = this.#db.prepare(`
+      SELECT id, name, token_prefix, created_at, last_used_at, expires_at
+      FROM personal_access_tokens
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+    `).all(userId) as PatRow[];
+
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      tokenPrefix: r.token_prefix,
+      createdAt: r.created_at,
+      lastUsedAt: r.last_used_at,
+      expiresAt: r.expires_at,
+    }));
+  }
+
+  getPersonalAccessTokenByHash(tokenHash: string, now: number = Date.now()): (PersonalAccessToken & { user: User }) | null {
+    if (this.#closed) return null;
+    interface PatUserRow {
+      id: string;
+      user_id: string;
+      name: string;
+      token_hash: string;
+      token_prefix: string;
+      created_at: number;
+      last_used_at: number | null;
+      expires_at: number | null;
+      user_email: string;
+      user_role: string;
+      user_created_at: number;
+      user_updated_at: number;
+    }
+
+    const row = this.#db.prepare(`
+      SELECT
+        p.id, p.user_id, p.name, p.token_hash, p.token_prefix, p.created_at, p.last_used_at, p.expires_at,
+        u.email as user_email, u.role as user_role, u.created_at as user_created_at, u.updated_at as user_updated_at
+      FROM personal_access_tokens p
+      INNER JOIN users u ON p.user_id = u.id
+      WHERE p.token_hash = ?
+    `).get(tokenHash) as PatUserRow | undefined;
+
+    if (!row) return null;
+    if (row.expires_at !== null && row.expires_at <= now) {
+      return null;
+    }
+
+    return {
+      id: row.id,
+      userId: row.user_id,
+      name: row.name,
+      tokenHash: row.token_hash,
+      tokenPrefix: row.token_prefix,
+      createdAt: row.created_at,
+      lastUsedAt: row.last_used_at,
+      expiresAt: row.expires_at,
+      user: {
+        id: row.user_id,
+        email: row.user_email,
+        role: (row.user_role as UserRole) || "user",
+        createdAt: row.user_created_at,
+        updatedAt: row.user_updated_at,
+      },
+    };
+  }
+
+  touchPersonalAccessToken(tokenId: string, usedAt: number = Date.now()): void {
+    if (this.#closed) return;
+    this.#db.prepare(`
+      UPDATE personal_access_tokens
+      SET last_used_at = ?
+      WHERE id = ?
+    `).run(usedAt, tokenId);
+  }
+
+  revokePersonalAccessToken(userId: string, tokenId: string): boolean {
+    if (this.#closed) return false;
+    const res = this.#db.prepare(`
+      DELETE FROM personal_access_tokens
+      WHERE id = ? AND user_id = ?
+    `).run(tokenId, userId);
+    return res.changes > 0;
   }
 
   // ==================== Credential Management ====================
