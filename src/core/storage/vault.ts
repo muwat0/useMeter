@@ -6,18 +6,23 @@ import { decryptSecret, encryptSecret } from "../crypto";
 import type {
   AdminSystemStats,
   AdminUserView,
+  AlertState,
+  ChannelConfig,
   CredentialRef,
   CardAccent,
   InputCredential,
   Invitation,
   InvitationStatus,
   InvitationView,
+  NotificationChannelType,
   PersonalAccessToken,
   PersonalAccessTokenView,
   Session,
   StoredCredential,
   UsageReport,
   User,
+  UserNotificationConfig,
+  UserNotificationConfigView,
   UserRole,
 } from "../../types";
 
@@ -399,6 +404,32 @@ export class StorageVault {
       );
       CREATE INDEX IF NOT EXISTS idx_pat_token_hash ON personal_access_tokens(token_hash);
       CREATE INDEX IF NOT EXISTS idx_pat_user_id ON personal_access_tokens(user_id);
+
+      CREATE TABLE IF NOT EXISTS notification_configs (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        channel TEXT NOT NULL DEFAULT 'ntfy',
+        encrypted_config TEXT NOT NULL,
+        iv TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        warning_threshold_percent INTEGER NOT NULL DEFAULT 80,
+        notify_on_warning INTEGER NOT NULL DEFAULT 1,
+        notify_on_exhausted INTEGER NOT NULL DEFAULT 1,
+        notify_on_reset INTEGER NOT NULL DEFAULT 1,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS alert_states (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        credential_id TEXT NOT NULL REFERENCES credentials(id) ON DELETE CASCADE,
+        metric TEXT NOT NULL,
+        last_state TEXT NOT NULL,
+        last_notified_at INTEGER NOT NULL,
+        last_value REAL NOT NULL,
+        UNIQUE(user_id, credential_id, metric)
+      );
+      CREATE INDEX IF NOT EXISTS idx_alert_states_lookup ON alert_states(user_id, credential_id, metric);
     `);
     if (this.#metadataEncryptionEnabled && currentVersion < 2) {
       this.#migrateCredentialMetadataToV2();
@@ -1508,6 +1539,227 @@ export class StorageVault {
       WHERE id = ? AND user_id = ?
     `).run(tokenId, userId);
     return res.changes > 0;
+  }
+
+  // ==================== Quota Notifications & Alert States ====================
+
+  getNotificationConfig(userId: string): UserNotificationConfig | null {
+    if (this.#closed) return null;
+    interface NotifRow {
+      user_id: string;
+      enabled: number;
+      channel: string;
+      encrypted_config: string;
+      iv: string;
+      tag: string;
+      warning_threshold_percent: number;
+      notify_on_warning: number;
+      notify_on_exhausted: number;
+      notify_on_reset: number;
+      updated_at: number;
+    }
+
+    const row = this.#db.prepare(`
+      SELECT user_id, enabled, channel, encrypted_config, iv, tag, warning_threshold_percent, notify_on_warning, notify_on_exhausted, notify_on_reset, updated_at
+      FROM notification_configs
+      WHERE user_id = ?
+    `).get(userId) as NotifRow | undefined;
+
+    if (!row) return null;
+
+    try {
+      const decrypted = decryptSecret({
+        ciphertext: row.encrypted_config,
+        iv: row.iv,
+        tag: row.tag,
+      });
+      const parsedConfig = JSON.parse(decrypted) as ChannelConfig;
+      return {
+        userId: row.user_id,
+        enabled: Boolean(row.enabled),
+        channel: (row.channel as NotificationChannelType) || "ntfy",
+        config: parsedConfig,
+        warningThresholdPercent: row.warning_threshold_percent ?? 80,
+        notifyOnWarning: Boolean(row.notify_on_warning),
+        notifyOnExhausted: Boolean(row.notify_on_exhausted),
+        notifyOnReset: Boolean(row.notify_on_reset),
+        updatedAt: row.updated_at,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  getNotificationConfigView(userId: string): UserNotificationConfigView {
+    const raw = this.getNotificationConfig(userId);
+    if (!raw) {
+      return {
+        enabled: false,
+        channel: "ntfy",
+        config: { channel: "ntfy", url: "" },
+        warningThresholdPercent: 80,
+        notifyOnWarning: true,
+        notifyOnExhausted: true,
+        notifyOnReset: true,
+        updatedAt: 0,
+      };
+    }
+
+    const config = raw.config;
+    let viewConfig: UserNotificationConfigView["config"];
+
+    if (config.channel === "telegram") {
+      viewConfig = {
+        channel: "telegram",
+        chatId: config.chatId,
+        hasBotToken: Boolean(config.botToken),
+      };
+    } else if (config.channel === "ntfy") {
+      viewConfig = {
+        channel: "ntfy",
+        url: config.url,
+        hasToken: Boolean(config.token),
+      };
+    } else if (config.channel === "discord") {
+      viewConfig = {
+        channel: "discord",
+        url: config.url ? `${config.url.slice(0, 35)}...` : "",
+      };
+    } else {
+      viewConfig = {
+        channel: "webhook",
+        url: config.url,
+      };
+    }
+
+    return {
+      enabled: raw.enabled,
+      channel: raw.channel,
+      config: viewConfig,
+      warningThresholdPercent: raw.warningThresholdPercent,
+      notifyOnWarning: raw.notifyOnWarning,
+      notifyOnExhausted: raw.notifyOnExhausted,
+      notifyOnReset: raw.notifyOnReset,
+      updatedAt: raw.updatedAt,
+    };
+  }
+
+  saveNotificationConfig(
+    userId: string,
+    input: {
+      enabled: boolean;
+      channel: NotificationChannelType;
+      config: ChannelConfig;
+      warningThresholdPercent?: number;
+      notifyOnWarning?: boolean;
+      notifyOnExhausted?: boolean;
+      notifyOnReset?: boolean;
+    },
+  ): UserNotificationConfig {
+    if (this.#closed) throw new Error("Vault is closed.");
+    const user = this.getUserById(userId);
+    if (!user) throw new Error("User not found");
+
+    const threshold = Math.max(1, Math.min(100, input.warningThresholdPercent ?? 80));
+    const now = Date.now();
+    const enc = encryptSecret(JSON.stringify(input.config));
+
+    this.#db.prepare(`
+      INSERT INTO notification_configs (
+        user_id, enabled, channel, encrypted_config, iv, tag, warning_threshold_percent, notify_on_warning, notify_on_exhausted, notify_on_reset, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        enabled = excluded.enabled,
+        channel = excluded.channel,
+        encrypted_config = excluded.encrypted_config,
+        iv = excluded.iv,
+        tag = excluded.tag,
+        warning_threshold_percent = excluded.warning_threshold_percent,
+        notify_on_warning = excluded.notify_on_warning,
+        notify_on_exhausted = excluded.notify_on_exhausted,
+        notify_on_reset = excluded.notify_on_reset,
+        updated_at = excluded.updated_at
+    `).run(
+      userId,
+      input.enabled ? 1 : 0,
+      input.channel,
+      enc.ciphertext,
+      enc.iv,
+      enc.tag,
+      threshold,
+      input.notifyOnWarning !== false ? 1 : 0,
+      input.notifyOnExhausted !== false ? 1 : 0,
+      input.notifyOnReset !== false ? 1 : 0,
+      now,
+    );
+
+    return {
+      userId,
+      enabled: input.enabled,
+      channel: input.channel,
+      config: input.config,
+      warningThresholdPercent: threshold,
+      notifyOnWarning: input.notifyOnWarning !== false,
+      notifyOnExhausted: input.notifyOnExhausted !== false,
+      notifyOnReset: input.notifyOnReset !== false,
+      updatedAt: now,
+    };
+  }
+
+  getAlertState(userId: string, credentialId: string, metric: string): AlertState | null {
+    if (this.#closed) return null;
+    interface AlertRow {
+      user_id: string;
+      credential_id: string;
+      metric: string;
+      last_state: string;
+      last_notified_at: number;
+      last_value: number;
+    }
+
+    const row = this.#db.prepare(`
+      SELECT user_id, credential_id, metric, last_state, last_notified_at, last_value
+      FROM alert_states
+      WHERE user_id = ? AND credential_id = ? AND metric = ?
+    `).get(userId, credentialId, metric) as AlertRow | undefined;
+
+    if (!row) return null;
+    return {
+      userId: row.user_id,
+      credentialId: row.credential_id,
+      metric: row.metric,
+      lastState: (row.last_state as "normal" | "warning" | "exhausted") || "normal",
+      lastNotifiedAt: row.last_notified_at,
+      lastValue: row.last_value,
+    };
+  }
+
+  saveAlertState(
+    userId: string,
+    credentialId: string,
+    metric: string,
+    lastState: "normal" | "warning" | "exhausted",
+    lastValue: number,
+    notifiedAt: number = Date.now(),
+  ): void {
+    if (this.#closed) return;
+    const id = randomUUID();
+    this.#db.prepare(`
+      INSERT INTO alert_states (id, user_id, credential_id, metric, last_state, last_notified_at, last_value)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, credential_id, metric) DO UPDATE SET
+        last_state = excluded.last_state,
+        last_notified_at = excluded.last_notified_at,
+        last_value = excluded.last_value
+    `).run(id, userId, credentialId, metric, lastState, notifiedAt, lastValue);
+  }
+
+  clearAlertState(userId: string, credentialId: string, metric: string): void {
+    if (this.#closed) return;
+    this.#db.prepare(`
+      DELETE FROM alert_states
+      WHERE user_id = ? AND credential_id = ? AND metric = ?
+    `).run(userId, credentialId, metric);
   }
 
   // ==================== Credential Management ====================

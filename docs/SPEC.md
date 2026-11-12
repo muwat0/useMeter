@@ -405,10 +405,13 @@ export interface Notifier {
 }
 ```
 - **Supported Channels:**
-  1. **ntfy:** `POST https://ntfy.example.com/<topic>` (Zero dependencies, instant notification).
-  2. **Telegram Bot:** A Markdown-formatted card via the `sendMessage` API.
-  3. **Discord Webhook:** A colored embed message.
-
+  1. **ntfy:** `POST https://ntfy.example.com/<topic>` (Zero dependencies, instant push notification with custom Title, Priority, and Tags).
+  2. **Telegram Bot:** A Markdown-formatted card via the official Telegram Bot `sendMessage` API.
+  3. **Discord Webhook:** A colored embed message indicating warning (amber), exhaustion (red), or recovery (green).
+  4. **Generic Webhook:** A standard JSON POST payload with event details and timestamp.
+- **Engine Components:**
+  - `NotificationDispatcher`: Delivers formatted alerts to the configured target channel with configurable timeouts.
+  - `AlertEvaluator`: Evaluates incoming `UsageReport`s against user-configured warning thresholds, tracks alert state transitions (`normal` -> `warning` -> `exhausted` -> `recovered`), deduplicates notifications, and enforces cooldowns.
 ---
 
 ### Module 6: HTTP API & UI Layer (`src/server/`)
@@ -440,6 +443,7 @@ REST routes served with Hono and a server-rendered/authenticated React dashboard
 - `GET /api/v1/summary` → Compact metrics summary for desktop widgets (Waybar, Polybar, tmux) and terminal scripts: total balance USD, total spent USD, active provider counts, and health counts.
 - `POST /api/v1/poll` → Triggers an on-demand poll for the authenticated user's credentials (rate-limited).
 - `GET /api/tokens`, `POST /api/tokens`, `DELETE /api/tokens/:id` → Personal Access Token (PAT) management. Raw tokens (`um_pat_<hex>`) are returned only once upon creation; only SHA-256 hashes are persisted at rest.
+- `GET /api/notifications/config`, `PUT /api/notifications/config`, `POST /api/notifications/test` → Quota and reset notification configuration and immediate test dispatch.
 #### Admin Routes (`user.role === "admin"`; unauthorized users receive 403)
 - `GET /admin` → System administration dashboard.
 - `GET /api/admin/stats`, `GET /api/admin/users`, `PATCH /api/admin/users/:id/role`, `DELETE /api/admin/users/:id` → System telemetry and admin user management. The admin management endpoint cannot delete itself; a last-admin guard applies.

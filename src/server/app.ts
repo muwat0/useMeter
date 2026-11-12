@@ -5,9 +5,23 @@ import type { StorageVault } from "../core/storage/vault";
 import { PollerAdmissionError } from "../core/poller/poller";
 import type { PollerAdmissionErrorCode, PollerEngine } from "../core/poller/poller";
 import type { ProviderRegistry } from "../core/providers/registry";
-import type { AdminSystemStats, AdminUserView, InputCredential, InvitationView, PersonalAccessToken, StoredCredential, UsageReport, User, UserRole } from "../types";
+import type {
+  AdminSystemStats,
+  AdminUserView,
+  AlertEvent,
+  ChannelConfig,
+  InputCredential,
+  InvitationView,
+  NotificationChannelType,
+  PersonalAccessToken,
+  StoredCredential,
+  UsageReport,
+  User,
+  UserRole,
+} from "../types";
 import { AuthService } from "../core/auth/auth";
 import { hashSessionToken } from "../core/crypto";
+import { AlertEvaluator, NotificationDispatcher } from "../core/notifier";
 import {
   createCorsOriginResolver,
   applySecurityHeaders,
@@ -313,6 +327,8 @@ export interface ServerOptions {
   googleOAuthExchange?: typeof exchangeGoogleCode;
   openRouterOAuthExchange?: typeof exchangeOpenRouterCode;
   oauthNow?: () => number;
+  notificationDispatcher?: NotificationDispatcher;
+  alertEvaluator?: AlertEvaluator;
 }
 
 type PendingOAuthSession = OAuthSession<PendingOAuthData>;
@@ -361,6 +377,11 @@ export function createServer(
     onEnd: session => clearOAuthSecrets(session.data),
   });
   const rateLimiter = options?.rateLimiter ?? new RateLimiter();
+  const notificationDispatcher = options?.notificationDispatcher ?? new NotificationDispatcher();
+  const alertEvaluator = options?.alertEvaluator ?? new AlertEvaluator(vault, notificationDispatcher);
+  poller.onReport(report => {
+    void alertEvaluator.evaluateReport(report).catch(() => {});
+  });
 
   function getClientIp(c: AppContext): string {
     return resolveClientIp(c.req.raw, {
@@ -1547,6 +1568,139 @@ export function createServer(
       return c.json({ success: true });
     } catch {
       return c.json({ success: false, error: "Failed to revoke token" }, 500);
+    }
+  });
+
+  // ==================== Quota Notifications & Alert Settings ====================
+
+  app.get("/api/notifications/config", c => {
+    const user = c.get("user");
+    const view = vault.getNotificationConfigView(user.id);
+    return c.json({ success: true, config: view });
+  });
+
+  app.put("/api/notifications/config", async c => {
+    try {
+      const user = c.get("user");
+      const body = await c.req.json().catch(() => ({}));
+      const enabled = Boolean(body.enabled);
+      const channel = (body.channel as NotificationChannelType) || "ntfy";
+      const config = body.config;
+
+      if (!config || typeof config !== "object") {
+        return c.json({ success: false, error: "Channel configuration is required" }, 400);
+      }
+
+      const existing = vault.getNotificationConfig(user.id);
+      let finalConfig: ChannelConfig;
+
+      if (channel === "telegram") {
+        const botToken = config.botToken || (existing?.config.channel === "telegram" ? existing.config.botToken : "");
+        const chatId = config.chatId || "";
+        if (enabled && (!botToken || !chatId)) {
+          return c.json({ success: false, error: "Telegram botToken and chatId are required when enabled" }, 400);
+        }
+        finalConfig = { channel: "telegram", botToken, chatId };
+      } else if (channel === "ntfy") {
+        const url = config.url || "";
+        const token = config.token || (existing?.config.channel === "ntfy" ? existing.config.token : undefined);
+        if (enabled && (!url || !url.startsWith("http"))) {
+          return c.json({ success: false, error: "A valid ntfy URL (e.g. https://ntfy.sh/my-topic) is required" }, 400);
+        }
+        finalConfig = { channel: "ntfy", url, token: token || undefined };
+      } else if (channel === "discord") {
+        const url = config.url || (existing?.config.channel === "discord" ? existing.config.url : "");
+        if (enabled && (!url || !url.startsWith("http"))) {
+          return c.json({ success: false, error: "A valid Discord webhook URL is required" }, 400);
+        }
+        finalConfig = { channel: "discord", url };
+      } else {
+        const url = config.url || "";
+        if (enabled && (!url || !url.startsWith("http"))) {
+          return c.json({ success: false, error: "A valid webhook URL is required" }, 400);
+        }
+        finalConfig = { channel: "webhook", url };
+      }
+
+      const warningThresholdPercent = typeof body.warningThresholdPercent === "number"
+        ? Math.max(1, Math.min(100, body.warningThresholdPercent))
+        : 80;
+
+      vault.saveNotificationConfig(user.id, {
+        enabled,
+        channel,
+        config: finalConfig,
+        warningThresholdPercent,
+        notifyOnWarning: body.notifyOnWarning !== false,
+        notifyOnExhausted: body.notifyOnExhausted !== false,
+        notifyOnReset: body.notifyOnReset !== false,
+      });
+
+      return c.json({ success: true, config: vault.getNotificationConfigView(user.id) });
+    } catch {
+      return c.json({ success: false, error: "Failed to update notification settings" }, 400);
+    }
+  });
+
+  app.post("/api/notifications/test", async c => {
+    try {
+      const user = c.get("user");
+      const ip = getClientIp(c);
+      const rl = rateLimiter.check(`notifTest:${user.id}:${ip}`, { max: 5, windowMs: 60_000 });
+      if (!rl.allowed) {
+        return rateLimitResponse(c, rl.retryAfterSec, "Rate limit exceeded. Please wait before testing notifications again.");
+      }
+
+      const body = await c.req.json().catch(() => ({}));
+      let targetConfig: ChannelConfig | undefined;
+
+      if (body.config && body.channel) {
+        const existing = vault.getNotificationConfig(user.id);
+        const channel = body.channel as NotificationChannelType;
+        if (channel === "telegram") {
+          const botToken = body.config.botToken || (existing?.config.channel === "telegram" ? existing.config.botToken : "");
+          targetConfig = { channel: "telegram", botToken, chatId: body.config.chatId };
+        } else if (channel === "ntfy") {
+          const token = body.config.token || (existing?.config.channel === "ntfy" ? existing.config.token : undefined);
+          targetConfig = { channel: "ntfy", url: body.config.url, token };
+        } else if (channel === "discord") {
+          const url = body.config.url || (existing?.config.channel === "discord" ? existing.config.url : "");
+          targetConfig = { channel: "discord", url };
+        } else {
+          targetConfig = { channel: "webhook", url: body.config.url };
+        }
+      } else {
+        const saved = vault.getNotificationConfig(user.id);
+        targetConfig = saved?.config;
+      }
+
+      if (!targetConfig) {
+        return c.json({ success: false, error: "No notification channel configured to test" }, 400);
+      }
+
+      const testEvent: AlertEvent = {
+        userId: user.id,
+        provider: "usemeter-test",
+        accountLabel: "Test AI Account",
+        metric: "5-Hour Rolling Quota",
+        metricId: "test_metric",
+        currentValue: 0.95,
+        currentValueFormatted: "%95 (Test)",
+        threshold: 0.80,
+        thresholdFormatted: "%80",
+        type: "test",
+        timestamp: Date.now(),
+      };
+
+      const result = await notificationDispatcher.dispatch(targetConfig, testEvent);
+      if (!result.success) {
+        return c.json({ success: false, error: result.error || "Failed to dispatch test notification" }, 400);
+      }
+
+      return c.json({ success: true, message: "Test notification dispatched successfully" });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.json({ success: false, error: msg || "Failed to send test notification" }, 500);
     }
   });
 
