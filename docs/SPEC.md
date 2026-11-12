@@ -599,9 +599,9 @@ Provides secure user onboarding in private deployments where public registration
 
 ### 6.1. Automated Secure SQLite Backup
 
-- `deploy/backup/usemeter-backup.service` and `.timer` run around 03:30 UTC every day under the `murat` user's **systemd user manager**; no root service or root shell is required.
+- `deploy/backup/usemeter-backup.service` and `.timer` run around 03:30 UTC every day under the service user's **systemd user manager**; no root service or root shell is required.
 - `usemeter-backup.sh` uses SQLite `VACUUM INTO` directly in a one-off Compose/Bun process, without starting `StorageVault` for the live database. It captures committed WAL data as a consistent snapshot; it does not copy the `usage.db` file alone or explicitly run `wal_checkpoint` or in-place `VACUUM` on the source. It handles SQLite WAL locking and preserves the logical contents of the source database.
-- The snapshot schema must be exactly `PRAGMA user_version = 2`, `quick_check = 'ok'`, and `integrity_check = 'ok'`. The host backup is owned by `murat` with mode `0600`; the backup directory has mode `0700` (`umask 077`). The backup is not published as a named persistent file until validation is complete.
+- The snapshot schema must be exactly `PRAGMA user_version = 2`, `quick_check = 'ok'`, and `integrity_check = 'ok'`. The host backup is owned by the service user with mode `0600`; the backup directory has mode `0700` (`umask 077`). The backup is not published as a named persistent file until validation is complete.
 - Retention keeps all files from the last 7 days, then the newest file for each ISO week no older than 28 days; older files are removed. Pruning occurs only after the new backup passes a restore drill.
 
 ### 6.2. Isolated Restore Drill

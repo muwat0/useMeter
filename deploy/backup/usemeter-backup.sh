@@ -7,10 +7,9 @@ fail() {
   exit 1
 }
 
-if (( EUID == 0 )); then fail 'must run unprivileged as murat'; fi
-[[ "$(id -un)" == 'murat' ]] || fail 'must run as the murat account'
+if (( EUID == 0 )); then fail 'must run unprivileged as non-root user'; fi
 
-PROJECT_DIR="${USEMETER_PROJECT_DIR:-${HOME}/useMeter-deploy}"
+PROJECT_DIR="${USEMETER_PROJECT_DIR:-${HOME}/usemeter}"
 COMPOSE_FILE="${USEMETER_COMPOSE_FILE:-${PROJECT_DIR}/compose.yaml}"
 COMPOSE_SERVICE="${USEMETER_COMPOSE_SERVICE:-usemeter}"
 BACKUP_DIR="${USEMETER_BACKUP_DIR:-${HOME}/usemeter-backups}"
@@ -27,7 +26,7 @@ command -v realpath >/dev/null 2>&1 || fail 'realpath is unavailable'
 mkdir -p -- "$BACKUP_DIR"
 chmod 0700 -- "$BACKUP_DIR"
 BACKUP_DIR="$(realpath -e -- "$BACKUP_DIR")"
-[[ "$(stat -c '%u' -- "$BACKUP_DIR")" == "$(id -u)" ]] || fail 'backup directory is not owned by murat'
+[[ "$(stat -c '%u' -- "$BACKUP_DIR")" == "$(id -u)" ]] || fail 'backup directory is not owned by current user'
 [[ "$(stat -c '%a' -- "$BACKUP_DIR")" == '700' ]] || fail 'backup directory must have mode 0700'
 
 DOCKER=(sudo -n /usr/bin/docker)
@@ -97,7 +96,7 @@ TEMP_BASE="${TEMP_DB##*/}"
 [[ -f "$WORK_DIR/$TEMP_BASE" && ! -L "$WORK_DIR/$TEMP_BASE" ]] || fail 'extracted snapshot file is missing or invalid'
 mv -- "$WORK_DIR/$TEMP_BASE" "$WORK_DIR/$FINAL_NAME"
 chmod 0600 -- "$WORK_DIR/$FINAL_NAME"
-[[ "$(stat -c '%u' -- "$WORK_DIR/$FINAL_NAME")" == "$(id -u)" ]] || fail 'copied backup is not owned by murat'
+[[ "$(stat -c '%u' -- "$WORK_DIR/$FINAL_NAME")" == "$(id -u)" ]] || fail 'copied backup is not owned by current user'
 [[ "$(stat -c '%a' -- "$WORK_DIR/$FINAL_NAME")" == '600' ]] || fail 'copied backup does not have mode 0600'
 DRILL_IMAGE="$("${DOCKER[@]}" inspect --format '{{.Image}}' "$CONTAINER_ID")" || fail 'could not resolve the snapshot image'
 [[ "$DRILL_IMAGE" =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'snapshot image digest is invalid'

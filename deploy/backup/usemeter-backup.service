@@ -3,19 +3,19 @@ Description=Create and verify a protected useMeter SQLite backup
 
 [Service]
 Type=oneshot
-Environment=USEMETER_PROJECT_DIR=%h/useMeter-deploy
-Environment=USEMETER_COMPOSE_FILE=%h/useMeter-deploy/compose.yaml
+Environment=USEMETER_PROJECT_DIR=%h/usemeter
+Environment=USEMETER_COMPOSE_FILE=%h/usemeter/compose.yaml
 Environment=USEMETER_BACKUP_DIR=%h/usemeter-backups
 EnvironmentFile=-%h/.config/usemeter/backup.env
 WorkingDirectory=%h
 UMask=0077
-# Sudo privilege transition: murat is not in the host docker group.
-# Docker access relies on the strictly scoped sudoers rule:
-#   murat ALL=(ALL) NOPASSWD: /usr/bin/docker
+# Sudo privilege transition: service user is not in the host docker group.
+# Docker access relies on a strictly scoped sudoers rule:
+#   <user> ALL=(ALL) NOPASSWD: /usr/bin/docker
 # NoNewPrivileges=yes would block setuid transition to root for /usr/bin/sudo.
 # Similarly, ProtectSystem / PrivateTmp mount namespaces under systemd user
 # managers can interfere with standard setuid execution. We rely on the unprivileged
-# murat user boundary, explicit umask 077, and strictly scoped /usr/bin/docker commands.
+# service user boundary, explicit umask 077, and strictly scoped /usr/bin/docker commands.
 NoNewPrivileges=no
 TimeoutStartSec=30min
 ExecStart=%h/.local/lib/usemeter/backup/usemeter-backup.sh

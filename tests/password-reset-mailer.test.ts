@@ -243,7 +243,7 @@ describe("PasswordResetMailer - Real Helper & Synthetic Process Sink", () => {
         "--sender",
         "usemeter@example.com",
         "--allowed-uids",
-        `1000,1000,${getUnixUid()}`,
+        `1000,${getUnixUid()}`,
         ...extraArgs,
       ],
       stdout: "pipe",

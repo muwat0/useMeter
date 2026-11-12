@@ -3,10 +3,10 @@
 #   docker compose -f compose.yaml -f deploy/compose.mail.yaml up -d
 #
 # Operator prerequisites on host:
-#   1. Dedicated persistent directory: /opt/usemeter/mail (chmod 0770, chgrp 1000)
+#   1. Dedicated persistent directory: /opt/usemeter/mail (chmod 0770, chgrp <GID>)
 #   2. Mail bridge service running (systemctl --user start usemeter-mail-bridge)
 #   3. Bridge socket active at /opt/usemeter/mail/bridge.sock (mode 0660)
-#   4. Container process runs as UID 1000 with supplementary GID 1000
+#   4. Container process runs as UID 1000 with supplementary host GID
 #
 # Read-only mount (:ro): container process only connects to the Unix domain socket
 # and does not write to the host filesystem.

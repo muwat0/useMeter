@@ -113,7 +113,7 @@ def validate_token(token: str) -> str:
 
 def parse_allowed_uids(raw: str | None) -> Set[int]:
     if raw is None or raw.strip() == "":
-        return {1000, 1000, os.geteuid()}
+        return {1000, os.geteuid()}
 
     uids: Set[int] = set()
     for item in raw.split(","):
@@ -193,7 +193,7 @@ class MailBridgeServer:
         self.public_origin = validate_public_origin(public_origin)
         self.sender = validate_email_address(sender, "sender")
         self.sendmail_bin = sendmail_bin
-        self.allowed_uids = allowed_uids if allowed_uids is not None else {1000, os.geteuid(), 1000}
+        self.allowed_uids = allowed_uids if allowed_uids is not None else {1000, os.geteuid()}
         self.group_id = group_id
         self.semaphore = asyncio.Semaphore(max_concurrency)
         self.read_timeout = read_timeout
@@ -532,7 +532,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allowed-uids",
         default=os.environ.get("ALLOWED_PEER_UIDS", None),
-        help="Comma-separated allowed peer UIDs (default: 1000,1000,current UID)",
+        help="Comma-separated allowed peer UIDs (default: 1000,current UID)",
     )
     parser.add_argument(
         "--group-id",

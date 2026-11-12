@@ -29,7 +29,7 @@ import threading
 from urllib.parse import urlsplit
 
 
-SERVICE_URL = "https://usemeter.example.com"
+SERVICE_URL = os.environ.get("USEMETER_SERVICE_URL", "https://usemeter.example.com")
 DEFAULT_HEALTH_URL = "http://127.0.0.1:3100/health"
 HEALTH_TIMEOUT_SECONDS = 5
 SENDMAIL_TIMEOUT_SECONDS = 10
@@ -51,7 +51,7 @@ LOCK_FILE_NAME = "monitor.lock"
 APPROVED_TEST_SUBJECT = "[useMeter ops] Delivery test"
 APPROVED_TEST_BODY = (
     "This is the approved useMeter operational alert delivery test.\n"
-    "Service: https://usemeter.example.com\n"
+    f"Service: {SERVICE_URL}\n"
     "No account, credential, or usage data is included.\n"
 )
 
@@ -546,7 +546,8 @@ def _mail_message(sender: str, recipient: str, subject: str, body: str) -> bytes
     _validate_email(recipient, "recipient")
     if any(ch in subject for ch in "\r\n") or "\r" in body or not body.endswith("\n"):
         raise MonitorError("mail content is invalid")
-    message_id = f"<{uuid.uuid4()}@usemeter.example.com>"
+    domain = urlsplit(SERVICE_URL).hostname or "usemeter.example.com"
+    message_id = f"<{uuid.uuid4()}@{domain}>"
     headers = [
         f"Date: {email.utils.formatdate(time.time(), localtime=False, usegmt=True)}",
         f"Message-ID: {message_id}",

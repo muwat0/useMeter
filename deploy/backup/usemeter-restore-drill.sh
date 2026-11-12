@@ -6,18 +6,17 @@ fail() {
   exit 1
 }
 
-if (( EUID == 0 )); then fail 'must run unprivileged as murat'; fi
-[[ "$(id -un)" == 'murat' ]] || fail 'must run as the murat account'
+if (( EUID == 0 )); then fail 'must run unprivileged as non-root user'; fi
 [[ $# == 1 ]] || fail 'usage: usemeter-restore-drill.sh BACKUP_FILE'
 
 BACKUP_FILE="$1"
 [[ -f "$BACKUP_FILE" && ! -L "$BACKUP_FILE" ]] || fail 'candidate must be a regular, non-symlink file'
 BACKUP_FILE="$(realpath -e -- "$BACKUP_FILE")"
-[[ "$(stat -c '%u' -- "$BACKUP_FILE")" == "$(id -u)" ]] || fail 'candidate is not owned by murat'
+[[ "$(stat -c '%u' -- "$BACKUP_FILE")" == "$(id -u)" ]] || fail 'candidate is not owned by current user'
 [[ "$(stat -c '%a' -- "$BACKUP_FILE")" == '600' ]] || fail 'candidate must have mode 0600'
 case "$BACKUP_FILE" in *,*|*:* ) fail 'candidate path cannot contain comma or colon characters' ;; esac
 
-PROJECT_DIR="${USEMETER_PROJECT_DIR:-${HOME}/useMeter-deploy}"
+PROJECT_DIR="${USEMETER_PROJECT_DIR:-${HOME}/usemeter}"
 COMPOSE_FILE="${USEMETER_COMPOSE_FILE:-${PROJECT_DIR}/compose.yaml}"
 COMPOSE_SERVICE="${USEMETER_COMPOSE_SERVICE:-usemeter}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"

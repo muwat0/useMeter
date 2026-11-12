@@ -1,6 +1,6 @@
 # Docker Deployment Guide
 
-useMeter is a Bun HTTP service with SQLite persistence. It is **not** deployable by uploading `dist/client` into ReverseProxy's `my_webapp`: that app serves static/PHP files and does not run Bun, SQLite migrations, polling, or OAuth callback routes.
+useMeter is a containerized Bun HTTP service with SQLite persistence. It runs with active background polling, SQLite WAL storage, and OAuth callback endpoints.
 
 ## Required server prerequisites
 
@@ -11,10 +11,10 @@ Ensure the host system provides:
 - A writable deployment directory, for example `/opt/usemeter`
 - A persistent Docker volume for `/app/data`
 - A domain or subdomain, for example `usemeter.example.com`
-- A reverse proxy route from that domain to `127.0.0.1:3100`
+- A reverse proxy route from that domain to `127.0.0.1:3100` with TLS termination
 - A production `USAGE_MASTER_KEY` stored outside the repository
 
-The deployment on `production-server` is active: Docker Engine 29.8.0 runs the container through ReverseProxy's `reverseproxy` app at `usemeter.example.com`. The site uses a Let's Encrypt certificate and the deployment directory is `/opt/usemeter`; the Compose named volume is `usemeter-data`. The service binds only to `127.0.0.1:3100`.
+The standard deployment runs Docker Engine with a reverse proxy (e.g. Nginx, Caddy, Traefik) terminating HTTPS and proxying to `127.0.0.1:3100`. The persistent SQLite database lives in the named Docker volume `usemeter-data` and the container port is not exposed publicly.
 
 ## Install
 
@@ -47,7 +47,7 @@ The dashboard is served at `/`; static bundles `/assets/app.js` and `/assets/app
 
 ## Reverse proxy
 
-Configure your reverse proxy to proxy the selected HTTPS domain to `127.0.0.1:3100`. Preserve the `Host`, `X-Forwarded-For`, and `X-Forwarded-Proto` headers. Set `TRUST_PROXY=true` only when the proxy path is controlled and these headers cannot be spoofed by direct public access.
+Configure your reverse proxy (Nginx, Caddy, Traefik, etc.) to proxy the selected HTTPS domain to `127.0.0.1:3100`. Preserve the `Host`, `X-Forwarded-For`, and `X-Forwarded-Proto` headers. Set `TRUST_PROXY=true` only when the proxy path is controlled and these headers cannot be spoofed by direct public access.
 
 The application already emits security headers and uses conditional HSTS. Keep TLS termination at the reverse proxy and do not expose port 3100 publicly; the Compose file binds it to loopback by default.
 
@@ -58,9 +58,9 @@ The checked-in base `compose.yaml` forwards `RECOVERY_MAIL_SOCKET` with an empty
 To enable the optional source overlay, prepare a **dedicated persistent host directory** for the socket and configure the host helper before recreating the container:
 
 - `deploy/compose.mail.yaml` mounts only `${MAIL_BRIDGE_HOST_DIR:-/opt/usemeter/mail}` at `/app/mail-bridge:ro`, adds `${MAIL_BRIDGE_HOST_GID:-1000}` to the container group list, and sets the app socket path to `/app/mail-bridge/bridge.sock`. The app container runs as UID 1000. The host directory must remain stable across service restarts; the helper recreates only the socket file. Do not mount the user's home directory, runtime/session directories, or the host filesystem.
-- The directory must be owned by the service user, mode `0770`, and use the same group ID as `MAIL_BRIDGE_HOST_GID` / helper `SOCKET_GROUP_ID`. The socket is mode `0660`; never relax either to world-writable. On the verified host the dedicated group ID is `1000`; select matching IDs on other systems.
+- The directory must be owned by the service user, mode `0770`, and use the same group ID as `MAIL_BRIDGE_HOST_GID` / helper `SOCKET_GROUP_ID`. The socket is mode `0660`; never relax either to world-writable. Select a dedicated group ID matching your host configuration.
 - Copy `deploy/mail-helper/mail-bridge.env.example` to `~/.config/usemeter/mail-bridge.env`, owned by the service user with mode `0600` in a private configuration directory. Set mandatory `PUBLIC_ORIGIN` to the canonical HTTPS origin only (no path, query, fragment, or trailing slash) and `MAIL_SENDER` to the operator-controlled sender. The example also supplies `ALLOWED_PEER_UIDS`, `SOCKET_GROUP_ID`, and `SENDMAIL_BIN`; the default sendmail path is `/usr/sbin/sendmail`.
-- Install/run `deploy/mail-helper/usemeter-mail-bridge.service` as the same unprivileged host user with `systemctl --user daemon-reload` and `systemctl --user enable --now usemeter-mail-bridge.service`. Its `EnvironmentFile` is mandatory. Its `ExecStart` expects the checkout at `%h/useMeter-deploy`; if the source lives elsewhere, point that unit directive at the actual helper path. A user service that must survive logout/reboot needs user lingering enabled.
+- Install/run `deploy/mail-helper/usemeter-mail-bridge.service` as the same unprivileged host user with `systemctl --user daemon-reload` and `systemctl --user enable --now usemeter-mail-bridge.service`. Its `EnvironmentFile` is mandatory. Its `ExecStart` expects the checkout at `%h/usemeter`; if the source lives elsewhere, point that unit directive at the actual helper path. A user service that must survive logout/reboot needs user lingering enabled.
 - The helper accepts only a newline-delimited JSON object with `recipient` and a 64-lowercase-hex `token`; peer UID is checked using `SO_PEERCRED`. It creates `/reset-password#token=...` using the fixed origin and invokes the configured sendmail argv as `sendmail -oi -f <sender> -- <recipient>` without a shell. It does not expose a generic command/mail interface or require SMTP credentials.
 - **Keep the sandbox distinction:** the useMeter container keeps Compose's `no-new-privileges:true`. Do not enable `NoNewPrivileges=true` on the rootless mail helper unit: standard `/usr/sbin/sendmail` invokes setgid `postdrop` to submit to Postfix's local maildrop, and the unit documents why that transition must remain available. Do not add root privileges, alter MTA network/authentication policy, or install a human SMTP password.
 
@@ -103,7 +103,7 @@ Perform these steps in order. **Do not start or recreate the application until e
    ```sh
    sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml run --rm --no-deps --entrypoint bun usemeter -e 'process.umask(0o077); const { Database } = await import("bun:sqlite"); const fs = await import("node:fs"); const dest = `/app/data/pre-v2-backup-${Date.now()}.sqlite`; const db = new Database(process.env.DATABASE_PATH || "/app/data/usage.db"); db.exec(`VACUUM INTO "${dest}"`); db.close(); fs.chmodSync(dest, 0o600); console.log(dest);'
    ```
-   Stream the backup TAR from the stopped one-shot container to the host and extract as `murat` with a restrictive umask. Use the exact unique filename printed above; do not use `sudo` for `tar`:
+   Stream the backup TAR from the stopped one-shot container to the host and extract as the service user with a restrictive umask. Use the exact unique filename printed above; do not use `sudo` for `tar`:
    ```sh
    umask 077
    set -o pipefail
@@ -113,7 +113,7 @@ Perform these steps in order. **Do not start or recreate the application until e
    ```sh
    python3 -c 'import hashlib, os, sqlite3, sys; p=sys.argv[1]; s=os.stat(p); assert s.st_uid == os.getuid() and (s.st_mode & 0o777) == 0o600, "backup owner/mode check failed"; db=sqlite3.connect("file:" + os.path.realpath(p) + "?mode=ro", uri=True); v=db.execute("PRAGMA user_version").fetchone()[0]; q=db.execute("PRAGMA quick_check").fetchone()[0]; i=db.execute("PRAGMA integrity_check").fetchone()[0]; c=db.execute("SELECT COUNT(*) FROM credentials").fetchone()[0]; u=db.execute("SELECT COUNT(*) FROM usage_snapshots").fetchone()[0]; db.close(); assert v == 1 and q == "ok" and i == "ok", "backup schema/integrity check failed"; print({"user_version": v, "quick_check": q, "integrity_check": i, "credentials": c, "snapshots": u, "sha256": hashlib.sha256(open(p, "rb").read()).hexdigest(), "owner_mode_ok": True})' ${HOME}/usemeter-backups/<unique-backup-filename>
    ```
-   Require owner `murat`, mode `0600`, `user_version = 1`, both integrity checks `ok`, and matching credentials/snapshot counts and SHA256 with the recorded source/baseline. *(If host Python 3 is absent, verify via a read-only bind mount: `sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml run --rm --no-deps -v ${HOME}/usemeter-backups:/backups:ro --entrypoint bun usemeter -e '...'`)*. If any check fails, do not migrate or delete the temporary backup. After all host-copy checks pass, remove ONLY that unique temporary backup inside `/app/data` (never touch `usage.db`, `usage.db-wal`, or `usage.db-shm`):
+   Require owner matching the service user, mode `0600`, `user_version = 1`, both integrity checks `ok`, and matching credentials/snapshot counts and SHA256 with the recorded source/baseline. *(If host Python 3 is absent, verify via a read-only bind mount: `sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml run --rm --no-deps -v ${HOME}/usemeter-backups:/backups:ro --entrypoint bun usemeter -e '...'`)*. If any check fails, do not migrate or delete the temporary backup. After all host-copy checks pass, remove ONLY that unique temporary backup inside `/app/data` (never touch `usage.db`, `usage.db-wal`, or `usage.db-shm`):
    ```sh
    sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml run --rm --no-deps --entrypoint bun usemeter -e 'import fs from "node:fs"; const target = "/app/data/<unique-backup-filename>"; if (target.startsWith("/app/data/pre-v2-backup-") && fs.existsSync(target)) fs.unlinkSync(target);'
    ```
@@ -136,13 +136,13 @@ Perform these steps in order. **Do not start or recreate the application until e
    ```sh
    sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml run --rm --no-deps --entrypoint bun usemeter -e 'process.umask(0o077); const { Database } = await import("bun:sqlite"); const fs = await import("node:fs"); const dest = `/app/data/v2-backup-${Date.now()}.sqlite`; const db = new Database(process.env.DATABASE_PATH || "/app/data/usage.db"); db.exec(`VACUUM INTO "${dest}"`); db.close(); fs.chmodSync(dest, 0o600); console.log(dest);'
    ```
-   Stream the v2 backup TAR to the host and extract as `murat` under `umask 077`:
+   Stream the v2 backup TAR to the host and extract as the service user under `umask 077`:
    ```sh
    umask 077
    set -o pipefail
    sudo -n /usr/bin/docker cp usemeter-deploy-usemeter-1:/app/data/<unique-v2-backup-filename> - | tar --no-same-owner --no-same-permissions -xf - -C ${HOME}/usemeter-backups/
    ```
-   Verify the retained host v2 backup itself before proceeding (owner `murat`, mode `0600`, `user_version = 2`, integrity `ok`, counts nondecreasing):
+   Verify the retained host v2 backup itself before proceeding (owner matching the service user, mode `0600`, `user_version = 2`, integrity `ok`, counts nondecreasing):
    ```sh
    python3 -c 'import hashlib, os, sqlite3, sys; p=sys.argv[1]; s=os.stat(p); assert s.st_uid == os.getuid() and (s.st_mode & 0o777) == 0o600, "backup owner/mode check failed"; db=sqlite3.connect("file:" + os.path.realpath(p) + "?mode=ro", uri=True); v=db.execute("PRAGMA user_version").fetchone()[0]; q=db.execute("PRAGMA quick_check").fetchone()[0]; i=db.execute("PRAGMA integrity_check").fetchone()[0]; c=db.execute("SELECT COUNT(*) FROM credentials").fetchone()[0]; u=db.execute("SELECT COUNT(*) FROM usage_snapshots").fetchone()[0]; db.close(); assert v == 2 and q == "ok" and i == "ok", "v2 backup schema/integrity check failed"; print({"user_version": v, "quick_check": q, "integrity_check": i, "credentials": c, "snapshots": u, "sha256": hashlib.sha256(open(p, "rb").read()).hexdigest(), "owner_mode_ok": True})' ${HOME}/usemeter-backups/<unique-v2-backup-filename>
    ```
@@ -208,11 +208,11 @@ Starting with `v1.0.0`, all Docker image tags, release archives, and rollback pi
 The live database runs on `PRAGMA user_version = 2` with AES-256-GCM metadata encryption enforced. Older pre-dual-reader images must never be started against a v2 database.
 ## Operational notes
 
-The deployment is live on `production-server`. Keep the production `.env` file and the named Docker volume outside Git. Do not replace the `my_webapp` application; it is unrelated static/PHP hosting. Updates should be performed by fetching a reviewed release, rebuilding the image, and restarting the Compose service while preserving the named volume.
+Keep the production `.env` file and the named Docker volume outside Git. Updates should be performed by fetching a reviewed release, rebuilding the image, and restarting the Compose service while preserving the named volume.
 
 ## Automated secure backups and isolated restore drills
 
-`deploy/backup/usemeter-backup.sh` is intended to run as the unprivileged `murat` account through a systemd **user** service. It starts a one-shot Compose container with the same persistent data volume and application image, but runs only the direct Bun SQLite snapshot helper; it does not start `src/index.ts`, `StorageVault`, or the poller. SQLite `VACUUM INTO` creates a standalone snapshot from a consistent WAL view while the application remains the sole normal writer. The script never copies `usage.db` alone or explicitly issues `wal_checkpoint` or in-place `VACUUM` against the live path; SQLite coordinates WAL access and leaves the source database's logical contents unchanged.
+`deploy/backup/usemeter-backup.sh` is intended to run as the unprivileged service account through a systemd **user** service. It starts a one-shot Compose container with the same persistent data volume and application image, but runs only the direct Bun SQLite snapshot helper; it does not start `src/index.ts`, `StorageVault`, or the poller. SQLite `VACUUM INTO` creates a standalone snapshot from a consistent WAL view while the application remains the sole normal writer. The script never copies `usage.db` alone or explicitly issues `wal_checkpoint` or in-place `VACUUM` against the live path; SQLite coordinates WAL access and leaves the source database's logical contents unchanged.
 
 The one-shot snapshot is written temporarily inside `/app/data` with `umask 077`, checked for `user_version = 2`, `quick_check = 'ok'`, and `integrity_check = 'ok'`, copied to the host as `murat`, and removed from the volume. The host backup directory is mode `0700`; each completed backup is mode `0600`. The copied candidate must also pass the isolated restore drill before it is promoted to its timestamped name. If the schema or integrity gates fail, the run fails closed.
 
@@ -222,7 +222,7 @@ When invoked independently, the drill obtains its image digest from a running Co
 
 Retention keeps every backup from the last seven days, then the newest backup in each ISO week through age 28 days, and removes older generated backup files. A successful fresh backup and restore-drill result is required before pruning runs.
 
-Install the reviewed helper files on the host as `murat` and copy the systemd units into the user unit directory:
+Install the reviewed helper files on the host as the service user and copy the systemd units into the user unit directory:
 
 ```sh
 install -d -m 0700 ~/.local/lib/usemeter/backup ~/.config/systemd/user

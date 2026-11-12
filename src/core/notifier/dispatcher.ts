@@ -128,7 +128,7 @@ export class NotificationDispatcher {
       Title: title,
       Priority: priority,
       Tags: tags,
-      "User-Agent": "useMeter/1.0 (+https://usemeter.example.com)",
+      "User-Agent": "useMeter/1.0 (+https://github.com/muwat0/useMeter)",
     };
     if (hostHeader) headers["Host"] = hostHeader;
     if (config.token) headers["Authorization"] = `Bearer ${config.token}`;
@@ -157,7 +157,7 @@ export class NotificationDispatcher {
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "User-Agent": "useMeter/1.0 (+https://usemeter.example.com)",
+      "User-Agent": "useMeter/1.0 (+https://github.com/muwat0/useMeter)",
     };
     if (hostHeader) headers["Host"] = hostHeader;
 
@@ -229,7 +229,7 @@ export class NotificationDispatcher {
     const { targetUrl, hostHeader } = await resolveDispatcherTarget(config.url);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "User-Agent": "useMeter/1.0 (+https://usemeter.example.com)",
+      "User-Agent": "useMeter/1.0 (+https://github.com/muwat0/useMeter)",
     };
     if (hostHeader) headers["Host"] = hostHeader;
 
@@ -263,7 +263,7 @@ export class NotificationDispatcher {
     const { targetUrl, hostHeader } = await resolveDispatcherTarget(config.url);
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "User-Agent": "useMeter/1.0 (+https://usemeter.example.com)",
+      "User-Agent": "useMeter/1.0 (+https://github.com/muwat0/useMeter)",
     };
     if (hostHeader) headers["Host"] = hostHeader;
 

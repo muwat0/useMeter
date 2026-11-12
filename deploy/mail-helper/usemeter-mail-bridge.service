@@ -12,7 +12,7 @@ EnvironmentFile=%h/.config/usemeter/mail-bridge.env
 # Path to the helper script in the useMeter deployment directory.
 # Python reads PUBLIC_ORIGIN, MAIL_SENDER, ALLOWED_PEER_UIDS, SOCKET_GROUP_ID,
 # and SENDMAIL_BIN directly from the environment.
-ExecStart=/usr/bin/python3 %h/useMeter-deploy/deploy/mail-helper/usemeter-mail-bridge.py \
+ExecStart=/usr/bin/python3 %h/usemeter/deploy/mail-helper/usemeter-mail-bridge.py \
     --socket-dir %h/usemeter-mail
 
 Restart=always

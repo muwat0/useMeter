@@ -29,7 +29,7 @@ When designing this system, there are two fundamental architectural dilemmas:
 
 ## 3. Decision
 
-1. **Self-Hosted Deployment:** The application will be designed to run on the user's own hardware (local desktop, Linux VPS, GCP e2-micro, or Docker). Since each user will make queries from their own home/server IP, the risk of being affected by providers' IP blocking is eliminated.
+1. **Self-Hosted Deployment:** The application will be designed to run on the user's own hardware (local desktop, Linux VPS, cloud VM, or Docker). Since each user will make queries from their own home/server IP, the risk of being affected by providers' IP blocking is eliminated.
 2. **Backend-for-Frontend (BFF) Layer:**
    - **Runtime:** **Bun / Node.js (TypeScript)**.
    - **Web Framework:** **Hono**. It is small, fully compliant with web standards, has zero external dependencies, offers high performance, and has strong Server-Sent Events (SSE) / WebSocket support.
