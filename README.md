@@ -221,6 +221,10 @@ The health endpoint is `/health`. The application is a Bun server and must run a
 - [ADR-0004: Security perimeter and invitation onboarding](docs/adr/0004-security-perimeter-and-invitation-onboarding.md)
 - [ADR-0005: Non-destructive stale usage state](docs/adr/0005-nondestructive-stale-usage-state.md)
 
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on development setup, adding new provider adapters, and submitting pull requests.
+
 ## License
 
 useMeter is open source software licensed under the [MIT License](LICENSE).

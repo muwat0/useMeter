@@ -1,0 +1,44 @@
+name: Provider Request
+description: Request support for a new AI provider or quota endpoint
+labels: [enhancement, provider]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a new AI provider for useMeter!
+  - type: input
+    id: provider_name
+    attributes:
+      label: Provider Name
+      description: What is the name of the AI service or provider?
+      placeholder: "e.g. Together AI, Fireworks, Mistral, Perplexity"
+    validations:
+      required: true
+  - type: input
+    id: website
+    attributes:
+      label: Provider Website & API Docs
+      description: Official website and documentation link.
+      placeholder: "https://api.example.com/docs"
+    validations:
+      required: true
+  - type: textarea
+    id: quota_endpoint
+    attributes:
+      label: Quota / Balance API Endpoint Details
+      description: Does this provider offer a public or authenticated balance/quota/usage endpoint? If known, please share documentation or endpoints.
+      placeholder: "e.g. GET /v1/user/balance or GET /v1/organizations/{id}/usage"
+    validations:
+      required: false
+  - type: dropdown
+    id: auth_type
+    attributes:
+      label: Authentication Method
+      description: How does the provider authenticate requests?
+      options:
+        - API Key (Bearer / Header)
+        - OAuth 2.0 PKCE / Authorization Code
+        - Session Cookie / Token
+        - Unknown
+    validations:
+      required: true
