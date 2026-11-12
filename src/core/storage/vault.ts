@@ -1623,7 +1623,7 @@ export class StorageVault {
     } else if (config.channel === "discord") {
       viewConfig = {
         channel: "discord",
-        url: config.url ? `${config.url.slice(0, 35)}...` : "",
+        url: config.url,
       };
     } else {
       viewConfig = {

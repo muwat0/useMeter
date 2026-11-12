@@ -99,6 +99,14 @@ describe("Quota Notifications & Alert System", () => {
     expect(interceptedRequests[3].url).toBe("https://my-hook.example.com/alerts");
     expect(interceptedRequests[3].body.event).toBe("quota_alert");
     expect(interceptedRequests[3].body.alert.provider).toBe("openai-codex");
+
+    // 5. Discord webhook URL validation (rejects truncated URLs without token)
+    const invalidDiscord = await dispatcher.dispatch(
+      { channel: "discord", url: "https://discord.com/api/webhooks/123456789" },
+      baseEvent,
+    );
+    expect(invalidDiscord.success).toBe(false);
+    expect(invalidDiscord.error).toContain("must include both webhook ID and token");
   });
 
   it("evaluates quota thresholds, handles state transitions, and detects resets", async () => {
