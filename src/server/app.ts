@@ -32,6 +32,7 @@ import {
   RATE_LIMIT_POLICIES,
   resolveClientIp,
 } from "./security";
+import { APP_VERSION } from "../version";
 import { getProviderCatalog } from "../core/providers/catalog";
 import { join } from "path";
 import { renderAccountRecoveryPageHtml } from "./account-pages";
@@ -826,6 +827,7 @@ export function createServer(
   app.get("/health", c => {
     return c.json({
       status: "ok",
+      version: APP_VERSION,
       integrity: vault.checkIntegrity(),
       pollerRunning: poller.isRunning(),
     });
@@ -3225,12 +3227,15 @@ function renderAuthPageHtml(options: { mode: "login" | "register"; registrationD
       `}
   </main>
   <footer class="w-full border-t border-appBorder px-4 sm:px-6 py-4 mt-auto">
-    <nav aria-label="Information and support" class="max-w-7xl mx-auto flex flex-wrap justify-center gap-x-5 gap-y-2 text-xs text-appTextMuted">
-      <a href="/privacy" class="hover:text-appText transition" data-i18n="authLegalPrivacy">Gizlilik</a>
-      <a href="/terms" class="hover:text-appText transition" data-i18n="authLegalTerms">Kullanım Koşulları</a>
-      <a href="/security" class="hover:text-appText transition" data-i18n="authLegalSecurity">Güvenlik</a>
-      <a href="/support" class="hover:text-appText transition" data-i18n="authLegalSupport">Destek</a>
-    </nav>
+    <div class="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-3 text-xs text-appTextMuted">
+      <span class="text-[11px] font-mono opacity-70">useMeter v${APP_VERSION}</span>
+      <nav aria-label="Information and support" class="flex flex-wrap gap-x-5 gap-y-2">
+        <a href="/privacy" class="hover:text-appText transition" data-i18n="authLegalPrivacy">Gizlilik</a>
+        <a href="/terms" class="hover:text-appText transition" data-i18n="authLegalTerms">Kullanım Koşulları</a>
+        <a href="/security" class="hover:text-appText transition" data-i18n="authLegalSecurity">Güvenlik</a>
+        <a href="/support" class="hover:text-appText transition" data-i18n="authLegalSupport">Destek</a>
+      </nav>
+    </div>
   </footer>
 
 

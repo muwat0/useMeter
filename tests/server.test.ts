@@ -8,6 +8,7 @@ import { PollerEngine } from "../src/core/poller/poller";
 import { createServer, computeAssetRevision } from "../src/server/app";
 import type { FetchContext, ProviderAdapter } from "../src/core/providers/adapter";
 import type { StoredCredential } from "../src/types";
+import { APP_VERSION } from "../src/version";
 describe("Server API Endpoints", () => {
   it("serves health, usage, credentials, and dashboard HTML", async () => {
     const vault = new StorageVault(":memory:");
@@ -18,9 +19,10 @@ describe("Server API Endpoints", () => {
     // 1. Health check
     const healthRes = await app.request("/health");
     expect(healthRes.status).toBe(200);
-    const healthJson = (await healthRes.json()) as { status: string; integrity: boolean };
+    const healthJson = (await healthRes.json()) as { status: string; integrity: boolean; version?: string };
     expect(healthJson.status).toBe("ok");
     expect(healthJson.integrity).toBe(true);
+    expect(healthJson.version).toBe(APP_VERSION);
 
     // Anonymous protected requests are rejected
     const anonAdd = await app.request("/api/credentials", { method: "POST" });

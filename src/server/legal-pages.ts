@@ -1,3 +1,4 @@
+import { APP_VERSION } from "../version";
 export type LegalPage = "privacy" | "terms" | "security" | "support";
 export type LegalLanguage = "tr" | "en";
 
@@ -422,7 +423,7 @@ export function renderLegalPageHtml(options: { page: LegalPage; lang?: LegalLang
   </main>
   <footer class="page-footer">
     <div class="footer-inner">
-      <span>${copy.footerLabel}</span>
+      <span>${copy.footerLabel} &middot; v${APP_VERSION}</span>
       <nav class="page-nav" aria-label="${copy.navigationLabel}">${renderNavigation(options.page, language, copy)}</nav>
     </div>
   </footer>

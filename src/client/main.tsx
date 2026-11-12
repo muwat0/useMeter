@@ -8,6 +8,7 @@ import {
   type ProviderQuotaKind,
   type ProviderSupportTier,
 } from '../core/providers/catalog';
+import { APP_VERSION } from '../version';
 
 // ── Types ──
 interface UsageAmount {
@@ -2514,7 +2515,10 @@ function Dashboard() {
       </main>
       <footer className="mt-auto border-t border-appBorder px-4 sm:px-6 py-4">
         <div className="max-w-screen-2xl mx-auto flex flex-wrap items-center justify-between gap-3">
-          <span className="text-[11px] text-appTextMuted">{lang === 'tr' ? 'Bilgi ve destek' : 'Information & support'}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-appTextMuted">{lang === 'tr' ? 'Bilgi ve destek' : 'Information & support'}</span>
+            <span className="text-[10px] font-mono text-appTextMuted/70 bg-appSurface/50 px-1.5 py-0.5 rounded border border-appBorder/50">v{APP_VERSION}</span>
+          </div>
           <nav aria-label={lang === 'tr' ? 'Yasal ve destek bağlantıları' : 'Legal and support links'} className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-appTextMuted">
             <a href={`/privacy?lang=${lang}`} className="hover:text-appText transition">{lang === 'tr' ? 'Gizlilik' : 'Privacy'}</a>
             <a href={`/terms?lang=${lang}`} className="hover:text-appText transition">{lang === 'tr' ? 'Kullanım Koşulları' : 'Terms'}</a>
@@ -2937,7 +2941,8 @@ function Dashboard() {
                 </button>
               </form>
             </section>
-            <div className="flex justify-end pt-3 border-t border-appBorder">
+            <div className="flex justify-between items-center pt-3 border-t border-appBorder">
+              <span className="text-[11px] font-mono text-appTextMuted/70">useMeter v{APP_VERSION}</span>
               <button onClick={closeSettings} className="px-4 py-2 rounded-lg text-xs font-semibold bg-appAccent hover:bg-appAccentHover text-zinc-950 transition">{t('close', lang)}</button>
             </div>
           </div>
