@@ -2,6 +2,7 @@
   "name": "usemeter",
   "version": "1.0.0",
   "description": "useMeter — Multi-provider AI usage, credit, and quota tracking dashboard",
+  "license": "MIT",
   "main": "src/index.ts",
   "type": "module",
   "scripts": {
