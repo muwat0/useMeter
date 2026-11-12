@@ -164,17 +164,48 @@ Perform these steps in order. **Do not start or recreate the application until e
 
 Never run `docker compose down`, `-v`, `docker system prune`, a root shell, or any unapproved privileged command. Keep the `usemeter-data` named volume attached throughout; never restore by copying only the main SQLite file.
 
-### Rollback compatibility rules
+### Version-tag deployment and rollback standard
 
-**Primary rollback:** stop only `usemeter`, retag the image to point `usemeter:local` back to the exact phase-1 dual-reader image `usemeter:release-4-phase1` (`sha256:177be07af5ccc27610c9a9535bf611b9cf021aabb87902542f71d18b840998ca`), and start only that service with the existing database. The phase-1 reader supports v2 envelopes; the v2 database remains encrypted and must not have encryption disabled. Do not edit `compose.yaml`, change the volume, or restore a database for this application rollback:
-```sh
-sudo -n /usr/bin/docker image tag usemeter:release-4-phase1 usemeter:local
-sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml stop usemeter
-sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml up -d --no-build --no-deps --force-recreate usemeter
-```
+Starting with `v1.0.0`, all Docker image tags, release archives, and rollback pins follow semantic versioning instead of ephemeral commit hashes:
 
-**Exceptional pre-dual-reader recovery:** the older pre-dual-reader image must never be started against a v2 database. Returning to it requires an explicitly approved, fully offline recovery using a verified v1 backup and safe disposition of the active `usage.db`, `usage.db-wal`, and `usage.db-shm` as a complete set. Do not use an ad hoc `cp` restore or leave stale/replayable sidecars beside a restored database. If the complete offline database-and-sidecars recovery cannot be proven safe, remain on the phase-1 dual-reader image with the existing database.
+1. **Release Archive:**
+   - Named `usemeter-<tag>.tar.gz` (e.g. `usemeter-v1.0.0.tar.gz`).
+   - Generated directly from the annotated git tag:
+     ```sh
+     git archive --format=tar.gz -o usemeter-v1.0.0.tar.gz v1.0.0
+     ```
 
+2. **Docker Image Tags:**
+   - Every release image built on the host is tagged with its SemVer tag:
+     `usemeter:vX.Y.Z` (e.g. `usemeter:v1.0.0`).
+   - In addition, convenience pointers `usemeter:latest` and `usemeter:local` are tagged to point to the current active release.
+   ```sh
+   sudo -n /usr/bin/docker image tag usemeter:local usemeter:v1.0.0
+   sudo -n /usr/bin/docker image tag usemeter:local usemeter:latest
+   ```
+
+3. **Standard Rollback Pin Naming:**
+   - Before applying a new release `vX.Y.Z`, the active running image is pinned as:
+     `usemeter:rollback-pre-vX.Y.Z` (e.g. `usemeter:rollback-pre-v1.0.0`).
+   - In addition, previous release images remain preserved as immutable version tags `usemeter:v<PREVIOUS_VERSION>` (e.g. `usemeter:v1.0.0`).
+
+4. **Instant Rollback Procedure:**
+   To roll back to the pre-deployment state or any specific historical release:
+   ```sh
+   # Roll back to the immediately prior state:
+   sudo -n /usr/bin/docker image tag usemeter:rollback-pre-vX.Y.Z usemeter:local
+
+   # Or roll back to a specific version (e.g. v1.0.0):
+   sudo -n /usr/bin/docker image tag usemeter:v1.0.0 usemeter:local
+
+   # Restart the single service without touching the database volume:
+   sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml stop usemeter
+   sudo -n /usr/bin/docker compose -f /opt/usemeter/compose.yaml up -d --no-build --no-deps --force-recreate usemeter
+   ```
+
+### Historical Rollback Notes (Schema v1 -> v2)
+
+The live database runs on `PRAGMA user_version = 2` with AES-256-GCM metadata encryption enforced. Older pre-dual-reader images must never be started against a v2 database.
 ## Operational notes
 
 The deployment is live on `production-server`. Keep the production `.env` file and the named Docker volume outside Git. Do not replace the `my_webapp` application; it is unrelated static/PHP hosting. Updates should be performed by fetching a reviewed release, rebuilding the image, and restarting the Compose service while preserving the named volume.
