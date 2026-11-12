@@ -105,19 +105,19 @@ export class NotificationDispatcher {
     if (event.type === "exhausted") {
       priority = "5"; // max/urgent
       tags = "warning,rotating_light";
-      titlePrefix = "[useMeter] KOTA TÜKENDİ";
+      titlePrefix = "[useMeter] QUOTA EXHAUSTED";
     } else if (event.type === "warning") {
       priority = "4"; // high
       tags = "warning";
-      titlePrefix = "[useMeter] KOTA UYARISI";
+      titlePrefix = "[useMeter] QUOTA WARNING";
     } else if (event.type === "recovered") {
       priority = "3";
       tags = "white_check_mark,arrows_counterclockwise";
-      titlePrefix = "[useMeter] KOTA SIFIRLANDI / YENİLENDİ";
+      titlePrefix = "[useMeter] QUOTA RESET";
     } else if (event.type === "test") {
       priority = "3";
       tags = "bell,test_tube";
-      titlePrefix = "[useMeter] Test Bildirimi";
+      titlePrefix = "[useMeter] Test Notification";
     }
 
     const title = `${titlePrefix}: ${event.accountLabel} (${event.provider})`;
@@ -198,19 +198,24 @@ export class NotificationDispatcher {
 
     let color = 0x3b82f6; // blue
     let title = `useMeter: ${event.accountLabel}`;
+    let content: string = "🔔 **useMeter Test Notification:** Your webhook integration is working successfully!";
 
     if (event.type === "exhausted") {
       color = 0xef4444; // red
-      title = `🚨 KOTA TÜKENDİ: ${event.accountLabel} (${event.provider})`;
+      title = `🚨 QUOTA EXHAUSTED: ${event.accountLabel} (${event.provider})`;
+      content = `🚨 **useMeter Alert:** Quota for **${event.accountLabel}** (${event.provider}) is completely exhausted!`;
     } else if (event.type === "warning") {
       color = 0xf59e0b; // amber
-      title = `⚠️ KOTA UYARISI: ${event.accountLabel} (${event.provider})`;
+      title = `⚠️ QUOTA WARNING: ${event.accountLabel} (${event.provider})`;
+      content = `⚠️ **useMeter Warning:** Quota for **${event.accountLabel}** (${event.provider}) reached ${event.currentValueFormatted}.`;
     } else if (event.type === "recovered") {
       color = 0x10b981; // green
-      title = `✅ KOTA SIFIRLANDI: ${event.accountLabel} (${event.provider})`;
+      title = `✅ QUOTA RESET: ${event.accountLabel} (${event.provider})`;
+      content = `✅ **useMeter Notice:** Quota for **${event.accountLabel}** (${event.provider}) has been reset / restored.`;
     } else if (event.type === "test") {
       color = 0x8b5cf6; // violet
-      title = `🔔 useMeter Test Bildirimi`;
+      title = `🔔 useMeter Test Notification`;
+      content = `🔔 **useMeter Test Notification:** Your webhook integration is working successfully!`;
     }
 
     const embed = {
@@ -231,12 +236,16 @@ export class NotificationDispatcher {
     const res = await this.#fetch(targetUrl, {
       method: "POST",
       headers,
-      body: JSON.stringify({ embeds: [embed] }),
+      body: JSON.stringify({
+        content,
+        embeds: [embed],
+      }),
       signal,
     });
 
     if (!res.ok) {
-      return { success: false, error: `Discord webhook HTTP ${res.status}` };
+      const errText = await res.text().catch(() => "");
+      return { success: false, error: `Discord webhook HTTP ${res.status}: ${errText.slice(0, 100)}` };
     }
     return { success: true };
   }
@@ -244,6 +253,11 @@ export class NotificationDispatcher {
   async #dispatchWebhook(config: { url: string }, event: AlertEvent, signal: AbortSignal) {
     if (!config.url || !config.url.startsWith("http")) {
       return { success: false, error: "Invalid webhook URL" };
+    }
+
+    // Auto-detect Discord webhook URLs pasted under generic Webhook channel
+    if (config.url.includes("discord.com/api/webhooks/") || config.url.includes("discordapp.com/api/webhooks/")) {
+      return await this.#dispatchDiscord(config, event, signal);
     }
 
     const { targetUrl, hostHeader } = await resolveDispatcherTarget(config.url);
@@ -272,53 +286,53 @@ export class NotificationDispatcher {
 
   #formatTextBody(event: AlertEvent): string {
     const lines = [
-      `Hesap: ${event.accountLabel}`,
-      `Sağlayıcı: ${event.provider}`,
-      `Metrik: ${event.metric}`,
-      `Mevcut Durum: ${event.currentValueFormatted}`,
+      `Account: ${event.accountLabel}`,
+      `Provider: ${event.provider}`,
+      `Metric: ${event.metric}`,
+      `Status: ${event.currentValueFormatted}`,
     ];
     if (event.thresholdFormatted) {
-      lines.push(`Uyarı Eşiği: ${event.thresholdFormatted}`);
+      lines.push(`Warning Threshold: ${event.thresholdFormatted}`);
     }
     if (event.resetLabel) {
-      lines.push(`Sıfırlanma / Yenilenme: ${event.resetLabel}`);
+      lines.push(`Reset / Regeneration: ${event.resetLabel}`);
     } else if (event.resetsAt) {
-      lines.push(`Sıfırlanma: ${new Date(event.resetsAt).toLocaleTimeString()}`);
+      lines.push(`Reset: ${new Date(event.resetsAt).toLocaleTimeString()}`);
     }
     return lines.join("\n");
   }
 
   #formatMarkdownTelegram(event: AlertEvent): string {
     let emoji = "ℹ️";
-    let header = "useMeter Bildirimi";
+    let header = "*useMeter Notification*";
     if (event.type === "exhausted") {
       emoji = "🚨";
-      header = "*KOTA TÜKENDİ!*";
+      header = "*QUOTA EXHAUSTED!*";
     } else if (event.type === "warning") {
       emoji = "⚠️";
-      header = "*KOTA UYARISI*";
+      header = "*QUOTA WARNING*";
     } else if (event.type === "recovered") {
       emoji = "✅";
-      header = "*KOTA SIFIRLANDI / HAK TANIMLANDI*";
+      header = "*QUOTA RESET / CAPACITY RESTORED*";
     } else if (event.type === "test") {
       emoji = "🔔";
-      header = "*useMeter Test Bildirimi*";
+      header = "*useMeter Test Notification*";
     }
 
     const lines = [
       `${emoji} ${header}`,
-      `*Hesap:* \`${event.accountLabel}\``,
-      `*Sağlayıcı:* \`${event.provider}\``,
-      `*Metrik:* ${event.metric}`,
-      `*Kullanım:* *${event.currentValueFormatted}*`,
+      `*Account:* \`${event.accountLabel}\``,
+      `*Provider:* \`${event.provider}\``,
+      `*Metric:* ${event.metric}`,
+      `*Usage:* *${event.currentValueFormatted}*`,
     ];
     if (event.thresholdFormatted) {
-      lines.push(`*Uyarı Eşiği:* ${event.thresholdFormatted}`);
+      lines.push(`*Threshold:* ${event.thresholdFormatted}`);
     }
     if (event.resetLabel) {
-      lines.push(`*Sıfırlanma:* ${event.resetLabel}`);
+      lines.push(`*Reset:* ${event.resetLabel}`);
     } else if (event.resetsAt) {
-      lines.push(`*Sıfırlanma:* ${new Date(event.resetsAt).toLocaleTimeString()}`);
+      lines.push(`*Reset:* ${new Date(event.resetsAt).toLocaleTimeString()}`);
     }
     return lines.join("\n");
   }

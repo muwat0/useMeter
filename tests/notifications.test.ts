@@ -63,7 +63,7 @@ describe("Quota Notifications & Alert System", () => {
     expect(ntfyRes.success).toBe(true);
     expect(interceptedRequests.length).toBe(1);
     expect(interceptedRequests[0].url).toBe("https://ntfy.sh/test-topic");
-    expect(interceptedRequests[0].headers["Title"]).toContain("[useMeter] KOTA UYARISI");
+    expect(interceptedRequests[0].headers["Title"]).toContain("[useMeter] QUOTA WARNING");
     expect(interceptedRequests[0].headers["Authorization"]).toBe("Bearer secret-tk");
     expect(interceptedRequests[0].body).toContain("Work ChatGPT");
 
@@ -76,7 +76,7 @@ describe("Quota Notifications & Alert System", () => {
     expect(interceptedRequests.length).toBe(2);
     expect(interceptedRequests[1].url).toBe("https://api.telegram.org/bot123456:BOT_TOKEN/sendMessage");
     expect(interceptedRequests[1].body.chat_id).toBe("987654321");
-    expect(interceptedRequests[1].body.text).toContain("KOTA TÜKENDİ");
+    expect(interceptedRequests[1].body.text).toContain("QUOTA EXHAUSTED");
 
     // 3. discord dispatch
     const discordRes = await dispatcher.dispatch(
@@ -86,7 +86,7 @@ describe("Quota Notifications & Alert System", () => {
     expect(discordRes.success).toBe(true);
     expect(interceptedRequests.length).toBe(3);
     expect(interceptedRequests[2].url).toBe("https://discord.com/api/webhooks/123/abc");
-    expect(interceptedRequests[2].body.embeds[0].title).toContain("KOTA SIFIRLANDI");
+    expect(interceptedRequests[2].body.embeds[0].title).toContain("QUOTA RESET");
     expect(interceptedRequests[2].body.embeds[0].color).toBe(0x10b981); // green
 
     // 4. webhook dispatch
