@@ -91,3 +91,20 @@ export function generateSessionToken(): string {
 export function hashSessionToken(token: string): string {
   return new Bun.CryptoHasher("sha256").update(token).digest("hex");
 }
+
+export const PAT_TOKEN_PREFIX = "um_pat_";
+
+export function generatePersonalAccessToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return `${PAT_TOKEN_PREFIX}${Buffer.from(bytes).toString("hex")}`;
+}
+
+export function hashPersonalAccessToken(token: string): string {
+  return new Bun.CryptoHasher("sha256").update(token.trim()).digest("hex");
+}
+
+export function formatTokenPrefix(token: string): string {
+  const clean = token.trim();
+  if (clean.length < 16) return clean;
+  return `${clean.slice(0, 11)}...${clean.slice(-4)}`;
+}

@@ -5,7 +5,7 @@ import type { StorageVault } from "../core/storage/vault";
 import { PollerAdmissionError } from "../core/poller/poller";
 import type { PollerAdmissionErrorCode, PollerEngine } from "../core/poller/poller";
 import type { ProviderRegistry } from "../core/providers/registry";
-import type { AdminSystemStats, AdminUserView, InputCredential, InvitationView, StoredCredential, UsageReport, User, UserRole } from "../types";
+import type { AdminSystemStats, AdminUserView, InputCredential, InvitationView, PersonalAccessToken, StoredCredential, UsageReport, User, UserRole } from "../types";
 import { AuthService } from "../core/auth/auth";
 import { hashSessionToken } from "../core/crypto";
 import {
@@ -185,6 +185,7 @@ function clearOAuthSecrets(data: PendingOAuthData | undefined): void {
 interface AppVariables {
   user: User;
   sessionToken: string;
+  patToken?: PersonalAccessToken;
 }
 export type AppEnv = { Variables: AppVariables };
 export type AppContext = Context<AppEnv>;
@@ -747,12 +748,26 @@ export function createServer(
       path === "/api/auth/logout" ||
       path === "/api/auth/password/reset-request" ||
       path === "/api/auth/password/reset-confirm";
-    const token = getCookie(c, SESSION_COOKIE);
-    if (token) {
-      const result = await auth.authenticate(token);
-      if (result.success) {
-        c.set("user", result.data);
-        c.set("sessionToken", token);
+    const authHeader = c.req.header("Authorization");
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const bearerToken = authHeader.slice(7).trim();
+      if (bearerToken) {
+        const patResult = await auth.authenticateBearerToken(bearerToken);
+        if (patResult.success) {
+          c.set("user", patResult.data.user);
+          c.set("patToken", patResult.data.token);
+        }
+      }
+    }
+
+    if (!c.get("user")) {
+      const token = getCookie(c, SESSION_COOKIE);
+      if (token) {
+        const result = await auth.authenticate(token);
+        if (result.success) {
+          c.set("user", result.data);
+          c.set("sessionToken", token);
+        }
       }
     }
     const user = c.get("user");
@@ -1415,7 +1430,13 @@ export function createServer(
       }
       const requestAuthority = {
         signal: c.req.raw.signal,
-        beforeCommit: () => auth.isSessionActive(user.id, c.get("sessionToken")),
+        beforeCommit: () => {
+          const sessionToken = c.get("sessionToken");
+          if (sessionToken) {
+            return auth.isSessionActive(user.id, sessionToken);
+          }
+          return Boolean(c.get("patToken"));
+        },
       };
       const reports = await poller.pollUser(user.id, requestAuthority);
       const credentials = new Map(vault.listCredentials(user.id).map(credential => [credential.id, credential]));
@@ -1450,7 +1471,13 @@ export function createServer(
       }
       const report = await poller.pollCredential(user.id, id, {
         signal: c.req.raw.signal,
-        beforeCommit: () => auth.isSessionActive(user.id, c.get("sessionToken")),
+        beforeCommit: () => {
+          const sessionToken = c.get("sessionToken");
+          if (sessionToken) {
+            return auth.isSessionActive(user.id, sessionToken);
+          }
+          return Boolean(c.get("patToken"));
+        },
       });
       return c.json({
         success: true,
@@ -1466,6 +1493,199 @@ export function createServer(
     } catch (error) {
       if (error instanceof PollerAdmissionError) return pollerAdmissionResponse(c, error);
       return c.json({ success: false, error: "Failed to poll credential" }, 500);
+    }
+  });
+
+  // ==================== Personal Access Tokens (API Keys) ====================
+
+  app.get("/api/tokens", async c => {
+    const user = c.get("user");
+    const result = await auth.listPersonalAccessTokens(user.id);
+    if (!result.success) {
+      return c.json({ success: false, error: result.message }, 500);
+    }
+    return c.json({ success: true, tokens: result.data });
+  });
+
+  app.post("/api/tokens", async c => {
+    try {
+      const user = c.get("user");
+      const ip = getClientIp(c);
+      const rl = rateLimiter.check(`tokenMgmt:${user.id}:${ip}`, RATE_LIMIT_POLICIES.apiTokenManagement);
+      if (!rl.allowed) {
+        return rateLimitResponse(c, rl.retryAfterSec, "Rate limit exceeded. Please wait before creating more tokens.");
+      }
+
+      const body = await c.req.json().catch(() => ({}));
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const expiresInDays = typeof body.expiresInDays === "number" ? body.expiresInDays : null;
+      if (!name) {
+        return c.json({ success: false, error: "Token name is required" }, 400);
+      }
+      const result = await auth.createPersonalAccessToken(user.id, name, expiresInDays);
+      if (!result.success) {
+        const status = result.error === "INVALID_TOKEN" ? 400 : result.error === "TOKEN_LIMIT_REACHED" ? 429 : 500;
+        return c.json({ success: false, error: result.message }, status);
+      }
+      return c.json({ success: true, token: result.data.token, rawToken: result.data.rawToken });
+    } catch {
+      return c.json({ success: false, error: "Invalid request payload" }, 400);
+    }
+  });
+
+  app.delete("/api/tokens/:id", async c => {
+    try {
+      const user = c.get("user");
+      const tokenId = c.req.param("id");
+      if (!tokenId) {
+        return c.json({ success: false, error: "Token ID is required" }, 400);
+      }
+      const result = await auth.revokePersonalAccessToken(user.id, tokenId);
+      if (!result.success) {
+        return c.json({ success: false, error: result.message }, 500);
+      }
+      return c.json({ success: true });
+    } catch {
+      return c.json({ success: false, error: "Failed to revoke token" }, 500);
+    }
+  });
+
+  // ==================== External V1 Usage API ====================
+
+  app.get("/api/v1/usage", c => {
+    const user = c.get("user");
+    const ip = getClientIp(c);
+    const rl = rateLimiter.check(`apiRead:${user.id}:${ip}`, RATE_LIMIT_POLICIES.apiRead);
+    if (!rl.allowed) {
+      return rateLimitResponse(c, rl.retryAfterSec, "Rate limit exceeded. Please wait before requesting usage data again.");
+    }
+    const latest = vault.getLatestUsage(user.id);
+    const credentials = new Map(vault.listCredentials(user.id).map(credential => [credential.id, credential]));
+    const data = latest.map(report => {
+      const credential = report.credentialId ? credentials.get(report.credentialId) : undefined;
+      return toPublicUsageReport(report, {
+        accountLabel: credential?.accountLabel || report.accountLabel,
+        createdAt: credential?.createdAt,
+        accent: credential?.accent || "default",
+        metadata: credential?.metadata,
+      });
+    });
+    return c.json({
+      success: true,
+      timestamp: Date.now(),
+      data,
+    });
+  });
+
+  app.get("/api/v1/summary", c => {
+    const user = c.get("user");
+    const ip = getClientIp(c);
+    const rl = rateLimiter.check(`apiRead:${user.id}:${ip}`, RATE_LIMIT_POLICIES.apiRead);
+    if (!rl.allowed) {
+      return rateLimitResponse(c, rl.retryAfterSec, "Rate limit exceeded. Please wait before requesting summary data again.");
+    }
+    const latest = vault.getLatestUsage(user.id);
+    const credentials = new Map(vault.listCredentials(user.id).map(cred => [cred.id, cred]));
+
+    let totalBalanceUsd = 0;
+    let totalSpentUsd = 0;
+    let healthyCount = 0;
+    let staleCount = 0;
+    let errorCount = 0;
+
+    const accounts = latest.map(report => {
+      const cred = report.credentialId ? credentials.get(report.credentialId) : undefined;
+      const pub = toPublicUsageReport(report, {
+        accountLabel: cred?.accountLabel || report.accountLabel,
+        createdAt: cred?.createdAt,
+        accent: cred?.accent || "default",
+        metadata: cred?.metadata,
+      });
+
+      const health = pub.health || (pub.stale ? "stale" : pub.error ? "error" : "healthy");
+      if (health === "healthy") healthyCount++;
+      else if (health === "stale") staleCount++;
+      else errorCount++;
+
+      let accountBalanceUsd: number | undefined;
+      let accountSpentUsd: number | undefined;
+
+      for (const limit of pub.limits) {
+        if (limit.amount.unit === "usd") {
+          if (limit.id === "account_balance" && typeof limit.amount.remaining === "number") {
+            accountBalanceUsd = limit.amount.remaining;
+            totalBalanceUsd += limit.amount.remaining;
+          } else if (limit.id === "key_usage" && typeof limit.amount.used === "number") {
+            accountSpentUsd = limit.amount.used;
+            totalSpentUsd += limit.amount.used;
+          }
+        }
+      }
+
+      return {
+        credentialId: pub.credentialId,
+        provider: pub.provider,
+        accountLabel: pub.accountLabel,
+        health,
+        balanceUsd: accountBalanceUsd,
+        spentUsd: accountSpentUsd,
+        limitsCount: pub.limits.length,
+        fetchedAt: pub.fetchedAt,
+        error: pub.error,
+      };
+    });
+
+    return c.json({
+      success: true,
+      timestamp: Date.now(),
+      user: {
+        email: user.email,
+        role: user.role,
+      },
+      totals: {
+        activeAccounts: accounts.length,
+        totalBalanceUsd: Number(totalBalanceUsd.toFixed(2)),
+        totalSpentUsd: Number(totalSpentUsd.toFixed(2)),
+        healthyCount,
+        staleCount,
+        errorCount,
+      },
+      accounts,
+    });
+  });
+
+  app.post("/api/v1/poll", async c => {
+    try {
+      const user = c.get("user");
+      const rl = rateLimiter.check(`manualPoll:${user.id}:all`, RATE_LIMIT_POLICIES.manualPoll);
+      if (!rl.allowed) {
+        return rateLimitResponse(c, rl.retryAfterSec, "Rate limit exceeded. Please wait before polling again.");
+      }
+      const requestAuthority = {
+        signal: c.req.raw.signal,
+        beforeCommit: () => {
+          const sessionToken = c.get("sessionToken");
+          if (sessionToken) {
+            return auth.isSessionActive(user.id, sessionToken);
+          }
+          return Boolean(c.get("patToken"));
+        },
+      };
+      const reports = await poller.pollUser(user.id, requestAuthority);
+      const credentials = new Map(vault.listCredentials(user.id).map(credential => [credential.id, credential]));
+      const data = reports.map(report => {
+        const credential = report.credentialId ? credentials.get(report.credentialId) : undefined;
+        return toPublicUsageReport(report, {
+          accountLabel: credential?.accountLabel || report.accountLabel,
+          createdAt: credential?.createdAt,
+          accent: credential?.accent || "default",
+          metadata: credential?.metadata,
+        });
+      });
+      return c.json({ success: true, count: data.length, data });
+    } catch (error) {
+      if (error instanceof PollerAdmissionError) return pollerAdmissionResponse(c, error);
+      return c.json({ success: false, error: "Failed to poll credentials" }, 500);
     }
   });
 

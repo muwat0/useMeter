@@ -50,6 +50,14 @@ interface BootstrapUser {
   email: string;
   role: string;
 }
+interface PatTokenItem {
+  id: string;
+  name: string;
+  tokenPrefix: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+  expiresAt: number | null;
+}
 interface BootstrapData {
   reports: Report[];
   user: BootstrapUser | null;
@@ -100,6 +108,30 @@ const I18N: Record<string, Record<string, string>> = {
     accountErrorRateLimited: "Çok fazla deneme yapıldı. Lütfen biraz bekleyip yeniden deneyin.",
     accountErrorGeneral: "İşlem tamamlanamadı. Lütfen tekrar deneyin.",
     accountErrorRequired: "Lütfen tüm zorunlu alanları doldurun.",
+    patSectionTitle: "API & Dış Erişim (Kişisel Erişim Anahtarları)",
+    patSectionDesc: "Terminal script'leri, Waybar, tmux veya cURL ile kullanım verilerinize erişmek için API anahtarları oluşturun.",
+    patCreateBtn: "Yeni Anahtar Oluştur",
+    patCreating: "Oluşturuluyor...",
+    patNameLabel: "Anahtar Adı",
+    patNamePlaceholder: "ör. Waybar Widget, Dizüstü Terminal",
+    patExpiryLabel: "Geçerlilik Süresi",
+    patExpiry30Days: "30 Gün",
+    patExpiry90Days: "90 Gün",
+    patExpiry1Year: "1 Yıl",
+    patExpiryNever: "Süresiz (Ömür Boyu)",
+    patNewTokenWarning: "Bu anahtarı bir daha göremezsiniz! Lütfen şimdi kopyalayıp güvenli bir yere kaydedin.",
+    patCopyBtn: "Kopyala",
+    patCopied: "Kopyalandı!",
+    patCurlExample: "cURL ile Kullanım Örneği:",
+    patListTitle: "Aktif Anahtarlarınız",
+    patNoTokens: "Henüz oluşturulmuş bir API anahtarınız bulunmuyor.",
+    patCreatedDate: "Oluşturulma:",
+    patLastUsed: "Son kullanım:",
+    patNeverUsed: "Hiç kullanılmadı",
+    patExpires: "Bitiş:",
+    patNeverExpires: "Süresiz",
+    patRevokeBtn: "Kaldır",
+    patRevokeConfirm: "Bu API anahtarını iptal etmek istediğinize emin misiniz? Bu anahtarı kullanan script'lerin erişimi hemen kesilecektir.",
     deleteAccount: "Hesabı Kaldır", editLabel: "Etiketi Düzenle",
 
     save: "Kaydet", saveAndPoll: "Kaydet ve Sorgula", cancel: "İptal",
@@ -206,6 +238,30 @@ const I18N: Record<string, Record<string, string>> = {
     accountErrorRateLimited: "Too many attempts. Wait a little and try again.",
     accountErrorGeneral: "The operation could not be completed. Please try again.",
     accountErrorRequired: "Please complete all required fields.",
+    patSectionTitle: "API & External Access (Personal Access Tokens)",
+    patSectionDesc: "Generate API tokens to access your usage data from terminal scripts, Waybar, tmux, or cURL.",
+    patCreateBtn: "Generate New Token",
+    patCreating: "Generating...",
+    patNameLabel: "Token Name",
+    patNamePlaceholder: "e.g. Waybar Widget, Laptop Terminal",
+    patExpiryLabel: "Expiration",
+    patExpiry30Days: "30 Days",
+    patExpiry90Days: "90 Days",
+    patExpiry1Year: "1 Year",
+    patExpiryNever: "No Expiration",
+    patNewTokenWarning: "Make sure to copy your personal access token now. You won't be able to see it again!",
+    patCopyBtn: "Copy",
+    patCopied: "Copied!",
+    patCurlExample: "cURL Example:",
+    patListTitle: "Your Active Tokens",
+    patNoTokens: "No API tokens created yet.",
+    patCreatedDate: "Created:",
+    patLastUsed: "Last used:",
+    patNeverUsed: "Never used",
+    patExpires: "Expires:",
+    patNeverExpires: "Never",
+    patRevokeBtn: "Revoke",
+    patRevokeConfirm: "Are you sure you want to revoke this API token? Any scripts using it will immediately lose access.",
     deleteAccount: "Remove Account", editLabel: "Edit Label",
     save: "Save", saveAndPoll: "Save & Poll", cancel: "Cancel",
     noAccounts: 'No AI accounts connected yet. Click <b>+ Connect Account</b> to add one.',
@@ -948,6 +1004,15 @@ function Dashboard() {
   const [deleteAccountSubmitting, setDeleteAccountSubmitting] = useState(false);
   const [deleteAccountMessage, setDeleteAccountMessage] = useState<string | null>(null);
 
+
+  // Personal Access Tokens state
+  const [patTokens, setPatTokens] = useState<PatTokenItem[]>([]);
+  const [patNewName, setPatNewName] = useState('');
+  const [patNewExpiresDays, setPatNewExpiresDays] = useState<number | null>(90);
+  const [patCreating, setPatCreating] = useState(false);
+  const [patCreateError, setPatCreateError] = useState<string | null>(null);
+  const [patCreatedRawToken, setPatCreatedRawToken] = useState<string | null>(null);
+  const [patCopied, setPatCopied] = useState(false);
   const accountDeletedRef = useRef(false);
   const settingsFeedbackGenerationRef = useRef(0);
 
@@ -1181,6 +1246,79 @@ function Dashboard() {
     setDeleteAccountPassword('');
     setDeleteAccountConfirmed(false);
     setDeleteAccountMessage(null);
+    setPatCreatedRawToken(null);
+    setPatCreateError(null);
+    setPatCopied(false);
+    setPatNewName('');
+  }
+
+  async function loadPatTokens() {
+    try {
+      const res = await fetch('/api/tokens');
+      if (res.ok) {
+        const json = (await res.json()) as { success: boolean; tokens?: PatTokenItem[] };
+        if (json.success && Array.isArray(json.tokens)) {
+          setPatTokens(json.tokens);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function createPatToken(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (patCreating || !patNewName.trim()) return;
+    setPatCreating(true);
+    setPatCreateError(null);
+    try {
+      const res = await fetch('/api/tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: patNewName.trim(), expiresInDays: patNewExpiresDays }),
+      });
+      const json = (await res.json()) as { success: boolean; error?: string; rawToken?: string };
+      if (!res.ok || !json.success) {
+        setPatCreateError(json.error || t('accountErrorGeneral', lang));
+        return;
+      }
+      if (json.rawToken) {
+        setPatCreatedRawToken(json.rawToken);
+        setPatNewName('');
+        await loadPatTokens();
+      }
+    } catch {
+      setPatCreateError(t('accountErrorGeneral', lang));
+    } finally {
+      setPatCreating(false);
+    }
+  }
+
+  async function revokePatToken(id: string) {
+    if (!window.confirm(t('patRevokeConfirm', lang))) return;
+    try {
+      const res = await fetch(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (res.ok) {
+        await loadPatTokens();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function copyPatToken(tokenText: string) {
+    try {
+      await navigator.clipboard.writeText(tokenText);
+      setPatCopied(true);
+      setTimeout(() => setPatCopied(false), 2500);
+    } catch {
+      // fallback
+    }
+  }
+
+  function openSettings() {
+    setShowSettings(true);
+    loadPatTokens();
   }
 
 
@@ -2049,7 +2187,7 @@ function Dashboard() {
               <option value="lowest_available">{t('sortLowest', lang)}</option>
             </select>
             {/* Settings */}
-            <button onClick={() => setShowSettings(true)} id="settingsBtn" title={t('settingsTitle', lang)}
+            <button onClick={openSettings} id="settingsBtn" title={t('settingsTitle', lang)}
               className="h-9 w-9 rounded-lg border border-appBorder bg-appSurface text-appTextMuted hover:text-appText hover:border-appAccent transition flex items-center justify-center text-sm">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             </button>
@@ -2210,6 +2348,101 @@ function Dashboard() {
                 </div>
               </div>
             </div>
+            {/* Personal Access Tokens (API Keys) */}
+            <section className="space-y-3.5 border-t border-appBorder pt-4">
+              <div>
+                <h4 className="text-sm font-bold text-appText">{t('patSectionTitle', lang)}</h4>
+                <p className="text-xs text-appTextMuted mt-1">{t('patSectionDesc', lang)}</p>
+              </div>
+
+              {/* Token Creation Form */}
+              <form onSubmit={createPatToken} className="space-y-3 bg-appMuted/40 border border-appBorder/80 rounded-xl p-3.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label htmlFor="patName" className="block text-xs font-semibold text-appTextMuted mb-1">{t('patNameLabel', lang)}</label>
+                    <input id="patName" type="text" maxLength={100} required placeholder={t('patNamePlaceholder', lang)}
+                      value={patNewName} onChange={e => { setPatNewName(e.target.value); setPatCreateError(null); }}
+                      className="w-full bg-appSurface border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none" />
+                  </div>
+                  <div>
+                    <label htmlFor="patExpiry" className="block text-xs font-semibold text-appTextMuted mb-1">{t('patExpiryLabel', lang)}</label>
+                    <select id="patExpiry" value={patNewExpiresDays === null ? 'never' : String(patNewExpiresDays)}
+                      onChange={e => setPatNewExpiresDays(e.target.value === 'never' ? null : Number(e.target.value))}
+                      className="w-full bg-appSurface border border-appBorder rounded-lg px-3 py-2 text-xs text-appText focus:border-appAccent outline-none">
+                      <option value="30">{t('patExpiry30Days', lang)}</option>
+                      <option value="90">{t('patExpiry90Days', lang)}</option>
+                      <option value="365">{t('patExpiry1Year', lang)}</option>
+                      <option value="never">{t('patExpiryNever', lang)}</option>
+                    </select>
+                  </div>
+                </div>
+
+                {patCreateError && (
+                  <div role="alert" className={`rounded-lg border px-3 py-2 text-xs border-rose-500/30 bg-rose-500/10 ${dangerTextClass}`}>
+                    {patCreateError}
+                  </div>
+                )}
+
+                <button type="submit" disabled={patCreating || !patNewName.trim()}
+                  className="rounded-lg bg-appAccent px-3.5 py-2 text-xs font-semibold text-zinc-950 transition hover:bg-appAccentHover disabled:opacity-50 disabled:cursor-not-allowed">
+                  {patCreating ? t('patCreating', lang) : t('patCreateBtn', lang)}
+                </button>
+              </form>
+
+              {/* Newly Created Token Display (Only shown once!) */}
+              {patCreatedRawToken && (
+                <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3.5 space-y-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-400 font-bold text-xs">✓ {t('patNewTokenWarning', lang)}</span>
+                  </div>
+                  <div className="flex items-center gap-2 bg-appSurface border border-emerald-500/30 rounded-lg p-2 font-mono text-xs">
+                    <input type="text" readOnly value={patCreatedRawToken} className="w-full bg-transparent text-emerald-300 outline-none select-all text-[11px]" />
+                    <button type="button" onClick={() => copyPatToken(patCreatedRawToken)}
+                      className="px-2.5 py-1 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-medium text-xs whitespace-nowrap transition">
+                      {patCopied ? t('patCopied', lang) : t('patCopyBtn', lang)}
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-[11px] text-appTextMuted font-medium">{t('patCurlExample', lang)}</span>
+                    <pre className="p-2 rounded bg-zinc-950/80 text-[11px] font-mono text-zinc-300 overflow-x-auto border border-zinc-800">
+                      <code>{`curl -H "Authorization: Bearer ${patCreatedRawToken}" ${window.location.origin}/api/v1/summary`}</code>
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* Existing Tokens List */}
+              <div className="space-y-2">
+                <span className="text-xs font-semibold text-appTextMuted">{t('patListTitle', lang)}</span>
+                {patTokens.length === 0 ? (
+                  <p className="text-xs text-appTextMuted/70 italic py-1">{t('patNoTokens', lang)}</p>
+                ) : (
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    {patTokens.map(tok => (
+                      <div key={tok.id} className="flex items-center justify-between p-2.5 rounded-lg border border-appBorder bg-appMuted/30 hover:border-appAccent/50 transition">
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-appText">{tok.name}</span>
+                            <span className="font-mono text-[10px] text-appTextMuted bg-appSurface px-1.5 py-0.5 rounded border border-appBorder">{tok.tokenPrefix}</span>
+                          </div>
+                          <div className="flex items-center gap-3 text-[10px] text-appTextMuted">
+                            <span>{t('patCreatedDate', lang)} {new Date(tok.createdAt).toLocaleDateString()}</span>
+                            <span>•</span>
+                            <span>{t('patLastUsed', lang)} {tok.lastUsedAt ? new Date(tok.lastUsedAt).toLocaleDateString() : t('patNeverUsed', lang)}</span>
+                            <span>•</span>
+                            <span>{t('patExpires', lang)} {tok.expiresAt ? new Date(tok.expiresAt).toLocaleDateString() : t('patNeverExpires', lang)}</span>
+                          </div>
+                        </div>
+                        <button type="button" onClick={() => revokePatToken(tok.id)}
+                          className="px-2.5 py-1 text-[11px] font-medium text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded transition border border-rose-500/20">
+                          {t('patRevokeBtn', lang)}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
             <section className="space-y-3.5 border-t border-appBorder pt-4">
               <h4 className="text-sm font-bold text-appText">{t('accountSecurityTitle', lang)}</h4>
               <form id="changePasswordForm" onSubmit={changePassword} noValidate className="space-y-3">

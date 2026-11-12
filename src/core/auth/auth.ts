@@ -1,6 +1,23 @@
 import { randomBytes } from "node:crypto";
-import type { AuthResult, AuthSuccess, CreateInvitationResult, InvitationView, User } from "../../types";
-import { generateSessionToken, hashPassword, hashSessionToken, verifyPassword } from "../crypto";
+import type {
+  AuthResult,
+  AuthSuccess,
+  CreateInvitationResult,
+  CreatePersonalAccessTokenResult,
+  InvitationView,
+  PersonalAccessToken,
+  PersonalAccessTokenView,
+  User,
+} from "../../types";
+import {
+  formatTokenPrefix,
+  generatePersonalAccessToken,
+  generateSessionToken,
+  hashPassword,
+  hashPersonalAccessToken,
+  hashSessionToken,
+  verifyPassword,
+} from "../crypto";
 import type { StorageVault } from "../storage/vault";
 import type { PasswordResetMailer } from "./password-reset-mailer";
 
@@ -744,6 +761,170 @@ export class AuthService {
         success: false,
         error: "INTERNAL_ERROR",
         message: "Failed to revoke invitation",
+      };
+    }
+  }
+
+  // ==================== Personal Access Tokens ====================
+
+  async createPersonalAccessToken(
+    userId: string,
+    name: string,
+    expiresInDays?: number | null,
+  ): Promise<AuthResult<CreatePersonalAccessTokenResult>> {
+    const trimmedName = typeof name === "string" ? name.trim() : "";
+    if (!trimmedName || trimmedName.length > 100) {
+      return {
+        success: false,
+        error: "INVALID_TOKEN",
+        message: "Token name must be between 1 and 100 characters",
+      };
+    }
+
+    if (expiresInDays !== null && expiresInDays !== undefined) {
+      if (typeof expiresInDays !== "number" || !Number.isFinite(expiresInDays) || expiresInDays <= 0 || expiresInDays > 3650) {
+        return {
+          success: false,
+          error: "INVALID_TOKEN",
+          message: "Expiration days must be a positive number up to 3650 days",
+        };
+      }
+    }
+
+    try {
+      const rawToken = generatePersonalAccessToken();
+      const tokenHash = hashPersonalAccessToken(rawToken);
+      const tokenPrefix = formatTokenPrefix(rawToken);
+      const expiresAt = expiresInDays ? this.#now() + Math.round(expiresInDays * 24 * 60 * 60 * 1000) : null;
+
+      const token = this.#vault.createPersonalAccessToken(
+        userId,
+        trimmedName,
+        tokenHash,
+        tokenPrefix,
+        expiresAt,
+      );
+
+      return {
+        success: true,
+        data: {
+          token,
+          rawToken,
+        },
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("Token limit reached")) {
+        return {
+          success: false,
+          error: "TOKEN_LIMIT_REACHED",
+          message: "Maximum token limit reached (25 tokens)",
+        };
+      }
+      return {
+        success: false,
+        error: "INTERNAL_ERROR",
+        message: message || "Failed to create personal access token",
+      };
+    }
+  }
+
+  async listPersonalAccessTokens(userId: string): Promise<AuthResult<PersonalAccessTokenView[]>> {
+    try {
+      const tokens = this.#vault.listPersonalAccessTokens(userId);
+      return {
+        success: true,
+        data: tokens,
+      };
+    } catch {
+      return {
+        success: false,
+        error: "INTERNAL_ERROR",
+        message: "Failed to list personal access tokens",
+      };
+    }
+  }
+
+  async revokePersonalAccessToken(userId: string, tokenId: string): Promise<AuthResult<boolean>> {
+    if (!tokenId || typeof tokenId !== "string") {
+      return {
+        success: false,
+        error: "INVALID_TOKEN",
+        message: "Token ID is required",
+      };
+    }
+    try {
+      const revoked = this.#vault.revokePersonalAccessToken(userId, tokenId);
+      return {
+        success: true,
+        data: revoked,
+      };
+    } catch {
+      return {
+        success: false,
+        error: "INTERNAL_ERROR",
+        message: "Failed to revoke personal access token",
+      };
+    }
+  }
+
+  async authenticateBearerToken(
+    rawToken: string,
+  ): Promise<AuthResult<{ user: User; token: PersonalAccessToken }>> {
+    if (!rawToken || typeof rawToken !== "string") {
+      return {
+        success: false,
+        error: "UNAUTHENTICATED",
+        message: "Invalid or missing token",
+      };
+    }
+    const trimmed = rawToken.trim();
+    if (!trimmed.startsWith("um_pat_")) {
+      return {
+        success: false,
+        error: "UNAUTHENTICATED",
+        message: "Invalid token format",
+      };
+    }
+
+    try {
+      const tokenHash = hashPersonalAccessToken(trimmed);
+      const now = this.#now();
+      const match = this.#vault.getPersonalAccessTokenByHash(tokenHash, now);
+      if (!match) {
+        return {
+          success: false,
+          error: "UNAUTHENTICATED",
+          message: "Token not found or expired",
+        };
+      }
+
+      // Throttled touch (update last_used_at once per minute)
+      if (!match.lastUsedAt || now - match.lastUsedAt > 60_000) {
+        this.#vault.touchPersonalAccessToken(match.id, now);
+      }
+
+      return {
+        success: true,
+        data: {
+          user: match.user,
+          token: {
+            id: match.id,
+            userId: match.userId,
+            name: match.name,
+            tokenHash: match.tokenHash,
+            tokenPrefix: match.tokenPrefix,
+            createdAt: match.createdAt,
+            lastUsedAt: now,
+            expiresAt: match.expiresAt,
+          },
+        },
+      };
+    } catch {
+      return {
+        success: false,
+        error: "INTERNAL_ERROR",
+        message: "Token validation failed",
       };
     }
   }
